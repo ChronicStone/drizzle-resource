@@ -1,0 +1,11 @@
+node_modules
+build
+.turbo
+
+# docs
+docs/node_modules
+docs/.nuxt
+docs/.output
+docs/.data
+docs/bun.lock
+docs/package-lock.json

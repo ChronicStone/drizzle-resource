@@ -1,7 +1,7 @@
 ---
 seo:
-  title: Drizzle Query Resource Documentation
-  description: Schema-driven query resources for Drizzle ORM with one reusable contract for filters, search, sorting, pagination, hydration, and facets.
+  title: drizzle resource — typed query resources for Drizzle ORM
+  description: One typed contract for filtering, sorting, search, pagination, hydration, and facets on top of Drizzle ORM. Define once, query consistently.
 ---
 
 ::u-page-hero
@@ -10,55 +10,45 @@ seo:
   ---
   color: primary
   variant: subtle
-  icon: i-lucide-network
+  icon: i-lucide-layers
   ---
-  Drizzle ORM query layer
+  For Drizzle ORM
   :::
 
 #title
-One typed contract for every table, explorer, and faceted search screen
+One contract. Every table endpoint.
 
 #description
-Drizzle Query Resource gives your backend one reusable request language for filters, search, sorting, pagination, hydration, and facets, while keeping field paths typed against your schema and relations.
+`drizzle-resource` gives your server a single typed query layer for filters, search, sorting, pagination, row hydration, and facets — all inferred from your Drizzle schema and relations.
 
 #links
   :::u-button
   ---
-  color: neutral
+  color: primary
   size: xl
   to: /getting-started/quick-start
   trailing-icon: i-lucide-arrow-right
   ---
-  Build your first resource
+  Get started
   :::
 
   :::u-button
   ---
   color: neutral
   size: xl
-  to: /query-contract/overview
+  to: /query-contract/request-shape
   variant: outline
   ---
-  Learn the query contract
-  :::
-
-  :::u-button
-  ---
-  color: neutral
-  size: xl
-  to: /configuration/overview
-  variant: outline
-  ---
-  Configure behavior
+  See the request shape
   :::
 ::
 
 ::u-page-section
 #title
-See the package the way you actually use it
+The problem it solves
 
 #description
-The docs are split into the same two tracks your codebase cares about: what the client can send, and how the resource definition shapes or overrides that behavior.
+Every table API you write ends up with the same ad-hoc logic: parse sort params, build WHERE clauses, run a count, hydrate rows, maybe group some buckets for a filter sidebar. You rewrite it slightly differently each time, and the client has to learn a different shape each time. `drizzle-resource` standardizes that entirely.
 
   :::u-page-grid
     ::::u-page-card
@@ -69,48 +59,55 @@ The docs are split into the same two tracks your codebase cares about: what the 
       <div class="overflow-hidden rounded-xl border border-default bg-(--ui-bg-elevated)">
         <img
           src="/hero-light.svg"
-          alt="Drizzle Query Resource request pipeline diagram"
+          alt="drizzle resource query pipeline"
           class="block w-full dark:hidden"
         >
         <img
           src="/hero-dark.svg"
-          alt="Drizzle Query Resource request pipeline diagram"
+          alt="drizzle resource query pipeline"
           class="hidden w-full dark:block"
         >
       </div>
 
     #title
-    One request goes through a consistent pipeline
+    A staged pipeline, not a monolithic query
 
     #description
-    Scope filters are merged, defaults are normalized, fields are validated, ids are selected, rows are hydrated, and facets are resolved only when requested.
+    Every request goes through the same stages: scope filters are merged, defaults are applied, field paths are validated against your schema, ids are selected, rows are hydrated, and facets are resolved only when requested. Each stage can be replaced independently.
     ::::
 
     ::::u-page-card
     ---
     spotlight: true
     class: col-span-2 md:col-span-1
-    to: /query-contract/overview
+    to: /query-contract/request-shape
     ---
     #title
-    Query Contract
+    Client-side: the query contract
 
     #description
-    Start here if you are building the client payload. It explains the request shape, filter trees, search fields, sorting, facets, and pagination semantics.
+    The request shape your frontend sends — filter trees, search fields, sort keys, facet requests, pagination. Documented separately so UI authors don't need to read server config.
 
-    ```ts [query.ts]
-    await employees.query({
-      context: { orgId: 'fr' },
+    ```ts [request.ts]
+    await orders.query({
+      context: { orgId: 'acme' },
       request: {
         pagination: { pageIndex: 1, pageSize: 25 },
-        sorting: [{ key: 'fullName', dir: 'asc' }],
-        search: { value: 'ada', fields: [] },
+        sorting: [{ key: 'createdAt', dir: 'desc' }],
+        search: { value: 'laptop', fields: [] },
         filters: {
           type: 'group',
           combinator: 'and',
-          children: [],
+          children: [
+            {
+              type: 'condition',
+              key: 'status',
+              operator: 'isAnyOf',
+              value: ['pending', 'processing'],
+            },
+          ],
         },
-        context: {},
+        facets: [{ key: 'status', mode: 'exclude-self', limit: 10 }],
       },
     })
     ```
@@ -120,26 +117,33 @@ The docs are split into the same two tracks your codebase cares about: what the 
     ---
     spotlight: true
     class: col-span-2 md:col-span-1
-    to: /configuration/overview
+    to: /resource-setup/defining-a-resource
     ---
     #title
-    Configuration
+    Server-side: resource setup
 
     #description
-    Start here if you are defining the table-level behavior. It explains which fields are allowed, hidden, defaulted, disabled, or overridden by strategy hooks.
+    Where you define which fields are searchable, sortable, facetable, hidden, or scoped — and optionally override any stage of the execution pipeline.
 
-    ```ts [resource.ts]
-    const employees = engine.defineResource('employees', {
+    ```ts [orders.resource.ts]
+    export const ordersResource = engine.defineResource('orders', {
       relations: {
-        department: {
-          with: {
-            company: true,
-          },
-        },
+        customer: true,
+        orderLines: { with: { product: true } },
       },
       query: {
+        scope: engine.defineScope('orders', {}, (ctx, f) =>
+          f.is('customer.orgId', ctx.orgId)
+        ),
         search: {
-          defaults: ['fullName', 'department.company.name'],
+          allowed: ['reference', 'customer.name', 'orderLines.product.name'],
+          defaults: ['reference', 'customer.name'],
+        },
+        sort: {
+          defaults: [{ key: 'createdAt', dir: 'desc' }],
+        },
+        facets: {
+          allowed: ['status', 'customer.name'],
         },
       },
     })
@@ -150,118 +154,78 @@ The docs are split into the same two tracks your codebase cares about: what the 
 
 ::u-page-section
 #title
-Follow the path that matches the problem in front of you
+Where it fits in your stack
 
 #features
   :::u-page-feature
   ---
-  icon: i-lucide-rocket
-  to: /getting-started/quick-start
+  icon: i-lucide-table-2
+  to: /getting-started/introduction
   ---
   #title
-  Stand up a first resource
+  Admin and data tables
 
   #description
-  Create the engine, define a resource, and run a complete query from a real Drizzle setup.
+  One request shape drives filter bars, column sorting, search inputs, pagination controls, and row selection. No bespoke API per table.
   :::
 
   :::u-page-feature
   ---
-  icon: i-lucide-send
-  to: /query-contract/request-object
+  icon: i-lucide-filter
+  to: /query-contract/facets
   ---
   #title
-  Model the client payload
+  Faceted explorer UIs
 
   #description
-  Learn exactly what the client can send and how the engine interprets each request field.
+  Facet requests travel in the same payload as the main query. The engine resolves them against the same filter universe. No parallel API needed.
   :::
 
   :::u-page-feature
   ---
-  icon: i-lucide-sliders-horizontal
-  to: /configuration/filters
+  icon: i-lucide-split
+  to: /resource-setup/strategies
   ---
   #title
-  Shape resource policy
+  Ids-first pipelines
 
   #description
-  Decide which fields are hidden, searchable, sortable, facetable, or defaulted for a given table.
+  When you need to cache, batch, or delay row hydration, split the query into separate `queryIds` and `queryRows` calls. The contract stays identical.
   :::
 
   :::u-page-feature
   ---
-  icon: i-lucide-wrench
-  to: /configuration/strategies
+  icon: i-lucide-shield-check
+  to: /resource-setup/scope
   ---
   #title
-  Override execution safely
+  Multi-tenant APIs
 
   #description
-  Replace only the stage that needs customization and reuse the built-in helpers when the contract should stay the same.
-  :::
-
-  :::u-page-feature
-  ---
-  icon: i-lucide-book-open
-  to: /api/resource-methods
-  ---
-  #title
-  Read the runtime API
-
-  #description
-  Jump straight to method signatures, strategy hooks, request shapes, and public types when you need exact reference material.
+  Scope filters merge automatically into every request. Your tenancy constraint runs before any client-supplied filter and cannot be bypassed.
   :::
 
   :::u-page-feature
   ---
   icon: i-lucide-gauge
-  to: /guide/tune-performance
+  to: /performance/overview
   ---
   #title
-  Measure before overriding
+  Tunable performance
 
   #description
-  Use the performance notes and benchmark guidance to decide whether `ids`, `rows`, `facets`, or `query` is the right override.
+  Start with automatic execution. When benchmarks show a bottleneck, replace only the expensive stage using the built-in SQL helpers.
   :::
-::
 
-::u-page-section
-#title
-Use the package where table APIs usually get messy
+  :::u-page-feature
+  ---
+  icon: i-lucide-code-2
+  to: /reference/methods
+  ---
+  #title
+  Fully typed field paths
 
-  :::u-page-grid
-    ::::u-page-card
-    ---
-    class: col-span-2 md:col-span-1
-    ---
-    #title
-    Admin tables
-
-    #description
-    Reuse one request contract across filters, search bars, sorting, bulk lists, and pagination controls.
-    ::::
-
-    ::::u-page-card
-    ---
-    class: col-span-2 md:col-span-1
-    ---
-    #title
-    Faceted explorer UIs
-
-    #description
-    Add facet requests to the same contract instead of inventing a parallel API shape for filters and buckets.
-    ::::
-
-    ::::u-page-card
-    ---
-    class: col-span-2 md:col-span-1
-    ---
-    #title
-    Ids-first pipelines
-
-    #description
-    Split page selection from row hydration when caching, batching, or delayed hydration makes more sense.
-    ::::
+  #description
+  Field paths are inferred from your schema and declared relations. Typos in sort keys, filter fields, or facet paths are caught at compile time.
   :::
 ::
