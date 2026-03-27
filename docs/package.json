@@ -1,0 +1,16 @@
+{
+  "name": "drizzle-query-resource-docs",
+  "private": true,
+  "packageManager": "bun@1.3.6",
+  "scripts": {
+    "dev": "nuxt dev --extends docus",
+    "build": "nuxt build --extends docus",
+    "generate": "nuxt generate --extends docus",
+    "preview": "nuxt preview --extends docus"
+  },
+  "dependencies": {
+    "better-sqlite3": "^12.5.0",
+    "docus": "latest",
+    "nuxt": "^4.2.2"
+  }
+}
