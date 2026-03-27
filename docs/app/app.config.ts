@@ -1,14 +1,14 @@
 export default defineAppConfig({
   docus: {
-    name: 'Drizzle Query Resource',
+    name: 'drizzle resource',
     description:
-      'Schema-driven, type-safe query resources for Drizzle ORM with filtering, sorting, pagination, search, hydration, and facets.',
-    url: 'http://localhost:3000',
+      'Schema-driven, type-safe query resources for Drizzle ORM — one typed contract for filtering, sorting, pagination, search, hydration, and facets.',
+    url: 'https://drizzle-resource.vercel.app',
   },
   header: {
-    title: 'Drizzle Query Resource',
+    title: 'drizzle resource',
     logo: {
-      alt: 'Drizzle Query Resource',
+      alt: 'drizzle resource',
       light: '/logo-light.svg',
       dark: '/logo-dark.svg',
       wordmark: {
@@ -21,8 +21,8 @@ export default defineAppConfig({
   },
   ui: {
     colors: {
-      primary: 'sky',
-      neutral: 'slate',
+      primary: 'amber',
+      neutral: 'stone',
     },
     contentNavigation: {
       slots: {

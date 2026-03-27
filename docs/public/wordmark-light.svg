@@ -1,20 +1,17 @@
-<svg width="420" height="64" viewBox="0 0 420 64" fill="none" xmlns="http://www.w3.org/2000/svg">
-  <rect x="2" y="2" width="60" height="60" rx="18" fill="#F8FAFC"/>
-  <rect x="2" y="2" width="60" height="60" rx="18" stroke="#CBD5E1" stroke-width="2"/>
-  <path d="M18 21H31" stroke="#0F172A" stroke-width="3.2" stroke-linecap="round"/>
-  <path d="M18 32H31" stroke="#0F172A" stroke-width="3.2" stroke-linecap="round"/>
-  <path d="M18 43H31" stroke="#0F172A" stroke-width="3.2" stroke-linecap="round"/>
-  <path d="M34 21L43 13L52 21" stroke="#0284C7" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <path d="M43 13V35" stroke="#0284C7" stroke-width="3.2" stroke-linecap="round"/>
-  <path d="M36 41L43 50L50 41" stroke="#0284C7" stroke-width="3.2" stroke-linecap="round" stroke-linejoin="round"/>
-  <circle cx="43" cy="13" r="4.5" fill="#E0F2FE" stroke="#0284C7" stroke-width="2.4"/>
-  <circle cx="52" cy="21" r="4.5" fill="#E0F2FE" stroke="#0284C7" stroke-width="2.4"/>
-  <circle cx="43" cy="50" r="4.5" fill="#E0F2FE" stroke="#0284C7" stroke-width="2.4"/>
-  <path d="M86 19.5H114.8C123.62 19.5 130.1 25.34 130.1 34.04C130.1 42.74 123.62 48.5 114.8 48.5H86V19.5ZM97.34 28.88V39.12H113.98C117.34 39.12 119.2 37.16 119.2 34.04C119.2 30.84 117.34 28.88 113.98 28.88H97.34Z" fill="#0F172A"/>
-  <path d="M135.882 48.5V19.5H147.222V48.5H135.882Z" fill="#0F172A"/>
-  <path d="M154.658 48.5V19.5H166.598L180.558 36.04V19.5H191.418V48.5H180.198L165.518 31.12V48.5H154.658Z" fill="#0F172A"/>
-  <path d="M196.491 34.04C196.491 25.22 203.291 18.74 214.271 18.74C223.491 18.74 229.611 22.82 231.491 29.26H219.951C218.831 27.22 216.531 26.1 213.791 26.1C208.951 26.1 206.071 29.22 206.071 34.04C206.071 39.08 209.171 42.06 214.831 42.06C218.491 42.06 221.171 40.54 222.391 37.98H213.391V30.66H232.531V35.18C230.971 43.1 224.011 49.26 214.431 49.26C203.211 49.26 196.491 42.82 196.491 34.04Z" fill="#0F172A"/>
-  <path d="M252.885 48.5V19.5H264.225V39.08H282.985V48.5H252.885Z" fill="#0F172A"/>
-  <path d="M286.713 48.5V19.5H318.613V28.28H298.053V30.46H316.213V37.98H298.053V39.72H319.093V48.5H286.713Z" fill="#0F172A"/>
-  <path d="M322.599 48.5L335.479 19.5H347.619L360.499 48.5H348.519L346.819 44.42H336.119L334.419 48.5H322.599ZM339.279 36.82H343.659L341.479 31.56L339.279 36.82Z" fill="#0F172A"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="260" height="48" viewBox="0 0 260 48">
+  <defs>
+    <linearGradient id="g" x1="0" y1="0" x2="48" y2="48" gradientUnits="userSpaceOnUse">
+      <stop offset="0%" stop-color="#FCD34D"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+  </defs>
+  <!-- Icon -->
+  <rect x="2" y="2" width="44" height="44" rx="11" fill="url(#g)"/>
+  <rect x="10" y="13" width="28" height="4" rx="2" fill="white"/>
+  <rect x="10" y="21" width="20" height="4" rx="2" fill="white" fill-opacity="0.88"/>
+  <rect x="10" y="29" width="13" height="4" rx="2" fill="white" fill-opacity="0.75"/>
+  <!-- Wordmark text -->
+  <text y="24" dominant-baseline="middle" font-family="Inter, system-ui, -apple-system, sans-serif" font-size="20" letter-spacing="-0.3">
+    <tspan x="58" font-weight="700" fill="#B45309">drizzle</tspan><tspan font-weight="400" fill="#44403C"> resource</tspan>
+  </text>
 </svg>
