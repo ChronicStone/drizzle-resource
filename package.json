@@ -1,0 +1,62 @@
+{
+  "name": "drizzle-resource",
+  "version": "0.1.0",
+  "description": "Schema-driven, type-safe query resources for Drizzle ORM — filtering, sorting, pagination, search, and facets behind one typed contract",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "facets",
+    "filters",
+    "pagination",
+    "query",
+    "sorting",
+    "typescript"
+  ],
+  "files": [
+    "build",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public",
+    "provenance": true
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "bunx vitest run",
+    "compile": "tsdown && tsc --emitDeclarationOnly --declaration",
+    "build": "bun run compile"
+  },
+  "devDependencies": {
+    "drizzle-orm": "1.0.0-beta.16-ea816b6",
+    "tsdown": "^0.21.0",
+    "typescript": "5.9.3",
+    "vitest": "^3.2.4"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=1.0.0-beta"
+  },
+  "tsdown": {
+    "clean": true,
+    "dts": true,
+    "entry": [
+      "./index.ts"
+    ],
+    "fixedExtension": false,
+    "format": "esm",
+    "minify": "dce-only",
+    "outDir": "./build",
+    "sourcemaps": false,
+    "target": "esnext",
+    "treeshake": false
+  }
+}
