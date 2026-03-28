@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { getHighlighter, bundledThemes } from "shiki";
+import { codeToHtml } from "shiki";
 import { usePreferredDark } from "@vueuse/core";
 
 const shikiLightTheme = "catppuccin-latte";
@@ -67,28 +67,23 @@ const rawResourceCode = [
   "})",
 ].join("\n");
 
-const highlighter = await getHighlighter({
-  themes: [bundledThemes[shikiLightTheme], bundledThemes[shikiDarkTheme]],
-  langs: ["ts"],
-});
-
 const heroHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiLightTheme }),
+  await codeToHtml(rawHeroCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const heroHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiDarkTheme }),
+  await codeToHtml(rawHeroCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 const resourceHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiLightTheme }),
+  await codeToHtml(rawResourceCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const resourceHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiDarkTheme }),
+  await codeToHtml(rawResourceCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 const requestHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiLightTheme }),
+  await codeToHtml(rawRequestCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const requestHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiDarkTheme }),
+  await codeToHtml(rawRequestCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 
 const colorMode = useColorMode();
