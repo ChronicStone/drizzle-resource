@@ -23,12 +23,8 @@ const collectionName = computed(() => (isEnabled.value ? `docs_${locale.value}` 
 const faviconHref = computed(() => appConfig.header?.logo?.favicon || "/favicon.svg");
 
 useHead({
-  meta: [
-    { name: "viewport", content: "width=device-width, initial-scale=1" },
-  ],
-  link: [
-    { rel: "icon", href: faviconHref },
-  ],
+  meta: [{ name: "viewport", content: "width=device-width, initial-scale=1" }],
+  link: [{ rel: "icon", href: faviconHref }],
   htmlAttrs: {
     lang,
     dir,

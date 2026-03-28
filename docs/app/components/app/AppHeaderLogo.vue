@@ -3,7 +3,9 @@ const appConfig = useAppConfig();
 const { hasLogo, headerLightUrl, headerDarkUrl, contextMenuItems } = useLogoAssets();
 const lightSrc = computed(() => headerLightUrl.value || headerDarkUrl.value);
 const darkSrc = computed(() => headerDarkUrl.value || headerLightUrl.value);
-const hasDistinctModes = computed(() => lightSrc.value && darkSrc.value && lightSrc.value !== darkSrc.value);
+const hasDistinctModes = computed(
+  () => lightSrc.value && darkSrc.value && lightSrc.value !== darkSrc.value,
+);
 </script>
 
 <template>

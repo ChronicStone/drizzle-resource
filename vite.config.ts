@@ -1,9 +1,18 @@
 import { defineConfig } from "vite-plus";
 
-const ignorePatterns = [
+const lintIgnorePatterns = [
   "build/**",
   "coverage/**",
   "docs/**",
+  "docs/.nuxt/**",
+  "docs/.output/**",
+  "docs/node_modules/**",
+  "node_modules/**",
+];
+
+const formatIgnorePatterns = [
+  "build/**",
+  "coverage/**",
   "docs/.nuxt/**",
   "docs/.output/**",
   "docs/node_modules/**",
@@ -28,7 +37,7 @@ export default defineConfig({
     env: {
       builtin: true,
     },
-    ignorePatterns,
+    ignorePatterns: lintIgnorePatterns,
     options: {
       denyWarnings: true,
       typeAware: true,
@@ -36,7 +45,7 @@ export default defineConfig({
     },
   },
   fmt: {
-    ignorePatterns,
+    ignorePatterns: formatIgnorePatterns,
   },
   pack: {
     clean: true,
