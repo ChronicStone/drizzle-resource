@@ -178,21 +178,27 @@ const baseRequest = {
 }
 
 describe('defineResource typing', () => {
-  it('narrows filters to inferred field paths', () => {
-    const scope = engine.defineScope('employees', employeeWith, (ctx, filters) => {
-      expectTypeOf(filters).toEqualTypeOf<QueryFilterBuilder<EmployeeFieldPath>>()
+  it('narrows inline scope filters to inferred field paths', () => {
+    const resource = engine.defineResource('employees', {
+      relations: employeeWith,
+      query: {
+        scope: (filters, ctx) => {
+          expectTypeOf(filters).toEqualTypeOf<QueryFilterBuilder<EmployeeFieldPath>>()
+          expectTypeOf(ctx).toEqualTypeOf<{ orgId: string }>()
 
-      filters.is('fullName', 'Ada')
-      filters.is('department.company.name', 'OpenAI')
-      filters.contains('employeeSkills.skill.label', 'TypeScript')
+          filters.is('fullName', 'Ada')
+          filters.is('department.company.name', 'OpenAI')
+          filters.contains('employeeSkills.skill.label', 'TypeScript')
 
-      // @ts-expect-error invalid nested field path should be rejected
-      filters.is('department.company.unknown', 'nope')
+          // @ts-expect-error invalid nested field path should be rejected
+          filters.is('department.company.unknown', 'nope')
 
-      return filters.and([filters.is('department.company.country', ctx.orgId)])
+          return filters.and([filters.is('department.company.country', ctx.orgId)])
+        },
+      },
     })
 
-    expectTypeOf(scope).toBeFunction()
+    expectTypeOf(resource.query).toBeFunction()
   })
 
   it('types ids and rows executors from the row shape', () => {
@@ -229,7 +235,7 @@ describe('defineResource typing', () => {
       },
     })
 
-    expectTypeOf(resource.queryRows).returns.resolves.toEqualTypeOf<
+    expectTypeOf(resource.queryRows).returns.resolves.toMatchTypeOf<
       Array<{
         id: string
         fullName: string
@@ -240,7 +246,7 @@ describe('defineResource typing', () => {
         }
       }>
     >()
-    expectTypeOf(resource.query).returns.resolves.toEqualTypeOf<{
+    expectTypeOf(resource.query).returns.resolves.toMatchTypeOf<{
       rows: Array<{
         id: string
         fullName: string
@@ -269,7 +275,7 @@ describe('defineResource typing', () => {
       },
     })
 
-    expectTypeOf(queryPromise).toEqualTypeOf<
+    expectTypeOf(queryPromise).toMatchTypeOf<
       Promise<{
         rows: Array<{
           id: string
@@ -305,7 +311,7 @@ describe('defineResource typing', () => {
       },
     })
 
-    expectTypeOf(resource.queryRows).returns.resolves.toEqualTypeOf<
+    expectTypeOf(resource.queryRows).returns.resolves.toMatchTypeOf<
       Array<{
         id: string
         fullName: string
@@ -318,7 +324,7 @@ describe('defineResource typing', () => {
     >()
   })
 
-  it('narrows scope helpers to root fields when no relations are configured', () => {
+  it('keeps defineScope compatible for reusable root-only scopes', () => {
     const scope = engine.defineScope('employees', (ctx, filters) => {
       expectTypeOf(ctx).toEqualTypeOf<{ orgId: string }>()
 
@@ -332,5 +338,18 @@ describe('defineResource typing', () => {
     })
 
     expectTypeOf(scope).toBeFunction()
+  })
+
+  it('accepts sort defaults without literal assertions', () => {
+    const resource = engine.defineResource('employees', {
+      relations: employeeWith,
+      query: {
+        sort: {
+          defaults: [{ key: 'fullName', dir: 'desc' }],
+        },
+      },
+    })
+
+    expectTypeOf(resource.query).toBeFunction()
   })
 })

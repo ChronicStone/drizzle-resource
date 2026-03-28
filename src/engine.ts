@@ -135,7 +135,7 @@ async function executeFacetsForResource(
  *     },
  *   },
  *   query: {
- *     scope: (ctx, filters) => filters.and([filters.is('department.company.country', ctx.orgId)]),
+ *     scope: (filters, ctx) => filters.and([filters.is('department.company.country', ctx.orgId)]),
  *   },
  * })
  * ```
@@ -154,10 +154,29 @@ export function createQueryEngine<
     TEngineContext
   > {
     function defineScope(root: any, relationsOrHandler: any, maybeHandler?: any) {
-      if (typeof relationsOrHandler === 'function') return relationsOrHandler
-      return maybeHandler
+      const handler = typeof relationsOrHandler === 'function' ? relationsOrHandler : maybeHandler
+      return (filters: any, context: any) => handler(context, filters)
     }
 
+    function defineResource<
+      TRoot extends QueryRootKey<TDb, TSchema>,
+      TContext extends TEngineContext = TEngineContext,
+      TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, undefined>,
+    >(
+      root: TRoot,
+      options: DefineResourceOptions<
+        TDb,
+        TSchema,
+        TRelations,
+        TRoot,
+        undefined,
+        TEngineContext,
+        TContext,
+        TRow
+      > & {
+        relations?: undefined
+      },
+    ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>
     function defineResource<
       TRoot extends QueryRootKey<TDb, TSchema>,
       const TRelationsConfig extends QueryRelationsConfig<TRelations, TRoot>,
@@ -184,25 +203,6 @@ export function createQueryEngine<
         relations: TRelationsConfig
       },
     ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>
-    function defineResource<
-      TRoot extends QueryRootKey<TDb, TSchema>,
-      TContext extends TEngineContext = TEngineContext,
-      TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, undefined>,
-    >(
-      root: TRoot,
-      options: DefineResourceOptions<
-        TDb,
-        TSchema,
-        TRelations,
-        TRoot,
-        undefined,
-        TEngineContext,
-        TContext,
-        TRow
-      > & {
-        relations?: undefined
-      },
-    ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>
     function defineResource(root: any, options: any): any {
       const relationsClause = options.relations as any
       const fieldRegistry = buildFieldRegistry(config, root, relationsClause, {
@@ -373,7 +373,7 @@ export function createQueryEngine<
       }
 
       function prepareRequest(request: QueryRequest, context: any) {
-        const scopedFilters = options.query?.scope?.(context, filterBuilder)
+        const scopedFilters = options.query?.scope?.(filterBuilder, context)
         const normalizedRequest = normalizeRequest(
           {
             ...request,

@@ -32,7 +32,7 @@ function condition<TField extends string>(
 /**
  * Create a small typed DSL for building `QueryFilterNode` trees.
  *
- * This is mainly useful inside `query.scope` handlers and tests:
+ * This is mainly useful inside `query.scope(filters, context)` handlers and tests:
  *
  * ```ts
  * const filters = createQueryFilterBuilder<'status' | 'createdAt'>()

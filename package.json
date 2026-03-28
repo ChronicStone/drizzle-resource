@@ -2,6 +2,7 @@
   "name": "drizzle-resource",
   "version": "0.1.0",
   "description": "Schema-driven, type-safe query resources for Drizzle ORM — filtering, sorting, pagination, search, and facets behind one typed contract",
+  "packageManager": "bun@1.3.6",
   "keywords": [
     "drizzle",
     "drizzle-orm",
