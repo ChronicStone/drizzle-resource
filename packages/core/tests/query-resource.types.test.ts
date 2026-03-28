@@ -1,4 +1,4 @@
-import { describe, expectTypeOf, it } from "vitest";
+import { describe, expectTypeOf, it } from "vite-plus/test";
 import { integer, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { defineRelationsPart } from "drizzle-orm";
 
@@ -178,11 +178,7 @@ const baseRequest = {
     fields: [],
   },
   context: {},
-  filters: {
-    type: "group" as const,
-    combinator: "and" as const,
-    children: [],
-  },
+  filters: [],
 };
 
 describe("defineResource typing", () => {

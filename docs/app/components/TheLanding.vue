@@ -19,11 +19,8 @@ const rawHeroCode = [
   "    pagination: { pageIndex: 1, pageSize: 25 },",
   "    sorting:    [{ key: 'createdAt', dir: 'desc' }],",
   "    search:     { value: 'laptop', fields: [] },",
-  "    filters: {",
-  "      type: 'group', combinator: 'and',",
-  "      children: [{ type: 'condition', key: 'status',",
-  "        operator: 'isAnyOf', value: ['pending', 'processing'] }],",
-  "    },",
+  "    filters: [{ type: 'condition', key: 'status',",
+  "      operator: 'isAnyOf', value: ['pending', 'processing'] }],",
   "    facets: [{ key: 'status', mode: 'exclude-self', limit: 10 }],",
   "  },",
   "})",
@@ -36,9 +33,7 @@ const rawRequestCode = [
   "    pagination: { pageIndex: 1, pageSize: 25 },",
   "    sorting:    [{ key: 'customer.name', dir: 'asc' }],",
   "    search:     { value: 'laptop', fields: [] },",
-  "    filters: {",
-  "      type: 'group', combinator: 'and',",
-  "      children: [{",
+  "    filters: [{",
   "        type: 'condition',",
   "        key: 'orderLines.product.category',",
   "        operator: 'isAnyOf',",
@@ -49,7 +44,6 @@ const rawRequestCode = [
   "        operator: 'is',",
   "        value: 'FR',",
   "      }],",
-  "    },",
   "    facets: [{ key: 'orderLines.product.category', mode: 'exclude-self', limit: 10 }],",
   "  },",
   "})",
@@ -390,5 +384,4 @@ const features = [
   font-size: 0.875rem;
   line-height: 1.7;
 }
-
 </style>

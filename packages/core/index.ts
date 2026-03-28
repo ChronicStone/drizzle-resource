@@ -18,6 +18,8 @@ export type {
   QueryFacetsResponse,
   QueryFilterBuilder,
   QueryFilterCondition,
+  QueryFilterOperator,
+  QueryFilters,
   QueryFilterGroup,
   QueryFilterInput,
   QueryFilterNode,

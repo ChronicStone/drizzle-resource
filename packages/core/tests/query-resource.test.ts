@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { describe, expect, it, vi } from "vite-plus/test";
 import { integer, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { defineRelationsPart } from "drizzle-orm";
 
@@ -123,11 +123,7 @@ describe("defineResource", () => {
       fields: [],
     },
     context: {},
-    filters: {
-      type: "group",
-      combinator: "and",
-      children: [],
-    },
+    filters: [],
   };
 
   it("merges scope filters and defaults empty search fields", async () => {
@@ -226,18 +222,14 @@ describe("defineResource", () => {
           value: "ada",
           fields: [],
         },
-        filters: {
-          type: "group",
-          combinator: "and",
-          children: [
-            {
-              type: "condition",
-              key: "employeeSkills.skill.label",
-              operator: "contains",
-              value: "typescript",
-            },
-          ],
-        },
+        filters: [
+          {
+            type: "condition",
+            key: "employeeSkills.skill.label",
+            operator: "contains",
+            value: "typescript",
+          },
+        ],
       },
       context: {
         orgId: "France",
@@ -246,10 +238,8 @@ describe("defineResource", () => {
 
     expect(capturedRequest).toBeDefined();
     expect(capturedRequest?.search.fields).toEqual(["fullName", "department.company.name"]);
-    expect(capturedRequest?.filters.type).toBe("group");
-    expect(capturedRequest?.filters.combinator).toBe("and");
-    expect(capturedRequest?.filters.children).toHaveLength(2);
-    expect(capturedRequest?.filters.children[0]).toEqual({
+    expect(capturedRequest?.filters).toHaveLength(2);
+    expect(capturedRequest?.filters[0]).toEqual({
       type: "group",
       combinator: "and",
       children: [
@@ -543,18 +533,14 @@ describe("defineResource", () => {
       resource.query({
         request: {
           ...baseRequest,
-          filters: {
-            type: "group",
-            combinator: "and",
-            children: [
-              {
-                type: "condition",
-                key: "unknown",
-                operator: "is",
-                value: "Ada",
-              },
-            ],
-          },
+          filters: [
+            {
+              type: "condition",
+              key: "unknown",
+              operator: "is",
+              value: "Ada",
+            },
+          ],
         },
       }),
     ).rejects.toThrow('Unknown filter field "unknown" for resource "employees"');
@@ -614,18 +600,14 @@ describe("defineResource", () => {
       resource.query({
         request: {
           ...baseRequest,
-          filters: {
-            type: "group",
-            combinator: "and",
-            children: [
-              {
-                type: "condition",
-                key: "email",
-                operator: "contains",
-                value: "@example.com",
-              },
-            ],
-          },
+          filters: [
+            {
+              type: "condition",
+              key: "email",
+              operator: "contains",
+              value: "@example.com",
+            },
+          ],
         },
       }),
     ).rejects.toThrow('Unknown filter field "email" for resource "employees"');
