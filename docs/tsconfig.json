@@ -1,9 +1,4 @@
 {
   "extends": "./.nuxt/tsconfig.json",
-  "compilerOptions": {
-    "baseUrl": ".",
-    "paths": {
-      "drizzle-resource": ["../index.ts"]
-    }
-  }
+  "compilerOptions": {}
 }

@@ -10,6 +10,7 @@ import type {
   QueryFacetRequest,
   QueryFacetsResponse,
   QueryFilterCondition,
+  QueryFilterGroup,
   QueryFilterInput,
   QueryFilterNode,
   QueryRelationsConfig,
@@ -45,17 +46,35 @@ function normalizeScopeInput<TField extends string>(
   return input;
 }
 
+export function normalizeFilters<TField extends string>(
+  filters: QueryFilterInput<TField>,
+): QueryFilterGroup<TField> {
+  const normalized = normalizeScopeInput(filters);
+  if (!normalized) {
+    return {
+      type: "group",
+      combinator: "and",
+      children: [],
+    };
+  }
+
+  return normalized.type === "group" && normalized.combinator === "and"
+    ? normalized
+    : {
+        type: "group",
+        combinator: "and",
+        children: [normalized],
+      };
+}
+
 function mergeScopeFilters<TField extends string>(
   scopeFilters: QueryFilterInput<TField>,
   requestFilters: QueryRequest["filters"],
 ): QueryRequest["filters"] {
+  const requestChildren = [...normalizeFilters(requestFilters).children];
   const normalizedScope = normalizeScopeInput(scopeFilters);
-  if (!normalizedScope) return requestFilters;
-  return {
-    type: "group",
-    combinator: "and",
-    children: [normalizedScope as QueryFilterNode, requestFilters],
-  };
+  if (!normalizedScope) return requestChildren;
+  return [normalizedScope, ...requestChildren];
 }
 
 function eqColumns(sourceColumns: any[], targetColumns: any[]) {
@@ -74,12 +93,16 @@ function collectConditionFields(node: QueryFilterNode, fields: string[]) {
   for (const child of node.children) collectConditionFields(child, fields);
 }
 
+function collectConditionFieldsFromFilters(filters: QueryRequest["filters"], fields: string[]) {
+  for (const node of filters) collectConditionFields(node, fields);
+}
+
 function buildOuterJoins(
   resource: QueryResource<any, any, any, any, any, any, any>,
   request: QueryRequest,
 ) {
   const requestedFields: string[] = [];
-  collectConditionFields(request.filters, requestedFields);
+  collectConditionFieldsFromFilters(request.filters, requestedFields);
   requestedFields.push(...request.search.fields, ...request.sorting.map((rule) => rule.key));
 
   const relationSteps = new Map<string, FieldRegistryRelationStep>();
@@ -96,7 +119,7 @@ function buildOuterJoins(
 
 function getJoinPlanCacheKey(request: QueryRequest) {
   const requestedFields: string[] = [];
-  collectConditionFields(request.filters, requestedFields);
+  collectConditionFieldsFromFilters(request.filters, requestedFields);
   requestedFields.push(...request.search.fields, ...request.sorting.map((rule) => rule.key));
   requestedFields.sort();
   return requestedFields.join("|");
@@ -133,17 +156,17 @@ function stripFacetKeyFromNode(
 function applyFacetMode(request: QueryRequest, facet: QueryFacetRequest): QueryRequest {
   if (facet.mode !== "exclude-self") return request;
 
-  const strippedFilters = stripFacetKeyFromNode(request.filters, facet.key);
+  const normalizedFilters = normalizeFilters(request.filters);
+  const strippedFilters = stripFacetKeyFromNode(normalizedFilters, facet.key);
 
   return {
     ...request,
-    filters: (strippedFilters && strippedFilters.type === "group"
-      ? strippedFilters
-      : undefined) ?? {
-      type: "group",
-      combinator: "and",
-      children: [],
-    },
+    filters:
+      strippedFilters && strippedFilters.type === "group"
+        ? strippedFilters.children
+        : strippedFilters
+          ? [strippedFilters]
+          : [],
   };
 }
 
@@ -499,7 +522,7 @@ export function createQueryResourceUtils<
 
   function buildWhereClause(request: QueryRequest) {
     const searchPredicate = compileSearch(request.search);
-    const filterPredicate = compileFilterNode(request.filters);
+    const filterPredicate = compileFilterNode(normalizeFilters(request.filters));
     return and(searchPredicate, filterPredicate);
   }
 
@@ -754,6 +777,7 @@ export function createQueryResourceUtils<
     normalizeString,
     compileCondition,
     compileFilterNode,
+    normalizeFilters,
     compileSearch,
     compileOrderBy,
     buildWhereClause,

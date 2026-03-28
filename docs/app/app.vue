@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import type { ContentNavigationItem, PageCollections } from "@nuxt/content";
 import * as nuxtUiLocales from "@nuxt/ui/locale";
-import { transformNavigation } from "../node_modules/docus/app/utils/navigation";
-import { useSubNavigation } from "../node_modules/docus/app/composables/useSubNavigation";
+import { useSubNavigation } from "docus/app/composables/useSubNavigation";
+import { transformNavigation } from "docus/app/utils/navigation";
 
 const appConfig = useAppConfig();
 const { seo } = appConfig;
@@ -23,12 +23,8 @@ const collectionName = computed(() => (isEnabled.value ? `docs_${locale.value}` 
 const faviconHref = computed(() => appConfig.header?.logo?.favicon || "/favicon.svg");
 
 useHead({
-  meta: [
-    { name: "viewport", content: "width=device-width, initial-scale=1" },
-  ],
-  link: [
-    { rel: "icon", href: faviconHref },
-  ],
+  meta: [{ name: "viewport", content: "width=device-width, initial-scale=1" }],
+  link: [{ rel: "icon", href: faviconHref }],
   htmlAttrs: {
     lang,
     dir,
@@ -50,7 +46,7 @@ if (isEnabled.value) {
   onMounted(() => {
     const currentLocale = route.path.split("/")[1];
 
-    if (!locales.some((locale) => locale.code === currentLocale)) {
+    if (!locales.some((item) => item.code === currentLocale)) {
       return navigateTo(switchLocalePath(defaultLocale) as string);
     }
   });
