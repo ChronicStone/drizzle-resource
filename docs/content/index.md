@@ -36,27 +36,11 @@ seo:
 
 <div class="flex flex-wrap items-center gap-3">
 
-## ::::u-button
-
-color: primary
-size: xl
-to: /getting-started/quick-start
-trailing-icon: i-lucide-arrow-right
-
----
-
+::::u-button{color="primary" size="xl" to="/getting-started/quick-start" trailing-icon="i-lucide-arrow-right"}
 Get started
 ::::
 
-## ::::u-button
-
-color: neutral
-size: xl
-to: /getting-started/introduction
-variant: outline
-
----
-
+::::u-button{color="neutral" size="xl" to="/getting-started/introduction" variant="outline"}
 Introduction
 ::::
 
@@ -108,7 +92,8 @@ const result = await orders.query({
 </div>
 
 ::landing-split{class="landing-two-col landing-two-col--problem"}
-:::landing-split-left{class="landing-pipeline-card"}
+:::landing-split-left
+::::u-page-card{:spotlight="true" class="landing-pipeline-card"}
 
 <div>
   <p class="mb-1 text-[11px] font-semibold uppercase tracking-widest text-primary">Staged pipeline</p>
@@ -155,7 +140,7 @@ const result = await orders.query({
     </div>
   </div>
 </div>
-
+::::
 :::
 
 :::landing-split-right{class="landing-code-panel"}
@@ -234,38 +219,30 @@ await orders.query({
   <h2 class="text-3xl font-bold sm:text-4xl">Where it fits in your stack</h2>
 </div>
 
-::div{class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"}
-<a class="landing-card" href="/getting-started/introduction">
+:::div{class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"}
+::::u-page-card{:spotlight="true" to="/getting-started/introduction" title="Admin & data tables" description="One request shape drives filter bars, column sorting, search, pagination, and row selection. No bespoke API per table."}
+::::
 
-  <h3>Admin &amp; data tables</h3>
-  <p>One request shape drives filter bars, column sorting, search, pagination, and row selection. No bespoke API per table.</p>
-</a>
-<a class="landing-card" href="/query-contract/facets">
-  <h3>Faceted explorer UIs</h3>
-  <p>Facet requests travel in the same payload as the main query. No parallel API needed.</p>
-</a>
-<a class="landing-card" href="/resource-setup/strategies">
-  <h3>IDs-first pipelines</h3>
-  <p>Cache or delay row hydration by splitting into <code>queryIds</code> and <code>queryRows</code>. The contract stays identical.</p>
-</a>
-<a class="landing-card" href="/resource-setup/scope">
-  <h3>Multi-tenant APIs</h3>
-  <p>Scope filters merge before any client filter and cannot be bypassed. Tenancy is a structural guarantee.</p>
-</a>
-<a class="landing-card" href="/performance/overview">
-  <h3>Tunable performance</h3>
-  <p>Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck.</p>
-</a>
-<a class="landing-card" href="/reference/methods">
-  <h3>Fully typed field paths</h3>
-  <p>Field paths inferred from your schema and relations. Typos in sort keys or filter fields are compile-time errors.</p>
-</a>
-::
+::::u-page-card{:spotlight="true" to="/query-contract/facets" title="Faceted explorer UIs" description="Facet requests travel in the same payload as the main query. No parallel API needed."}
+::::
+
+::::u-page-card{:spotlight="true" to="/resource-setup/strategies" title="IDs-first pipelines" description="Cache or delay row hydration by splitting into queryIds and queryRows. The contract stays identical."}
+::::
+
+::::u-page-card{:spotlight="true" to="/resource-setup/scope" title="Multi-tenant APIs" description="Scope filters merge before any client filter and cannot be bypassed. Tenancy is a structural guarantee."}
+::::
+
+::::u-page-card{:spotlight="true" to="/performance/overview" title="Tunable performance" description="Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck."}
+::::
+
+::::u-page-card{:spotlight="true" to="/reference/methods" title="Fully typed field paths" description="Field paths inferred from your schema and relations. Typos in sort keys or filter fields are compile-time errors."}
+::::
+:::
 ::
 
 ::div{class="landing-section-pad pb-28 pt-8"}
 
-:::div{class="landing-cta"}
+:::u-page-card{:spotlight="true" class="landing-cta"}
 
 <h2 class="mb-3 text-3xl font-bold text-stone-900 dark:text-white sm:text-4xl">
   Ready to standardize<br />your table APIs?
@@ -274,17 +251,13 @@ await orders.query({
   Define your engine, add a resource, run your first query.
 </p>
 
-## ::::u-button
+<div class="flex justify-center">
 
-color: primary
-size: xl
-to: /getting-started/quick-start
-trailing-icon: i-lucide-arrow-right
-
----
-
+::::u-button{color="primary" size="xl" to="/getting-started/quick-start" trailing-icon="i-lucide-arrow-right"}
 Quick Start
 ::::
+
+</div>
 
 :::
 

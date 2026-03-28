@@ -1,33 +1,14 @@
 # Agent Rules
 
-## Commit Messages
+## Commits
 
-- Use Conventional Commits for every commit.
-- Always include a scope: `type(scope): subject`
-- Do not create commits without a scope.
-- Keep the subject short, imperative, and lowercase where natural.
-- Do not end the subject with a period.
+- Follow [Conventional Commits](https://www.conventionalcommits.org/en/v1.0.0/).
+- Always use a scope: `type(scope): subject`
+- Keep subjects short, imperative, and without a trailing period.
+- Prefer narrow scopes such as `core`, `docs`, `landing`, `filters`, `twoslash`, `release`, `ci`, or `monorepo`.
 
-## Preferred Types
+## Docs
 
-- `feat(scope): ...` for new user-facing features
-- `fix(scope): ...` for bug fixes
-- `docs(scope): ...` for documentation content or docs UX changes
-- `refactor(scope): ...` for structural code changes without behavior changes
-- `chore(scope): ...` for tooling, config, release, or maintenance work
-- `ci(scope): ...` for workflow and CI changes
-- `test(scope): ...` for tests only
-
-## Scope Guidance
-
-- Use package or domain scopes such as `core`, `docs`, `release`, `ci`, `monorepo`, `filters`, `twoslash`, or `landing`
-- Prefer the narrowest scope that still makes the commit understandable
-- Merge commits and release commits should also follow the same `type(scope): subject` format
-
-## Examples
-
-- `feat(filters): simplify top-level filter requests`
-- `fix(docs): restore landing code block alignment`
-- `docs(twoslash): add type-safety guide`
-- `ci(release): skip publish workflow when no changeset exists`
-- `refactor(monorepo): split packages behind a single published entrypoint`
+- Use Twoslash for code examples when setting up or updating docs examples.
+- Make sure Twoslash examples actually compile and do not introduce dev server errors.
+- When docs UI or layout changes matter, use the browser agent to verify the rendered result.

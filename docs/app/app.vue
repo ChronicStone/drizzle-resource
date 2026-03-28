@@ -269,6 +269,10 @@ const { subNavigationMode } = useSubNavigation(navigation);
   text-align: center;
 }
 
+.landing-cta [data-slot="body"] {
+  padding: 0;
+}
+
 .dark .landing-cta {
   border-color: color-mix(in oklab, var(--ui-primary) 18%, transparent);
   background: color-mix(in oklab, var(--ui-primary) 6%, var(--ui-bg) 94%);
