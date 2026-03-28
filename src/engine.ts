@@ -12,24 +12,23 @@ import type {
   QueryResponse,
   QueryResource,
   QueryRootKey,
-  QueryWith,
-} from './types.js'
-import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from './sql.js'
-import { createQueryFilterBuilder } from './filters.js'
+} from "./types.js";
+import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
+import { createQueryFilterBuilder } from "./filters.js";
 
 function normalizeRequest(
   request: QueryRequest,
   defaultSearchFields: readonly string[],
   defaults?: {
-    pagination?: Partial<QueryRequest['pagination']>
-    sorting?: Readonly<QueryRequest['sorting']>
+    pagination?: Partial<QueryRequest["pagination"]>;
+    sorting?: Readonly<QueryRequest["sorting"]>;
   },
 ): QueryRequest {
   const searchFields =
-    request.search.fields.length > 0 ? request.search.fields : defaultSearchFields
-  const defaultPageIndex = defaults?.pagination?.pageIndex ?? 1
-  const defaultPageSize = defaults?.pagination?.pageSize ?? 25
-  const sorting = request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])]
+    request.search.fields.length > 0 ? request.search.fields : defaultSearchFields;
+  const defaultPageIndex = defaults?.pagination?.pageIndex ?? 1;
+  const defaultPageSize = defaults?.pagination?.pageSize ?? 25;
+  const sorting = request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
 
   return {
     ...request,
@@ -42,43 +41,45 @@ function normalizeRequest(
       ...request.search,
       fields: [...searchFields],
     },
-  }
+  };
 }
 
 function assertKnownFields(
   resource: QueryResource<any, any, any, any, any, any, any>,
   request: QueryRequest,
 ) {
-  const invalidSort = request.sorting.find(({ key }) => !resource.fields.has(key))
+  const invalidSort = request.sorting.find(({ key }) => !resource.fields.has(key));
   if (invalidSort) {
     throw new Error(
       `Unknown sorting field "${invalidSort.key}" for resource "${String(resource.key)}"`,
-    )
+    );
   }
 
   for (const field of request.search.fields) {
     if (!resource.queryConfig.search.allowed.has(field as never)) {
-      throw new Error(`Unknown search field "${field}" for resource "${String(resource.key)}"`)
+      throw new Error(`Unknown search field "${field}" for resource "${String(resource.key)}"`);
     }
   }
 
-  const stack: QueryFilterNode[] = [request.filters]
+  const stack: QueryFilterNode[] = [request.filters];
   while (stack.length > 0) {
-    const node = stack.pop()!
-    if (node.type === 'condition') {
+    const node = stack.pop()!;
+    if (node.type === "condition") {
       if (!resource.fields.has(node.key)) {
-        throw new Error(`Unknown filter field "${node.key}" for resource "${String(resource.key)}"`)
+        throw new Error(
+          `Unknown filter field "${node.key}" for resource "${String(resource.key)}"`,
+        );
       }
-      continue
+      continue;
     }
-    stack.push(...node.children)
+    stack.push(...node.children);
   }
 }
 
 function resolveQueryStrategy(
   options: DefineResourceOptions<any, any, any, any, any, any, any, any>,
 ) {
-  return options.strategy?.query
+  return options.strategy?.query;
 }
 
 function assertKnownFacetFields(
@@ -87,7 +88,7 @@ function assertKnownFacetFields(
 ) {
   for (const facet of facets) {
     if (!resource.queryConfig.facets.allowed.has(facet.key as never)) {
-      throw new Error(`Unknown facet field "${facet.key}" for resource "${String(resource.key)}"`)
+      throw new Error(`Unknown facet field "${facet.key}" for resource "${String(resource.key)}"`);
     }
   }
 }
@@ -100,7 +101,7 @@ async function executeFacetsForResource(
   facets: QueryFacetRequest[],
   context?: unknown,
 ): Promise<QueryFacetsResponse> {
-  assertKnownFacetFields(resource, facets)
+  assertKnownFacetFields(resource, facets);
 
   if (options.strategy?.facets) {
     return options.strategy.facets({
@@ -109,13 +110,13 @@ async function executeFacetsForResource(
       context,
       resource,
       utils,
-    })
+    });
   }
 
   return utils.resolveFacets({
     request,
     facets,
-  })
+  });
 }
 
 /**
@@ -141,9 +142,9 @@ async function executeFacetsForResource(
  * ```
  */
 export function createQueryEngine<
-  TDb extends QueryEngineConfig['db'],
-  TSchema extends QueryEngineConfig['schema'],
-  TRelations extends QueryEngineConfig['relations'],
+  TDb extends QueryEngineConfig["db"],
+  TSchema extends QueryEngineConfig["schema"],
+  TRelations extends QueryEngineConfig["relations"],
 >(
   config: QueryEngineConfig<TDb, TSchema, TRelations>,
 ): QueryEngine<TDb, TSchema, TRelations, Record<string, unknown>> {
@@ -154,8 +155,8 @@ export function createQueryEngine<
     TEngineContext
   > {
     function defineScope(root: any, relationsOrHandler: any, maybeHandler?: any) {
-      const handler = typeof relationsOrHandler === 'function' ? relationsOrHandler : maybeHandler
-      return (filters: any, context: any) => handler(context, filters)
+      const handler = typeof relationsOrHandler === "function" ? relationsOrHandler : maybeHandler;
+      return (filters: any, context: any) => handler(context, filters);
     }
 
     function defineResource<
@@ -174,9 +175,9 @@ export function createQueryEngine<
         TContext,
         TRow
       > & {
-        relations?: undefined
+        relations?: undefined;
       },
-    ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>
+    ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>;
     function defineResource<
       TRoot extends QueryRootKey<TDb, TSchema>,
       const TRelationsConfig extends QueryRelationsConfig<TRelations, TRoot>,
@@ -200,41 +201,41 @@ export function createQueryEngine<
         TContext,
         TRow
       > & {
-        relations: TRelationsConfig
+        relations: TRelationsConfig;
       },
-    ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>
+    ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>;
     function defineResource(root: any, options: any): any {
-      const relationsClause = options.relations as any
+      const relationsClause = options.relations as any;
       const fieldRegistry = buildFieldRegistry(config, root, relationsClause, {
         hidden: options.query?.filters?.hidden,
         nonFilterable: options.query?.filters?.disabled,
         nonSortable: options.query?.sort?.disabled,
-      })
-      const allFields = Array.from(fieldRegistry.keys()).sort()
+      });
+      const allFields = Array.from(fieldRegistry.keys()).sort();
       const allowedSearchFields = new Set(
         (options.query?.search?.allowed ?? allFields).filter((field: any) =>
           fieldRegistry.has(field),
         ),
-      ) as Set<any>
+      ) as Set<any>;
       const defaultFields = (
         options.query?.search?.defaults ?? Array.from(allowedSearchFields)
-      ).filter((field: any) => allowedSearchFields.has(field))
+      ).filter((field: any) => allowedSearchFields.has(field));
       const allowedFacetFields = new Set(
         (options.query?.facets?.allowed ?? allFields).filter((field: any) =>
           fieldRegistry.has(field),
         ),
-      ) as Set<any>
+      ) as Set<any>;
       const disabledSortFields = new Set(
         (options.query?.sort?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
-      ) as Set<any>
+      ) as Set<any>;
       const hiddenFilterFields = new Set(
         (options.query?.filters?.hidden ?? []).filter((field: any) => fieldRegistry.has(field)),
-      ) as Set<any>
+      ) as Set<any>;
       const disabledFilterFields = new Set(
         (options.query?.filters?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
-      ) as Set<any>
+      ) as Set<any>;
 
-      const filterBuilder = createQueryFilterBuilder<any>()
+      const filterBuilder = createQueryFilterBuilder<any>();
 
       const resource: QueryResource<any, any, any, any, any, any, any> = {
         key: root,
@@ -264,16 +265,16 @@ export function createQueryEngine<
           request,
           context,
         }: {
-          request: QueryRequest
-          context?: any
+          request: QueryRequest;
+          context?: any;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context)
+          const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(
             config,
             resource as QueryResource<any, any, any, any, any, any, any>,
-          )
-          const customQueryStrategy = resolveQueryStrategy(options)
-          let response: QueryResponse<any>
+          );
+          const customQueryStrategy = resolveQueryStrategy(options);
+          let response: QueryResponse<any>;
 
           if (customQueryStrategy) {
             response = await customQueryStrategy({
@@ -281,18 +282,18 @@ export function createQueryEngine<
               context,
               resource,
               utils,
-            })
+            });
           } else {
-            const idsResponse = await executeIds(normalizedRequest, context, utils)
+            const idsResponse = await executeIds(normalizedRequest, context, utils);
             const rows =
               idsResponse.ids.length > 0
                 ? await executeRows(normalizedRequest, idsResponse.ids, context, utils)
-                : []
+                : [];
 
             response = {
               rows,
               rowCount: idsResponse.rowCount,
-            }
+            };
           }
 
           if (
@@ -300,7 +301,7 @@ export function createQueryEngine<
             normalizedRequest.facets.length === 0 ||
             response.facets !== undefined
           ) {
-            return response
+            return response;
           }
 
           const facetsResponse = await executeFacetsForResource(
@@ -310,57 +311,57 @@ export function createQueryEngine<
             normalizedRequest,
             normalizedRequest.facets,
             context,
-          )
+          );
 
           return {
             ...response,
             facets: facetsResponse.facets,
-          }
+          };
         },
         queryIds: async ({
           request,
           context,
         }: {
-          request: QueryRequest
-          context?: any
+          request: QueryRequest;
+          context?: any;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context)
+          const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(
             config,
             resource as QueryResource<any, any, any, any, any, any, any>,
-          )
-          return executeIds(normalizedRequest, context, utils)
+          );
+          return executeIds(normalizedRequest, context, utils);
         },
         queryRows: async ({
           request,
           ids,
           context,
         }: {
-          request: QueryRequest
-          ids: unknown[]
-          context?: any
+          request: QueryRequest;
+          ids: unknown[];
+          context?: any;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context)
+          const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(
             config,
             resource as QueryResource<any, any, any, any, any, any, any>,
-          )
-          return executeRows(normalizedRequest, ids, context, utils)
+          );
+          return executeRows(normalizedRequest, ids, context, utils);
         },
         queryFacets: async ({
           request,
           facets,
           context,
         }: {
-          request: QueryRequest
-          facets: QueryFacetRequest[]
-          context?: any
+          request: QueryRequest;
+          facets: QueryFacetRequest[];
+          context?: any;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context)
+          const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(
             config,
             resource as QueryResource<any, any, any, any, any, any, any>,
-          )
+          );
           return executeFacetsForResource(
             options,
             resource as QueryResource<any, any, any, any, any, any, any>,
@@ -368,12 +369,12 @@ export function createQueryEngine<
             normalizedRequest,
             facets,
             context,
-          )
+          );
         },
-      }
+      };
 
       function prepareRequest(request: QueryRequest, context: any) {
-        const scopedFilters = options.query?.scope?.(filterBuilder, context)
+        const scopedFilters = options.query?.scope?.(filterBuilder, context);
         const normalizedRequest = normalizeRequest(
           {
             ...request,
@@ -384,13 +385,13 @@ export function createQueryEngine<
             pagination: options.query?.defaults?.pagination,
             sorting: options.query?.sort?.defaults,
           },
-        )
+        );
 
         assertKnownFields(
           resource as QueryResource<any, any, any, any, any, any, any>,
           normalizedRequest,
-        )
-        return normalizedRequest
+        );
+        return normalizedRequest;
       }
 
       async function executeIds(
@@ -404,10 +405,10 @@ export function createQueryEngine<
             context,
             resource,
             utils,
-          })
+          });
         }
 
-        return utils.executeIdsQuery({ request })
+        return utils.executeIdsQuery({ request });
       }
 
       async function executeRows(
@@ -423,28 +424,28 @@ export function createQueryEngine<
             context,
             resource,
             utils,
-          })
+          });
         }
 
-        return utils.executeRowsQuery({ ids, request })
+        return utils.executeRowsQuery({ ids, request });
       }
 
-      return resource
+      return resource;
     }
 
     function defineQueryResource(root: any, options: any): any {
-      return defineResource(root, options)
+      return defineResource(root, options);
     }
 
     return {
       withContext<TContext extends GenericObject>() {
-        return buildEngine<TContext>()
+        return buildEngine<TContext>();
       },
       defineScope,
       defineResource,
       defineQueryResource,
-    } as QueryEngine<TDb, TSchema, TRelations, TEngineContext>
+    } as QueryEngine<TDb, TSchema, TRelations, TEngineContext>;
   }
 
-  return buildEngine<Record<string, unknown>>()
+  return buildEngine<Record<string, unknown>>();
 }

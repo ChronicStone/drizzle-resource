@@ -1,5 +1,5 @@
-export { createQueryEngine } from './src/engine.js'
-export { createQueryFilterBuilder } from './src/filters.js'
+export { createQueryEngine } from "./src/engine.js";
+export { createQueryFilterBuilder } from "./src/filters.js";
 export type {
   DefineResourceOptions,
   DefineQueryResourceOptions,
@@ -39,4 +39,4 @@ export type {
   QueryRootKey,
   QuerySearchRequest,
   QueryWith,
-} from './src/types.js'
+} from "./src/types.js";
