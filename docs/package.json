@@ -17,7 +17,7 @@
     "drizzle-resource": "workspace:*",
     "nuxt": "^4.2.2",
     "nuxt-content-twoslash": "^0.4.0",
-    "shiki": "^1.29.1",
+    "shiki": "^4.0.2",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.24.6"
   },

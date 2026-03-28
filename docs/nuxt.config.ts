@@ -1,4 +1,7 @@
+import { createResolver } from "@nuxt/kit";
+
 const siteUrl = process.env.NUXT_PUBLIC_SITE_URL || "https://drizzle-resource.vercel.app";
+const { resolve } = createResolver(import.meta.url);
 
 export default defineNuxtConfig({
   extends: ["docus"],
@@ -30,5 +33,10 @@ export default defineNuxtConfig({
   },
   nitro: {
     preset: "static",
+  },
+  hooks: {
+    "mdc:configSources"(sources) {
+      sources.push(resolve("./twoslash-fix.mjs"));
+    },
   },
 });
