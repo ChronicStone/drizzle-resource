@@ -3,8 +3,8 @@
   "private": true,
   "scripts": {
     "dev": "nuxt prepare && nuxt dev",
-    "build": "nuxt build",
-    "generate": "nuxt generate",
+    "build": "nuxt prepare && nuxt build",
+    "generate": "nuxt prepare && nuxt generate",
     "preview": "nuxt preview",
     "typecheck": "nuxt prepare",
     "twoslash:verify": "nuxt prepare && nuxt-content-twoslash verify",
