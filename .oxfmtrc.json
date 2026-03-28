@@ -1,0 +1,10 @@
+{
+  "ignorePatterns": [
+    "build/**",
+    "coverage/**",
+    "docs/.nuxt/**",
+    "docs/.output/**",
+    "docs/node_modules/**",
+    "node_modules/**"
+  ]
+}

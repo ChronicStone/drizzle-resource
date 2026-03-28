@@ -1,0 +1,23 @@
+{
+  "plugins": ["import", "node", "vitest"],
+  "categories": {
+    "correctness": "error",
+    "suspicious": "error"
+  },
+  "settings": {
+    "vitest": {
+      "typecheck": false
+    }
+  },
+  "env": {
+    "builtin": true
+  },
+  "ignorePatterns": [
+    "build/**",
+    "coverage/**",
+    "docs/.nuxt/**",
+    "docs/.output/**",
+    "docs/node_modules/**",
+    "node_modules/**"
+  ]
+}
