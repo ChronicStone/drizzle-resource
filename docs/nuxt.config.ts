@@ -1,5 +1,32 @@
+import { fileURLToPath } from "node:url";
+
+const drizzleResourceEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
+const siteUrl = process.env.NUXT_PUBLIC_SITE_URL || "https://drizzle-resource.vercel.app";
+
 export default defineNuxtConfig({
-  nitro: {
-    preset: 'static',
+  extends: ["docus"],
+  modules: ["nuxt-content-twoslash"],
+  alias: {
+    "drizzle-resource": drizzleResourceEntry,
   },
-})
+  twoslash: {
+    enableInDev: true,
+    includeNuxtTypes: true,
+  },
+  mdc: {
+    highlight: {
+      theme: "github-dark",
+      langs: ["ts", "tsx", "js", "json"],
+      noApiRoute: true,
+    },
+  },
+  llms: {
+    domain: siteUrl,
+    title: "drizzle resource",
+    description:
+      "Schema-driven, type-safe query resources for Drizzle ORM with filtering, sorting, pagination, search, hydration, and facets.",
+  },
+  nitro: {
+    preset: "static",
+  },
+});

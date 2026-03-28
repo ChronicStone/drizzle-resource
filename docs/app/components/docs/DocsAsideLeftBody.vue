@@ -1,5 +1,5 @@
 <script setup lang="ts">
-const { sidebarNavigation } = useSubNavigation()
+const { sidebarNavigation } = useSubNavigation();
 </script>
 
 <template>
