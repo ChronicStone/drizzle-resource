@@ -103,6 +103,11 @@ const isDark = computed(
   () => colorMode.value === "dark" || (colorMode.value === "system" && preferredDark.value),
 );
 
+const mounted = ref(false);
+onMounted(() => {
+  mounted.value = true;
+});
+
 const pipeline = [
   {
     label: "Scope merge",
@@ -232,14 +237,14 @@ const features = [
 
           <!-- Right: Shiki-rendered code panel -->
           <div class="min-w-0 lg:flex-1">
-            <ClientOnly>
+            <template v-if="mounted">
               <ProsePre language="ts" filename="orders.ts" :code="rawHeroCode">
                 <code class="landing-shiki" v-html="isDark ? heroHtmlDark : heroHtmlLight" />
               </ProsePre>
-              <template #fallback>
-                <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
-              </template>
-            </ClientOnly>
+            </template>
+            <template v-else>
+              <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
+            </template>
           </div>
         </div>
       </section>
@@ -259,9 +264,9 @@ const features = [
           </p>
         </div>
 
-        <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
+        <div class="flex flex-col gap-6 lg:flex-row lg:items-center">
           <!-- Pipeline card -->
-          <UPageCard class="shrink-0 self-start lg:w-[38%]" spotlight>
+          <UPageCard class="shrink-0 lg:w-[38%] lg:-mt-2" spotlight>
             <template #header>
               <div>
                 <p class="mb-1 text-[11px] font-semibold uppercase tracking-widest text-primary">
@@ -299,20 +304,26 @@ const features = [
           </UPageCard>
 
           <!-- Shiki code group -->
-          <div class="min-w-0 flex-1">
-            <ClientOnly>
-              <ProseCodeGroup>
+          <div class="min-w-0 flex-1 lg:self-center">
+            <template v-if="mounted">
+              <ProseCodeGroup class="!mt-0">
                 <ProsePre language="ts" filename="orders.resource.ts" :code="rawResourceCode">
-                  <code class="landing-shiki" v-html="isDark ? resourceHtmlDark : resourceHtmlLight" />
+                  <code
+                    class="landing-shiki"
+                    v-html="isDark ? resourceHtmlDark : resourceHtmlLight"
+                  />
                 </ProsePre>
                 <ProsePre language="ts" filename="request.ts" :code="rawRequestCode">
-                  <code class="landing-shiki" v-html="isDark ? requestHtmlDark : requestHtmlLight" />
+                  <code
+                    class="landing-shiki"
+                    v-html="isDark ? requestHtmlDark : requestHtmlLight"
+                  />
                 </ProsePre>
               </ProseCodeGroup>
-              <template #fallback>
-                <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
-              </template>
-            </ClientOnly>
+            </template>
+            <template v-else>
+              <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
+            </template>
           </div>
         </div>
       </section>
