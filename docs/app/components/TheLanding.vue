@@ -1,5 +1,6 @@
 <script setup lang="ts">
 import { getHighlighter, bundledThemes } from "shiki";
+import { usePreferredDark } from "@vueuse/core";
 
 const shikiLightTheme = "catppuccin-latte";
 const shikiDarkTheme = "dracula";
@@ -33,17 +34,23 @@ const rawRequestCode = [
   "  context: { orgId: 'acme' },",
   "  request: {",
   "    pagination: { pageIndex: 1, pageSize: 25 },",
-  "    sorting:    [{ key: 'createdAt', dir: 'desc' }],",
+  "    sorting:    [{ key: 'customer.name', dir: 'asc' }],",
   "    search:     { value: 'laptop', fields: [] },",
   "    filters: {",
   "      type: 'group', combinator: 'and',",
   "      children: [{",
-  "        type: 'condition', key: 'status',",
+  "        type: 'condition',",
+  "        key: 'orderLines.product.category',",
   "        operator: 'isAnyOf',",
-  "        value: ['pending', 'processing'],",
+  "        value: ['laptops', 'accessories'],",
+  "      }, {",
+  "        type: 'condition',",
+  "        key: 'customer.billingCountry',",
+  "        operator: 'is',",
+  "        value: 'FR',",
   "      }],",
   "    },",
-  "    facets: [{ key: 'status', mode: 'exclude-self', limit: 10 }],",
+  "    facets: [{ key: 'orderLines.product.category', mode: 'exclude-self', limit: 10 }],",
   "  },",
   "})",
 ].join("\n");
@@ -57,11 +64,11 @@ const rawResourceCode = [
   "  query: {",
   "    scope: (f, ctx) => f.is('customer.orgId', ctx.orgId),",
   "    search: {",
-  "      allowed:  ['reference', 'customer.name'],",
+  "      allowed:  ['reference', 'customer.name', 'orderLines.product.name'],",
   "      defaults: ['reference', 'customer.name'],",
   "    },",
   "    sort:   { defaults: [{ key: 'createdAt', dir: 'desc' }] },",
-  "    facets: { allowed: ['status', 'customer.name'] },",
+  "    facets: { allowed: ['status', 'customer.name', 'orderLines.product.category'] },",
   "  },",
   "})",
 ].join("\n");
@@ -91,7 +98,10 @@ const requestHtmlDark = stripOuterCode(
 );
 
 const colorMode = useColorMode();
-const isDark = computed(() => colorMode.value === "dark");
+const preferredDark = usePreferredDark();
+const isDark = computed(
+  () => colorMode.value === "dark" || (colorMode.value === "system" && preferredDark.value),
+);
 
 const pipeline = [
   {
@@ -222,9 +232,14 @@ const features = [
 
           <!-- Right: Shiki-rendered code panel -->
           <div class="min-w-0 lg:flex-1">
-            <ProsePre language="ts" filename="orders.ts" :code="rawHeroCode">
-              <code class="landing-shiki" v-html="isDark ? heroHtmlDark : heroHtmlLight" />
-            </ProsePre>
+            <ClientOnly>
+              <ProsePre language="ts" filename="orders.ts" :code="rawHeroCode">
+                <code class="landing-shiki" v-html="isDark ? heroHtmlDark : heroHtmlLight" />
+              </ProsePre>
+              <template #fallback>
+                <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
+              </template>
+            </ClientOnly>
           </div>
         </div>
       </section>
@@ -244,9 +259,9 @@ const features = [
           </p>
         </div>
 
-        <div class="flex flex-col gap-6 lg:flex-row lg:items-stretch">
+        <div class="flex flex-col gap-6 lg:flex-row lg:items-start">
           <!-- Pipeline card -->
-          <UPageCard class="shrink-0 lg:w-[38%]" spotlight>
+          <UPageCard class="shrink-0 self-start lg:w-[38%]" spotlight>
             <template #header>
               <div>
                 <p class="mb-1 text-[11px] font-semibold uppercase tracking-widest text-primary">
@@ -285,17 +300,19 @@ const features = [
 
           <!-- Shiki code group -->
           <div class="min-w-0 flex-1">
-            <ProseCodeGroup>
-              <ProsePre language="ts" filename="orders.resource.ts" :code="rawResourceCode">
-                <code
-                  class="landing-shiki"
-                  v-html="isDark ? resourceHtmlDark : resourceHtmlLight"
-                />
-              </ProsePre>
-              <ProsePre language="ts" filename="request.ts" :code="rawRequestCode">
-                <code class="landing-shiki" v-html="isDark ? requestHtmlDark : requestHtmlLight" />
-              </ProsePre>
-            </ProseCodeGroup>
+            <ClientOnly>
+              <ProseCodeGroup>
+                <ProsePre language="ts" filename="orders.resource.ts" :code="rawResourceCode">
+                  <code class="landing-shiki" v-html="isDark ? resourceHtmlDark : resourceHtmlLight" />
+                </ProsePre>
+                <ProsePre language="ts" filename="request.ts" :code="rawRequestCode">
+                  <code class="landing-shiki" v-html="isDark ? requestHtmlDark : requestHtmlLight" />
+                </ProsePre>
+              </ProseCodeGroup>
+              <template #fallback>
+                <div class="h-[420px] rounded-2xl border border-white/10 bg-stone-950/50" />
+              </template>
+            </ClientOnly>
           </div>
         </div>
       </section>
@@ -362,4 +379,5 @@ const features = [
   font-size: 0.875rem;
   line-height: 1.7;
 }
+
 </style>

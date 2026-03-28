@@ -1,12 +1,24 @@
-<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64">
-  <defs>
-    <linearGradient id="g" x1="0" y1="0" x2="64" y2="64" gradientUnits="userSpaceOnUse">
-      <stop offset="0%" stop-color="#FCD34D"/>
-      <stop offset="100%" stop-color="#B45309"/>
-    </linearGradient>
-  </defs>
-  <rect x="4" y="4" width="56" height="56" rx="14" fill="url(#g)"/>
-  <rect x="12" y="19" width="40" height="6" rx="3" fill="white"/>
-  <rect x="12" y="30" width="29" height="6" rx="3" fill="white" fill-opacity="0.88"/>
-  <rect x="12" y="41" width="18" height="6" rx="3" fill="white" fill-opacity="0.75"/>
+<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64" viewBox="0 0 64 64" fill="none">
+  <rect x="4" y="4" width="56" height="56" rx="14" fill="#FFFBEB"/>
+  <rect x="21" y="12" width="3" height="40" rx="1.5" fill="#18181B"/>
+
+  <path d="M12 18C12 14.686 14.686 12 18 12H21V24H18C14.686 24 12 21.314 12 18Z" fill="#F59E0B"/>
+  <path d="M24 12H41C44.314 12 47 14.686 47 18C47 21.314 44.314 24 41 24H24V12Z" fill="#F59E0B"/>
+  <circle cx="31" cy="18" r="2.5" fill="#0A0A0A"/>
+  <rect x="31" y="17" width="8" height="2" rx="1" fill="#0A0A0A"/>
+
+  <path d="M12 32C12 28.686 14.686 26 18 26H21V38H18C14.686 38 12 35.314 12 32Z" fill="#FDE68A"/>
+  <path d="M24 26H41C44.314 26 47 28.686 47 32C47 35.314 44.314 38 41 38H24V26Z" fill="#FB923C"/>
+  <circle cx="31" cy="32" r="2.5" fill="#0A0A0A"/>
+  <rect x="31" y="31" width="8" height="2" rx="1" fill="#0A0A0A"/>
+
+  <path d="M12 46C12 42.686 14.686 40 18 40H21V52H18C14.686 52 12 49.314 12 46Z" fill="#71717A"/>
+  <path d="M24 40H41C44.314 40 47 42.686 47 46C47 49.314 44.314 52 41 52H24V40Z" fill="#18181B"/>
+  <circle cx="31" cy="46" r="2.5" fill="#FFFBEB"/>
+  <rect x="31" y="45" width="8" height="2" rx="1" fill="#FFFBEB"/>
+
+  <rect x="49" y="16" width="3" height="30" rx="1.5" fill="#FB923C"/>
+  <circle cx="50.5" cy="18" r="3.5" fill="#FB923C"/>
+  <circle cx="50.5" cy="32" r="3.5" fill="#FB923C"/>
+  <circle cx="50.5" cy="46" r="3.5" fill="#FB923C"/>
 </svg>
