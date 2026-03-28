@@ -2,7 +2,7 @@
   "name": "@drizzle-resource/docs",
   "private": true,
   "scripts": {
-    "dev": "nuxt dev",
+    "dev": "nuxt prepare && nuxt dev",
     "build": "nuxt build",
     "generate": "nuxt generate",
     "preview": "nuxt preview",
@@ -17,7 +17,6 @@
     "drizzle-resource": "workspace:*",
     "nuxt": "^4.2.2",
     "nuxt-content-twoslash": "^0.4.0",
-    "shiki": "^4.0.2",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.24.6"
   },

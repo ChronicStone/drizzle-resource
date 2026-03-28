@@ -1,11 +1,10 @@
 <script setup lang="ts">
 import type { ContentNavigationItem, PageCollections } from "@nuxt/content";
 import * as nuxtUiLocales from "@nuxt/ui/locale";
-import { useSubNavigation } from "../layer/app/composables/useSubNavigation";
-import { transformNavigation } from "../layer/app/utils/navigation";
+import { transformNavigation } from "./utils/navigation";
+import { useSubNavigation } from "./composables/useSubNavigation";
 
-const appConfig = useAppConfig();
-const { seo } = appConfig;
+const { seo } = useAppConfig();
 const site = useSiteConfig();
 const { locale, locales, isEnabled, switchLocalePath } = useDocusI18n();
 
@@ -15,11 +14,10 @@ const nuxtUiLocale = computed(
 const lang = computed(() => nuxtUiLocale.value.code);
 const dir = computed(() => nuxtUiLocale.value.dir);
 const collectionName = computed(() => (isEnabled.value ? `docs_${locale.value}` : "docs"));
-const faviconHref = computed(() => appConfig.header?.logo?.favicon || "/favicon.svg");
 
 useHead({
   meta: [{ name: "viewport", content: "width=device-width, initial-scale=1" }],
-  link: [{ rel: "icon", href: faviconHref }],
+  link: [{ rel: "icon", href: "/favicon.ico" }],
   htmlAttrs: {
     lang,
     dir,
@@ -37,11 +35,9 @@ useSeoMeta({
 if (isEnabled.value) {
   const route = useRoute();
   const defaultLocale = useRuntimeConfig().public.i18n.defaultLocale!;
-
   onMounted(() => {
     const currentLocale = route.path.split("/")[1];
-
-    if (!locales.some((item) => item.code === currentLocale)) {
+    if (!locales.some((localeItem) => localeItem.code === currentLocale)) {
       return navigateTo(switchLocalePath(defaultLocale) as string);
     }
   });
@@ -56,7 +52,6 @@ const { data: navigation } = await useAsyncData(
     watch: [locale],
   },
 );
-
 const { data: files } = useLazyAsyncData(
   `search_${collectionName.value}`,
   () => queryCollectionSearchSections(collectionName.value as keyof PageCollections),
@@ -75,13 +70,7 @@ const { subNavigationMode } = useSubNavigation(navigation);
   <UApp :locale="nuxtUiLocale">
     <NuxtLoadingIndicator color="var(--ui-primary)" />
 
-    <div
-      :class="[
-        'transition-[margin-right] duration-200 ease-linear will-change-[margin-right]',
-        { 'docus-sub-header': subNavigationMode === 'header' },
-      ]"
-      :style="{ marginRight: '0' }"
-    >
+    <div :class="{ 'docus-sub-header': subNavigationMode === 'header' }">
       <AppHeader v-if="$route.meta.header !== false" />
       <NuxtLayout>
         <NuxtPage />
@@ -98,47 +87,8 @@ const { subNavigationMode } = useSubNavigation(navigation);
 <style>
 @media (min-width: 1024px) {
   .docus-sub-header {
+    /* 64px base header + 48px sub-navigation bar */
     --ui-header-height: 112px;
   }
-}
-
-.dot-grid {
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-
-.dark .dot-grid {
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
-}
-
-.landing-card {
-  display: block;
-  border-radius: 1.5rem;
-  border: 1px solid color-mix(in oklab, var(--ui-border) 92%, transparent);
-  background: color-mix(in oklab, var(--ui-bg) 92%, white 8%);
-  padding: 1.25rem;
-  transition:
-    transform 160ms ease,
-    border-color 160ms ease,
-    background 160ms ease;
-}
-
-.landing-card:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in oklab, var(--ui-primary) 40%, var(--ui-border) 60%);
-  background: color-mix(in oklab, var(--ui-bg) 88%, white 12%);
-}
-
-.landing-card h3 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--ui-text-highlighted);
-}
-
-.landing-card p {
-  margin: 0.65rem 0 0;
-  line-height: 1.6;
-  color: var(--ui-text-toned);
 }
 </style>
