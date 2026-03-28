@@ -61,7 +61,7 @@ function assertKnownFields(
     }
   }
 
-  const stack: QueryFilterNode[] = [request.filters];
+  const stack: QueryFilterNode[] = [...request.filters];
   while (stack.length > 0) {
     const node = stack.pop()!;
     if (node.type === "condition") {

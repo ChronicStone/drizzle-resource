@@ -101,6 +101,8 @@ export type QueryFilterInput<TField extends string = string> =
   | null
   | undefined;
 
+export type QueryFilters<TField extends string = string> = QueryFilterNode<TField>[];
+
 /**
  * Normalized request consumed by all resource query methods.
  */
@@ -129,11 +131,12 @@ export interface QueryRequest {
    */
   sorting: QuerySorting;
   /**
-   * Root filter tree.
+   * Top-level filters combined with an implicit `and`.
    *
-   * Scope filters are merged into this tree automatically at runtime.
+   * Add nested `group` nodes only when you need custom boolean logic.
+   * Scope filters are merged into this array automatically at runtime.
    */
-  filters: QueryFilterGroup;
+  filters: QueryFilters;
   /**
    * Free-text search settings.
    */
@@ -552,6 +555,10 @@ export interface QueryResourceUtils<TRow extends GenericObject = GenericObject> 
    * Compile a full filter tree into a Drizzle SQL fragment.
    */
   compileFilterNode: (node: QueryFilterNode) => SQL;
+  /**
+   * Normalize top-level request filters into a root `and` group.
+   */
+  normalizeFilters: (filters: QueryRequest["filters"]) => QueryFilterGroup;
   /**
    * Compile the current search request into a Drizzle SQL fragment.
    */

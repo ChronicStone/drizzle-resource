@@ -178,11 +178,7 @@ const baseRequest = {
     fields: [],
   },
   context: {},
-  filters: {
-    type: "group" as const,
-    combinator: "and" as const,
-    children: [],
-  },
+  filters: [],
 };
 
 describe("defineResource typing", () => {
