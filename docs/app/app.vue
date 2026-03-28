@@ -141,4 +141,239 @@ const { subNavigationMode } = useSubNavigation(navigation);
   line-height: 1.6;
   color: var(--ui-text-toned);
 }
+
+.landing-badge {
+  display: inline-flex;
+  align-items: center;
+  gap: 0.5rem;
+  border-radius: 999px;
+  border: 1px solid color-mix(in oklab, var(--ui-primary) 22%, var(--ui-border) 78%);
+  background: color-mix(in oklab, var(--ui-primary) 7%, var(--ui-bg) 93%);
+  padding: 0.24rem 0.55rem;
+  font-size: 0.64rem;
+  font-weight: 700;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: color-mix(in oklab, var(--ui-primary) 75%, var(--ui-text) 25%);
+}
+
+.landing-hero-title {
+  margin: 0;
+  font-size: clamp(3rem, 6vw, 3.875rem);
+  font-weight: 700;
+  line-height: 1.08;
+  letter-spacing: -0.04em;
+  color: var(--ui-text-highlighted);
+}
+
+.landing-code-panel :deep(pre) {
+  margin-top: 0;
+  width: 100%;
+}
+
+.landing-code-panel {
+  width: 100%;
+}
+
+.landing-code-panel :deep(.relative.group) {
+  width: 100%;
+}
+
+.landing-code-panel :deep(.group.font-mono),
+.landing-code-panel :deep(.vp-code-group) {
+  width: 100%;
+  margin-inline: 0;
+}
+
+.landing-two-col {
+  display: flex;
+  flex-direction: column;
+  gap: 1.5rem;
+}
+
+.landing-two-col > * {
+  min-width: 0;
+}
+
+.landing-pipeline-card {
+  border-radius: 1.75rem;
+  border: 1px solid color-mix(in oklab, var(--ui-border) 92%, transparent);
+  background: color-mix(in oklab, var(--ui-bg) 94%, white 6%);
+  padding: 1.5rem;
+  box-shadow: 0 24px 60px -50px rgba(0, 0, 0, 0.28);
+}
+
+.landing-pipeline-item {
+  position: relative;
+  display: flex;
+  gap: 0.75rem;
+  padding-bottom: 1rem;
+}
+
+.landing-pipeline-item::after {
+  content: "";
+  position: absolute;
+  left: 0.95rem;
+  top: 2.4rem;
+  bottom: 0;
+  width: 1px;
+  background: color-mix(in oklab, var(--ui-border) 82%, transparent);
+}
+
+.landing-pipeline-item.is-last {
+  padding-bottom: 0;
+}
+
+.landing-pipeline-item.is-last::after {
+  display: none;
+}
+
+.landing-pipeline-icon {
+  display: flex;
+  height: 2rem;
+  width: 2rem;
+  flex: 0 0 auto;
+  align-items: center;
+  justify-content: center;
+  border-radius: 0.75rem;
+  background: color-mix(in oklab, var(--ui-primary) 10%, var(--ui-bg) 90%);
+  color: var(--ui-primary);
+  font-size: 0.82rem;
+  font-weight: 700;
+}
+
+.landing-pipeline-copy {
+  padding-top: 0.1rem;
+}
+
+.landing-pipeline-label {
+  font-size: 0.92rem;
+  font-weight: 600;
+  color: var(--ui-text-highlighted);
+}
+
+.landing-pipeline-desc {
+  margin-top: 0.2rem;
+  font-size: 0.78rem;
+  line-height: 1.55;
+  color: var(--ui-text-toned);
+}
+
+.landing-cta {
+  margin: 0 auto;
+  max-width: 42rem;
+  border-radius: 1.75rem;
+  border: 1px solid rgb(253 230 138 / 0.9);
+  background: rgb(255 251 235 / 0.98);
+  padding: 3rem;
+  text-align: center;
+}
+
+.dark .landing-cta {
+  border-color: color-mix(in oklab, var(--ui-primary) 18%, transparent);
+  background: color-mix(in oklab, var(--ui-primary) 6%, var(--ui-bg) 94%);
+}
+
+.landing-section-pad {
+  max-width: 80rem;
+  margin-inline: auto;
+  padding-inline: 1rem;
+}
+
+.v-popper--theme-twoslash .v-popper__inner {
+  border: 1px solid color-mix(in oklab, var(--ui-border) 70%, transparent) !important;
+  border-radius: 0.5rem !important;
+  background: var(--ui-bg) !important;
+  box-shadow:
+    0 8px 24px -8px rgb(0 0 0 / 0.18),
+    0 2px 6px -2px rgb(0 0 0 / 0.08) !important;
+  color: var(--ui-text-highlighted) !important;
+  padding: 0.5rem 0.75rem !important;
+}
+
+/* Strip the nested box from the code element — it gets border+bg from Nuxt UI classes */
+.v-popper--theme-twoslash .twoslash-popup-code {
+  border: none !important;
+  background: transparent !important;
+  padding: 0 !important;
+  border-radius: 0 !important;
+  box-shadow: none !important;
+}
+
+/* Fix arrow colors to match popup in both light/dark */
+.v-popper--theme-twoslash .v-popper__arrow-outer {
+  border-top-color: color-mix(in oklab, var(--ui-border) 70%, transparent) !important;
+}
+
+.v-popper--theme-twoslash .v-popper__arrow-inner {
+  border-top-color: var(--ui-bg) !important;
+}
+
+/* Hide the redundant custom arrow inside the popup container */
+.twoslash-popup-arrow {
+  display: none !important;
+}
+
+.twoslash-floating {
+  max-width: 36rem !important;
+}
+
+.twoslash-floating .twoslash-popup-docs,
+.twoslash-floating .twoslash-popup-error,
+.twoslash-floating .twoslash-popup-code {
+  font-size: 0.82rem !important;
+  line-height: 1.55 !important;
+}
+
+.twoslash-floating .twoslash-popup-docs {
+  color: var(--ui-text-toned) !important;
+  margin-top: 0.4rem !important;
+  padding-top: 0.4rem !important;
+  border-top: 1px solid color-mix(in oklab, var(--ui-border) 50%, transparent) !important;
+}
+
+.twoslash .twoslash-hover {
+  border-bottom-color: color-mix(in oklab, var(--ui-primary) 55%, transparent) !important;
+}
+
+@media (max-width: 767px) {
+  .landing-code-panel,
+  .landing-pipeline-card,
+  .landing-cta {
+    margin-inline: 0.25rem;
+  }
+
+  .landing-page .grid {
+    padding-inline: 0.25rem;
+  }
+
+  .landing-cta {
+    padding: 2rem 1.5rem;
+  }
+}
+
+@media (min-width: 640px) {
+  .landing-section-pad {
+    padding-inline: 1.5rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .landing-section-pad {
+    padding-inline: 2rem;
+  }
+}
+
+@media (min-width: 1024px) {
+  .landing-two-col {
+    display: grid;
+    grid-template-columns: minmax(0, 0.94fr) minmax(0, 1.08fr);
+    align-items: center;
+    column-gap: 2rem;
+  }
+
+  .landing-two-col--hero {
+    column-gap: 2.5rem;
+  }
+}
 </style>
