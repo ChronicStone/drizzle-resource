@@ -8,9 +8,7 @@ export default defineNuxtConfig({
   modules: ["nuxt-content-twoslash"],
   app: {
     head: {
-      link: [
-        { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
-      ],
+      link: [{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
     },
   },
   alias: {
