@@ -15,7 +15,10 @@ export default defineNuxtConfig({
   },
   mdc: {
     highlight: {
-      theme: "github-dark",
+      theme: {
+        dark: "dracula",
+        default: "catppuccin-latte",
+      },
       langs: ["ts", "tsx", "js", "json"],
       noApiRoute: true,
     },
