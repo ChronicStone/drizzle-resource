@@ -68,13 +68,9 @@ const result = await ordersResource.query({
     pagination: { pageIndex: 1, pageSize: 25 },
     sorting: [{ key: "createdAt", dir: "desc" }],
     search: { value: "laptop", fields: [] },
-    filters: {
-      type: "group",
-      combinator: "and",
-      children: [
-        { type: "condition", key: "status", operator: "isAnyOf", value: ["pending", "processing"] },
-      ],
-    },
+    filters: [
+      { type: "condition", key: "status", operator: "isAnyOf", value: ["pending", "processing"] },
+    ],
     facets: [{ key: "status", mode: "exclude-self", limit: 10 }],
   },
 });
