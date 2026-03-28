@@ -195,22 +195,8 @@ describe('defineResource', () => {
         },
       },
       query: {
-        scope: engine.defineScope(
-          'employees',
-          {
-            department: {
-              with: {
-                company: true,
-              },
-            },
-            employeeSkills: {
-              with: {
-                skill: true,
-              },
-            },
-          },
-          (ctx, filters) => filters.and([filters.is('department.company.country', ctx.orgId)]),
-        ),
+        scope: (filters, ctx) =>
+          filters.and([filters.is('department.company.country', ctx.orgId)]),
         search: {
           defaults: ['fullName', 'department.company.name'],
         },

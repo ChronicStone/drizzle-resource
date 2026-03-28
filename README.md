@@ -44,9 +44,7 @@ export const ordersResource = engine.defineResource('orders', {
   },
   query: {
     // Scope merges into every request — client cannot bypass it
-    scope: engine.defineScope('orders', { customer: true }, (ctx, f) =>
-      f.is('customer.orgId', ctx.orgId)
-    ),
+    scope: (f, ctx) => f.is('customer.orgId', ctx.orgId),
     search: {
       allowed: ['reference', 'customer.name', 'orderLines.product.name'],
       defaults: ['reference', 'customer.name'],

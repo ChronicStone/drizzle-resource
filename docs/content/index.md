@@ -132,9 +132,7 @@ Every table API you write ends up with the same ad-hoc logic: parse sort params,
         orderLines: { with: { product: true } },
       },
       query: {
-        scope: engine.defineScope('orders', {}, (ctx, f) =>
-          f.is('customer.orgId', ctx.orgId)
-        ),
+        scope: (f, ctx) => f.is('customer.orgId', ctx.orgId),
         search: {
           allowed: ['reference', 'customer.name', 'orderLines.product.name'],
           defaults: ['reference', 'customer.name'],

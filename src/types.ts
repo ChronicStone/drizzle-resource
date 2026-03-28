@@ -26,6 +26,19 @@ export interface QuerySearchRequest {
   fields: string[]
 }
 
+export interface QuerySortDescriptor<TField extends string = string> {
+  /**
+   * Field path to sort by.
+   */
+  key: TField
+  /**
+   * Sort direction.
+   */
+  dir: 'asc' | 'desc'
+}
+
+export type QuerySorting<TField extends string = string> = QuerySortDescriptor<TField>[]
+
 /**
  * A single filter condition applied to one field path.
  */
@@ -114,16 +127,7 @@ export interface QueryRequest {
    *
    * When empty, the resource-level `query.sort.defaults` list is used.
    */
-  sorting: Array<{
-    /**
-     * Field path to sort by.
-     */
-    key: string
-    /**
-     * Sort direction.
-     */
-    dir: 'asc' | 'desc'
-  }>
+  sorting: QuerySorting
   /**
    * Root filter tree.
    *
@@ -348,10 +352,29 @@ type RelationTargetTableName<
   ? Extract<TTarget, string>
   : never
 
+type QueryTypeDepth = 0 | 1 | 2 | 3 | 4 | 5 | 6
+
+type DecrementDepth<TDepth extends QueryTypeDepth> = [TDepth] extends [6]
+  ? 5
+  : [TDepth] extends [5]
+    ? 4
+    : [TDepth] extends [4]
+      ? 3
+      : [TDepth] extends [3]
+        ? 2
+        : [TDepth] extends [2]
+          ? 1
+          : [TDepth] extends [1]
+            ? 0
+            : 0
+
 export type QueryRelationsConfig<
   TRelations extends QueryEngineRelations,
   TRoot extends keyof TRelations,
-> = [RelationKey<TRelations, TRoot>] extends [never]
+  TDepth extends QueryTypeDepth = 4,
+> = [TDepth] extends [0]
+  ? never
+  : [RelationKey<TRelations, TRoot>] extends [never]
   ? never
   : {
       [TRelation in RelationKey<TRelations, TRoot>]?:
@@ -359,7 +382,8 @@ export type QueryRelationsConfig<
         | {
             with?: QueryRelationsConfig<
               TRelations,
-              Extract<RelationTargetTableName<TRelations, TRoot, TRelation>, keyof TRelations>
+              Extract<RelationTargetTableName<TRelations, TRoot, TRelation>, keyof TRelations>,
+              DecrementDepth<TDepth>
             >
           }
     }
@@ -375,16 +399,20 @@ type RelationFieldPath<
   TRelations extends QueryEngineRelations,
   TRoot extends keyof TSchema & keyof TRelations,
   TRelationConfig,
+  TDepth extends QueryTypeDepth,
 > =
   | RootColumnKey<TSchema, TRoot>
-  | RelationPaths<TSchema, TRelations, TRoot, ExtractNestedWith<TRelationConfig>>
+  | RelationPaths<TSchema, TRelations, TRoot, ExtractNestedWith<TRelationConfig>, TDepth>
 
 type RelationPaths<
   TSchema extends QueryEngineSchema,
   TRelations extends QueryEngineRelations,
   TRoot extends keyof TSchema & keyof TRelations,
   TWith,
-> = [TWith] extends [never]
+  TDepth extends QueryTypeDepth,
+> = [TDepth] extends [0]
+  ? never
+  : [TWith] extends [never]
   ? never
   : TWith extends object
     ? {
@@ -401,7 +429,8 @@ type RelationPaths<
                   RelationTargetTableName<TRelations, TRoot, TRelation>,
                   keyof TSchema & keyof TRelations
                 >,
-                TWith[TRelation]
+                TWith[TRelation],
+                DecrementDepth<TDepth>
               >
             >
           : never
@@ -413,7 +442,14 @@ export type QueryFieldPath<
   TRelations extends QueryEngineRelations,
   TRoot extends keyof TSchema & keyof TRelations,
   TWith,
-> = RootColumnKey<TSchema, TRoot> | RelationPaths<TSchema, TRelations, TRoot, NonNullable<TWith>>
+  TDepth extends QueryTypeDepth = 4,
+> = RootColumnKey<TSchema, TRoot> | RelationPaths<
+  TSchema,
+  TRelations,
+  TRoot,
+  NonNullable<TWith>,
+  TDepth
+>
 
 export interface FieldRegistryRelationStep {
   path: string
@@ -601,7 +637,7 @@ export interface ResourceQuerySortConfig<TField extends string> {
    * defaults: [{ key: 'id', dir: 'asc' }]
    * ```
    */
-  defaults?: Readonly<QueryRequest['sorting']>
+  defaults?: readonly QuerySortDescriptor<TField>[]
 }
 
 export interface ResourceQueryFiltersConfig<TField extends string> {
@@ -771,14 +807,14 @@ export interface ResourceQueryConfig<
    *
    * Example:
    * ```ts
-   * scope: (ctx, filters) =>
-   *   filters.and([filters.is('department.company.country', ctx.orgId)])
+   * scope: (filters, context) =>
+   *   filters.and([filters.is('department.company.country', context.orgId)])
    * ```
    */
-  scope?: (
-    context: TContext,
-    filters: QueryFilterBuilder<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>,
-  ) => QueryFilterInput<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>
+  scope?: QueryScopeHandler<
+    QueryFieldPath<TSchema, TRelations, TRoot, TWith>,
+    TContext
+  >
   /**
    * Searchable field configuration.
    */
@@ -917,6 +953,11 @@ export type DefineQueryResourceOptions<
   TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, TWith>,
 > = DefineResourceOptions<TDb, TSchema, TRelations, TRoot, TWith, TEngineContext, TContext, TRow>
 
+export type QueryScopeHandler<TField extends string, TContext extends GenericObject> = (
+  filters: QueryFilterBuilder<TField>,
+  context: TContext,
+) => QueryFilterInput<TField>
+
 export interface QueryEngineConfig<
   TDb extends QueryEngineDb = QueryEngineDb,
   TSchema extends QueryEngineSchema = QueryEngineSchema,
@@ -964,10 +1005,7 @@ export interface QueryEngine<
       context: TContext,
       filters: QueryFilterBuilder<QueryFieldPath<TSchema, TRelations, TRoot, TRelationsConfig>>,
     ) => QueryFilterInput<QueryFieldPath<TSchema, TRelations, TRoot, TRelationsConfig>>,
-  ): (
-    context: TContext,
-    filters: QueryFilterBuilder<QueryFieldPath<TSchema, TRelations, TRoot, TRelationsConfig>>,
-  ) => QueryFilterInput<QueryFieldPath<TSchema, TRelations, TRoot, TRelationsConfig>>
+  ): QueryScopeHandler<QueryFieldPath<TSchema, TRelations, TRoot, TRelationsConfig>, TContext>
 
   /**
    * Overload for defining a scope without relation paths.
@@ -981,10 +1019,30 @@ export interface QueryEngine<
       context: TContext,
       filters: QueryFilterBuilder<QueryFieldPath<TSchema, TRelations, TRoot, undefined>>,
     ) => QueryFilterInput<QueryFieldPath<TSchema, TRelations, TRoot, undefined>>,
-  ): (
-    context: TContext,
-    filters: QueryFilterBuilder<QueryFieldPath<TSchema, TRelations, TRoot, undefined>>,
-  ) => QueryFilterInput<QueryFieldPath<TSchema, TRelations, TRoot, undefined>>
+  ): QueryScopeHandler<QueryFieldPath<TSchema, TRelations, TRoot, undefined>, TContext>
+
+  /**
+   * Define a resource rooted only in the base table.
+   */
+  defineResource<
+    TRoot extends QueryRootKey<TDb, TSchema>,
+    TContext extends TEngineContext = TEngineContext,
+    TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, undefined>,
+  >(
+    root: TRoot,
+    options: DefineResourceOptions<
+      TDb,
+      TSchema,
+      TRelations,
+      TRoot,
+      undefined,
+      TEngineContext,
+      TContext,
+      TRow
+    > & {
+      relations?: undefined
+    },
+  ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>
 
   /**
    * Define a resource with relation-aware field paths.
@@ -1015,29 +1073,6 @@ export interface QueryEngine<
       relations: TRelationsConfig
     },
   ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>
-
-  /**
-   * Define a resource rooted only in the base table.
-   */
-  defineResource<
-    TRoot extends QueryRootKey<TDb, TSchema>,
-    TContext extends TEngineContext = TEngineContext,
-    TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, undefined>,
-  >(
-    root: TRoot,
-    options: DefineResourceOptions<
-      TDb,
-      TSchema,
-      TRelations,
-      TRoot,
-      undefined,
-      TEngineContext,
-      TContext,
-      TRow
-    > & {
-      relations?: undefined
-    },
-  ): QueryResource<TDb, TSchema, TRelations, TRoot, undefined, TContext, TRow>
 
   /**
    * Backwards-compatible alias of {@link defineResource}.

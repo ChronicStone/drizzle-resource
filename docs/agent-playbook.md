@@ -24,12 +24,13 @@ When working on a resource, preserve these guarantees:
 
 ## Preferred Patterns
 
-### Use `defineScope` for shared constraints
+### Prefer inline `query.scope`
 
 ```ts
-const employeeScope = engine.defineScope('employees', employeeWith, (ctx, filters) =>
-  filters.and([filters.is('department.company.country', ctx.orgId)]),
-)
+query: {
+  scope: (filters, ctx) =>
+    filters.and([filters.is('department.company.country', ctx.orgId)]),
+}
 ```
 
 ### Override `strategy.ids` before `strategy.query`

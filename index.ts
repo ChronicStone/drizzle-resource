@@ -22,6 +22,8 @@ export type {
   QueryFilterInput,
   QueryFilterNode,
   QueryRequest,
+  QuerySortDescriptor,
+  QuerySorting,
   ResourceQueryConfig,
   ResourceQueryDefaultsConfig,
   ResourceQueryFacetsConfig,
