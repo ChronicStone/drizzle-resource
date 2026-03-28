@@ -1,18 +1,13 @@
 <script setup lang="ts">
 import type { ContentNavigationItem, PageCollections } from "@nuxt/content";
 import * as nuxtUiLocales from "@nuxt/ui/locale";
-import { useSubNavigation } from "docus/app/composables/useSubNavigation";
-import { transformNavigation } from "docus/app/utils/navigation";
+import { useSubNavigation } from "../layer/app/composables/useSubNavigation";
+import { transformNavigation } from "../layer/app/utils/navigation";
 
 const appConfig = useAppConfig();
 const { seo } = appConfig;
 const site = useSiteConfig();
 const { locale, locales, isEnabled, switchLocalePath } = useDocusI18n();
-const {
-  isEnabled: isAssistantEnabled,
-  panelWidth: assistantPanelWidth,
-  shouldPushContent,
-} = useAssistant();
 
 const nuxtUiLocale = computed(
   () => nuxtUiLocales[locale.value as keyof typeof nuxtUiLocales] || nuxtUiLocales.en,
@@ -85,7 +80,7 @@ const { subNavigationMode } = useSubNavigation(navigation);
         'transition-[margin-right] duration-200 ease-linear will-change-[margin-right]',
         { 'docus-sub-header': subNavigationMode === 'header' },
       ]"
-      :style="{ marginRight: shouldPushContent ? `${assistantPanelWidth}px` : '0' }"
+      :style="{ marginRight: '0' }"
     >
       <AppHeader v-if="$route.meta.header !== false" />
       <NuxtLayout>
@@ -96,10 +91,6 @@ const { subNavigationMode } = useSubNavigation(navigation);
 
     <ClientOnly>
       <LazyUContentSearch :files="files" :navigation="navigation" />
-      <template v-if="isAssistantEnabled">
-        <LazyAssistantPanel />
-        <LazyAssistantFloatingInput />
-      </template>
     </ClientOnly>
   </UApp>
 </template>
@@ -109,5 +100,45 @@ const { subNavigationMode } = useSubNavigation(navigation);
   .docus-sub-header {
     --ui-header-height: 112px;
   }
+}
+
+.dot-grid {
+  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
+  background-size: 32px 32px;
+}
+
+.dark .dot-grid {
+  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
+}
+
+.landing-card {
+  display: block;
+  border-radius: 1.5rem;
+  border: 1px solid color-mix(in oklab, var(--ui-border) 92%, transparent);
+  background: color-mix(in oklab, var(--ui-bg) 92%, white 8%);
+  padding: 1.25rem;
+  transition:
+    transform 160ms ease,
+    border-color 160ms ease,
+    background 160ms ease;
+}
+
+.landing-card:hover {
+  transform: translateY(-2px);
+  border-color: color-mix(in oklab, var(--ui-primary) 40%, var(--ui-border) 60%);
+  background: color-mix(in oklab, var(--ui-bg) 88%, white 12%);
+}
+
+.landing-card h3 {
+  margin: 0;
+  font-size: 1.05rem;
+  font-weight: 600;
+  color: var(--ui-text-highlighted);
+}
+
+.landing-card p {
+  margin: 0.65rem 0 0;
+  line-height: 1.6;
+  color: var(--ui-text-toned);
 }
 </style>

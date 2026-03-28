@@ -12,6 +12,11 @@
     "sorting",
     "typescript"
   ],
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/ChronicStone/drizzle-resource",
+    "directory": "packages/drizzle-resource"
+  },
   "files": [
     "build",
     "README.md"
