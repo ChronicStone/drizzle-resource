@@ -72,27 +72,26 @@ const highlighter = await getHighlighter({
 });
 
 const heroHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiLightTheme })
+  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const heroHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiDarkTheme })
+  highlighter.codeToHtml(rawHeroCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 const resourceHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiLightTheme })
+  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const resourceHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiDarkTheme })
+  highlighter.codeToHtml(rawResourceCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 const requestHtmlLight = stripOuterCode(
-  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiLightTheme })
+  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiLightTheme }),
 );
 const requestHtmlDark = stripOuterCode(
-  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiDarkTheme })
+  highlighter.codeToHtml(rawRequestCode, { lang: "ts", theme: shikiDarkTheme }),
 );
 
 const colorMode = useColorMode();
 const isDark = computed(() => colorMode.value === "dark");
-
 
 const pipeline = [
   {
@@ -288,7 +287,10 @@ const features = [
           <div class="min-w-0 flex-1">
             <ProseCodeGroup>
               <ProsePre language="ts" filename="orders.resource.ts" :code="rawResourceCode">
-                <code class="landing-shiki" v-html="isDark ? resourceHtmlDark : resourceHtmlLight" />
+                <code
+                  class="landing-shiki"
+                  v-html="isDark ? resourceHtmlDark : resourceHtmlLight"
+                />
               </ProsePre>
               <ProsePre language="ts" filename="request.ts" :code="rawRequestCode">
                 <code class="landing-shiki" v-html="isDark ? requestHtmlDark : requestHtmlLight" />
@@ -360,6 +362,4 @@ const features = [
   font-size: 0.875rem;
   line-height: 1.7;
 }
-
-
 </style>
