@@ -1,6 +1,3 @@
-import { fileURLToPath } from "node:url";
-
-const drizzleResourceEntry = fileURLToPath(new URL("../index.ts", import.meta.url));
 const siteUrl = process.env.NUXT_PUBLIC_SITE_URL || "https://drizzle-resource.vercel.app";
 
 export default defineNuxtConfig({
@@ -10,9 +7,6 @@ export default defineNuxtConfig({
     head: {
       link: [{ rel: "icon", type: "image/svg+xml", href: "/favicon.svg" }],
     },
-  },
-  alias: {
-    "drizzle-resource": drizzleResourceEntry,
   },
   twoslash: {
     enableInDev: true,

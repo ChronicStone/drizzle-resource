@@ -34,10 +34,6 @@ jobs:
       - name: Install root dependencies
         run: bun install --frozen-lockfile
 
-      - name: Install docs dependencies
-        working-directory: docs
-        run: bun install --frozen-lockfile
-
       - name: Run release checks
         run: bun run ci
 

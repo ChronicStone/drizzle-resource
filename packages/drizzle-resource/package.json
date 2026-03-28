@@ -1,0 +1,60 @@
+{
+  "name": "drizzle-resource",
+  "version": "1.0.0",
+  "description": "Schema-driven, type-safe query resources for Drizzle ORM — filtering, sorting, pagination, search, and facets behind one typed contract",
+  "keywords": [
+    "drizzle",
+    "drizzle-orm",
+    "facets",
+    "filters",
+    "pagination",
+    "query",
+    "sorting",
+    "typescript"
+  ],
+  "files": [
+    "build",
+    "README.md"
+  ],
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    },
+    "./core": {
+      "types": "./build/core.d.ts",
+      "import": "./build/core.js",
+      "default": "./build/core.js"
+    },
+    "./zod": {
+      "types": "./build/zod.d.ts",
+      "import": "./build/zod.js",
+      "default": "./build/zod.js"
+    },
+    "./valibot": {
+      "types": "./build/valibot.d.ts",
+      "import": "./build/valibot.js",
+      "default": "./build/valibot.js"
+    }
+  },
+  "publishConfig": {
+    "access": "public"
+  },
+  "scripts": {
+    "typecheck": "vp check",
+    "build": "vp pack",
+    "prepack": "vp pack",
+    "pack:check": "npm pack --dry-run",
+    "check": "vp check && vp pack && npm pack --dry-run"
+  },
+  "devDependencies": {
+    "drizzle-orm": "1.0.0-beta.16-ea816b6"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=1.0.0-beta"
+  }
+}
