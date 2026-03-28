@@ -1,0 +1,28 @@
+{
+  "name": "@drizzle-resource/core",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "vp check",
+    "test": "vp test",
+    "build": "vp pack",
+    "pack:check": "npm pack --dry-run",
+    "check": "vp check && vp test && vp pack"
+  },
+  "devDependencies": {
+    "drizzle-orm": "1.0.0-beta.16-ea816b6"
+  },
+  "peerDependencies": {
+    "drizzle-orm": ">=1.0.0-beta"
+  }
+}

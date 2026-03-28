@@ -39,6 +39,19 @@ export interface QuerySortDescriptor<TField extends string = string> {
 
 export type QuerySorting<TField extends string = string> = QuerySortDescriptor<TField>[];
 
+export type QueryFilterOperator =
+  | "contains"
+  | "is"
+  | "isAnyOf"
+  | "isNot"
+  | "gt"
+  | "gte"
+  | "lt"
+  | "lte"
+  | "between"
+  | "before"
+  | "after";
+
 /**
  * A single filter condition applied to one field path.
  */
@@ -53,18 +66,7 @@ export interface QueryFilterCondition<TField extends string = string> {
   /**
    * Comparison operator compiled to SQL by the built-in Drizzle compiler.
    */
-  operator:
-    | "contains"
-    | "is"
-    | "isAnyOf"
-    | "isNot"
-    | "gt"
-    | "gte"
-    | "lt"
-    | "lte"
-    | "between"
-    | "before"
-    | "after";
+  operator: QueryFilterOperator;
   /**
    * Operator payload.
    *

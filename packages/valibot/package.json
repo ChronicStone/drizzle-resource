@@ -1,0 +1,20 @@
+{
+  "name": "@drizzle-resource/valibot",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "vp check",
+    "build": "vp pack",
+    "check": "vp check && vp pack"
+  }
+}
