@@ -6,6 +6,13 @@ const siteUrl = process.env.NUXT_PUBLIC_SITE_URL || "https://drizzle-resource.ve
 export default defineNuxtConfig({
   extends: ["docus"],
   modules: ["nuxt-content-twoslash"],
+  app: {
+    head: {
+      link: [
+        { rel: "icon", type: "image/svg+xml", href: "/favicon.svg" },
+      ],
+    },
+  },
   alias: {
     "drizzle-resource": drizzleResourceEntry,
   },
