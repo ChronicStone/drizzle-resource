@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import type { TableColumn, TabsItem } from "@nuxt/ui";
+import type { TableColumn } from "@nuxt/ui";
 import type { PlaygroundRequest } from "../utils/playground-request";
 import type { createPlaygroundClient } from "../utils/playground.client";
 
@@ -153,21 +153,18 @@ const editorTabs = [
     label: "Request",
     value: "request",
     icon: "i-lucide-file-json-2",
-    slot: "request",
   },
   {
     label: "Contract",
     value: "contract",
     icon: "i-lucide-file-code-2",
-    slot: "contract",
   },
   {
     label: "Tables",
     value: "tables",
     icon: "i-lucide-database",
-    slot: "tables",
   },
-] satisfies TabsItem[];
+] as const;
 
 const contractMarkdown = `\`\`\`ts [orders.resource.ts]
 ${playgroundContractSnippet}
@@ -347,106 +344,140 @@ onBeforeUnmount(() => {
           'w-full sm:w-[400px] lg:w-[460px] xl:w-[500px] shrink-0',
         ]"
       >
-        <UTabs
-          v-model="editorTab"
-          :items="editorTabs"
-          size="sm"
-          variant="pill"
-          color="neutral"
-          class="flex min-h-0 flex-1 flex-col"
-          :ui="{
-            root: 'min-h-0 flex flex-1 flex-col',
-            list: 'rounded-none',
-            content: 'min-h-0 flex-1',
-          }"
-        >
-          <template #request>
-            <div class="flex h-full min-h-0 flex-col">
-              <div
-                class="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-default p-4"
+        <div class="flex min-h-0 flex-1 flex-col">
+          <div
+            class="grid shrink-0 grid-cols-3 border-b border-default bg-muted/20"
+            role="tablist"
+            aria-label="Playground editor sections"
+          >
+            <button
+              v-for="tab in editorTabs"
+              :key="tab.value"
+              type="button"
+              :id="`playground-editor-${tab.value}-tab`"
+              class="inline-flex items-center justify-center gap-1.5 px-4 py-3 text-sm font-medium transition-colors"
+              :class="
+                editorTab === tab.value
+                  ? 'bg-inverted text-inverted'
+                  : 'text-toned hover:bg-default/60 hover:text-default'
+              "
+              :aria-selected="editorTab === tab.value"
+              :aria-controls="`playground-editor-${tab.value}`"
+              @click="editorTab = tab.value"
+            >
+              <UIcon :name="tab.icon" class="size-4" />
+              {{ tab.label }}
+            </button>
+          </div>
+
+          <section
+            id="playground-editor-request"
+            v-show="editorTab === 'request'"
+            class="flex h-full min-h-0 flex-1 flex-col"
+            role="tabpanel"
+            aria-labelledby="playground-editor-request-tab"
+          >
+            <div
+              class="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-default p-4"
+            >
+              <USelectMenu
+                v-model="selectedExample"
+                value-key="value"
+                label-key="label"
+                :items="sampleOptions"
+                :search-input="false"
+                size="sm"
+                class="w-full"
+                @update:model-value="setExample"
+              />
+              <UButton
+                color="neutral"
+                icon="i-lucide-rotate-ccw"
+                size="sm"
+                @click="setExample(selectedExample)"
               >
-                <USelectMenu
-                  v-model="selectedExample"
-                  value-key="value"
-                  label-key="label"
-                  :items="sampleOptions"
-                  :search-input="false"
-                  size="sm"
-                  class="w-full"
-                  @update:model-value="setExample"
-                />
-                <UButton
-                  color="neutral"
-                  icon="i-lucide-rotate-ccw"
-                  size="sm"
-                  @click="setExample(selectedExample)"
-                >
-                  Reset
-                </UButton>
-              </div>
-
-              <div class="min-h-0 flex-1 overflow-hidden">
-                <UTextarea
-                  v-model="requestText"
-                  :color="validationError ? 'error' : 'neutral'"
-                  :variant="validationError ? 'outline' : 'none'"
-                  size="sm"
-                  :rows="26"
-                  :autoresize="false"
-                  spellcheck="false"
-                  class="h-full min-h-0 w-full"
-                  :ui="{
-                    root: 'flex h-full min-h-0 w-full',
-                    base: 'flex-1 h-full min-h-0 w-full rounded-none',
-                  }"
-                  placeholder="Paste a QueryRequest payload here"
-                />
-              </div>
-
-              <div v-if="validationError" class="shrink-0 border-t border-default">
-                <UAlert
-                  color="error"
-                  variant="soft"
-                  title="Invalid request"
-                  :description="validationError"
-                  size="sm"
-                  class="w-full rounded-none"
-                />
-              </div>
-
-              <div v-if="bootstrapError" class="shrink-0 border-t border-default">
-                <UAlert
-                  color="error"
-                  variant="soft"
-                  title="Playground failed to boot"
-                  :description="bootstrapError"
-                  size="sm"
-                  class="w-full rounded-none"
-                />
-              </div>
+                Reset
+              </UButton>
             </div>
-          </template>
 
-          <template #contract>
-            <div class="flex h-full min-h-0 flex-col">
-              <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                <article class="prose prose-sm max-w-none [&_pre]:mt-0">
-                  <MDC :value="contractMarkdown" tag="div" />
-                </article>
-              </div>
+            <div class="min-h-0 flex-1 overflow-hidden">
+              <PlaygroundJsonEditor
+                v-model="requestText"
+                :invalid="Boolean(validationError)"
+                placeholder="Paste a QueryRequest payload here"
+              />
             </div>
-          </template>
 
-          <template #tables>
-            <div class="flex h-full min-h-0 flex-col">
-              <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
-                <article class="prose prose-sm max-w-none [&_pre]:mt-0">
-                  <MDC :value="tablesMarkdown" tag="div" />
-                </article>
-              </div>
+            <div v-if="validationError" class="shrink-0 border-t border-default">
+              <UAlert
+                color="error"
+                variant="soft"
+                title="Invalid request"
+                :description="validationError"
+                size="sm"
+                class="w-full rounded-none"
+              />
             </div>
-          </template>
-        </UTabs>
+
+            <div v-if="bootstrapError" class="shrink-0 border-t border-default">
+              <UAlert
+                color="error"
+                variant="soft"
+                title="Playground failed to boot"
+                :description="bootstrapError"
+                size="sm"
+                class="w-full rounded-none"
+              />
+            </div>
+          </section>
+
+          <section
+            id="playground-editor-contract"
+            v-if="editorTab === 'contract'"
+            class="flex h-full min-h-0 flex-1 flex-col"
+            role="tabpanel"
+            aria-labelledby="playground-editor-contract-tab"
+          >
+            <div class="border-b border-default px-4 py-3 text-xs text-toned">
+              Resource contract used by the live playground query.
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
+              <article class="prose prose-sm max-w-none [&_pre]:mt-0">
+                <MDC :value="contractMarkdown" tag="div" />
+              </article>
+            </div>
+          </section>
+
+          <section
+            id="playground-editor-tables"
+            v-if="editorTab === 'tables'"
+            class="flex h-full min-h-0 flex-1 flex-col"
+            role="tabpanel"
+            aria-labelledby="playground-editor-tables-tab"
+          >
+            <div class="border-b border-default px-4 py-3 text-xs text-toned">
+              Drizzle tables and relations loaded into the pre-seeded SQLite file.
+            </div>
+            <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
+              <article class="prose prose-sm max-w-none [&_pre]:mt-0">
+                <MDC :value="tablesMarkdown" tag="div" />
+              </article>
+            </div>
+          </section>
+
+          <UAlert
+            v-if="editorTab !== 'request' && (isBooting || bootstrapError)"
+            class="m-4 mt-0"
+            :color="bootstrapError ? 'warning' : 'neutral'"
+            variant="soft"
+            :title="bootstrapError ? 'Playground boot issue' : 'Live query still booting'"
+            :description="
+              bootstrapError
+                ? 'The static contract and table definitions are still visible, but the live query engine failed to start.'
+                : 'The contract and table panels are pre-rendered. Results will appear once the in-browser engine is ready.'
+            "
+          />
+        </div>
       </div>
 
       <!-- Results panel -->
@@ -599,46 +630,57 @@ onBeforeUnmount(() => {
           </UCard>
 
           <!-- Facets -->
-          <div class="space-y-3">
-            <div class="flex items-center justify-between gap-3">
-              <div>
-                <p class="text-sm font-medium text-highlighted">Facet buckets</p>
-                <p class="text-xs text-toned">
-                  Live aggregation results returned alongside the current query.
-                </p>
+          <UCard :ui="{ body: 'p-0 sm:p-0' }">
+            <template #header>
+              <div class="flex items-center justify-between gap-3">
+                <div>
+                  <p class="text-sm font-medium text-highlighted">Facet buckets</p>
+                  <p class="text-xs text-toned">
+                    Live aggregation results returned alongside the current query.
+                  </p>
+                </div>
+                <UBadge color="neutral" variant="subtle" size="sm">
+                  {{ facets.length }} facet{{ facets.length === 1 ? "" : "s" }}
+                </UBadge>
               </div>
-              <UBadge color="neutral" variant="subtle" size="sm">
-                {{ facets.length }} facet{{ facets.length === 1 ? "" : "s" }}
-              </UBadge>
-            </div>
+            </template>
 
-            <div v-if="facets.length > 0" class="grid gap-3 sm:grid-cols-2">
-              <UCard v-for="facet in facets" :key="facet.key">
-                <template #header>
-                  <div class="flex items-center justify-between gap-2">
-                    <p class="text-sm font-medium text-highlighted">{{ facet.key }}</p>
-                    <UBadge color="neutral" variant="subtle" size="sm">
-                      {{ facet.total ?? facet.options.length }} bucket{{
-                        (facet.total ?? facet.options.length) === 1 ? "" : "s"
-                      }}
-                    </UBadge>
-                  </div>
-                </template>
+            <div
+              v-if="facets.length > 0"
+              class="grid auto-rows-fr gap-px sm:grid-cols-2"
+              style="background-color: var(--ui-border)"
+            >
+              <section
+                v-for="facet in facets"
+                :key="facet.key"
+                class="flex min-h-[180px] flex-col bg-default"
+              >
+                <div
+                  class="flex items-center justify-between gap-2 border-b border-default px-4 py-3"
+                >
+                  <p class="text-sm font-medium text-highlighted">{{ facet.key }}</p>
+                  <UBadge color="neutral" variant="subtle" size="sm">
+                    {{ facet.total ?? facet.options.length }} bucket{{
+                      (facet.total ?? facet.options.length) === 1 ? "" : "s"
+                    }}
+                  </UBadge>
+                </div>
 
-                <div class="space-y-2">
+                <div class="flex flex-1 flex-col px-4 py-3">
                   <div
                     v-for="option in facet.options"
                     :key="`${facet.key}-${String(option.value)}`"
-                    class="flex items-center justify-between gap-3"
+                    class="flex items-center justify-between gap-3 py-1.5"
                   >
                     <span class="truncate text-sm text-highlighted">{{ option.value }}</span>
                     <UBadge color="neutral" variant="soft" size="sm">{{ option.count }}</UBadge>
                   </div>
+
                   <p v-if="facet.options.length === 0" class="text-sm text-toned">
                     No options for the current request.
                   </p>
                 </div>
-              </UCard>
+              </section>
             </div>
 
             <UAlert
@@ -647,8 +689,9 @@ onBeforeUnmount(() => {
               variant="soft"
               title="No facets requested"
               description="Add entries to request.facets to showcase live bucket counts in the playground."
+              class="rounded-none border-0"
             />
-          </div>
+          </UCard>
 
           <!-- Last applied request -->
           <UCard>
