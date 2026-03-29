@@ -231,6 +231,10 @@ function buildExistsCondition(
   if (!entry.isManyPath) return scalarBuilder(entry.column, condition);
 
   const manyStep = entry.relationPath[entry.firstManyIndex];
+  if (!manyStep) {
+    throw new Error(`Invalid many relation path for field "${condition.key}"`);
+  }
+
   let query: any = (db as any)
     .select({ one: sql<number>`1` })
     .from((schema as any)[manyStep.targetTableName]);
@@ -242,6 +246,10 @@ function buildExistsCondition(
 
   for (let index = entry.firstManyIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
+    if (!step) {
+      throw new Error(`Invalid relation step while resolving field "${condition.key}"`);
+    }
+
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
       eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
@@ -659,9 +667,12 @@ export function createQueryResourceUtils<
 
     const facetResults = await Promise.all(
       Array.from(groupedFacets.values()).map(async (group, groupIndex) => {
+        const firstGroupEntry = group[0];
+        if (!firstGroupEntry) return [];
+
         const matchingIds = (config.db as any)
           .$with(`facet_matching_ids_${groupIndex}`)
-          .as(buildMatchingIdsSelect(group[0].scopedRequest));
+          .as(buildMatchingIdsSelect(firstGroupEntry.scopedRequest));
 
         return Promise.all(
           group.map(async ({ facet }) => {
@@ -691,6 +702,10 @@ export function createQueryResourceUtils<
 
                 if (entry.isManyPath && entry.firstManyIndex === 0) {
                   const manyStep = entry.relationPath[0];
+                  if (!manyStep) {
+                    throw new Error(`Invalid many relation path for facet "${facet.key}"`);
+                  }
+
                   bucketsQuery = (config.db as any)
                     .with(matchingIds)
                     .select({
