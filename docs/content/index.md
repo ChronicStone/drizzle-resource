@@ -40,8 +40,8 @@ seo:
 Get started
 ::::
 
-::::u-button{color="neutral" size="xl" to="/getting-started/introduction" variant="outline"}
-Introduction
+::::u-button{color="neutral" size="xl" to="/playground" variant="outline"}
+Playground
 ::::
 
 </div>
@@ -251,10 +251,14 @@ await orders.query({
   Define your engine, add a resource, run your first query.
 </p>
 
-<div class="flex justify-center">
+<div class="flex flex-wrap justify-center gap-3">
 
 ::::u-button{color="primary" size="xl" to="/getting-started/quick-start" trailing-icon="i-lucide-arrow-right"}
 Quick Start
+::::
+
+::::u-button{color="neutral" size="xl" to="/playground" variant="outline"}
+Playground
 ::::
 
 </div>

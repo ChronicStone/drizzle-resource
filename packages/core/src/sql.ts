@@ -231,6 +231,10 @@ function buildExistsCondition(
   if (!entry.isManyPath) return scalarBuilder(entry.column, condition);
 
   const manyStep = entry.relationPath[entry.firstManyIndex];
+  if (!manyStep) {
+    throw new Error(`Invalid many relation path for field "${condition.key}"`);
+  }
+
   let query: any = (db as any)
     .select({ one: sql<number>`1` })
     .from((schema as any)[manyStep.targetTableName]);
@@ -242,6 +246,10 @@ function buildExistsCondition(
 
   for (let index = entry.firstManyIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
+    if (!step) {
+      throw new Error(`Invalid relation step while resolving field "${condition.key}"`);
+    }
+
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
       eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
@@ -565,13 +573,14 @@ export function createQueryResourceUtils<
     const countQuery: any = (config.db as any)
       .with(matchingIds)
       .select({
-        rowCount: sql<number>`count(*)::int`,
+        rowCount: sql<number>`count(*)`,
       })
       .from(matchingIds);
 
     const [{ rowCount }] = await countQuery;
+    const normalizedRowCount = Number(rowCount ?? 0);
 
-    if (rowCount === 0) {
+    if (normalizedRowCount === 0) {
       return { ids: [], rowCount: 0 };
     }
 
@@ -588,12 +597,12 @@ export function createQueryResourceUtils<
 
     const pageIds = await idsQuery;
     if (pageIds.length === 0) {
-      return { ids: [], rowCount };
+      return { ids: [], rowCount: normalizedRowCount };
     }
 
     return {
       ids: pageIds.map((row: any) => row.id),
-      rowCount,
+      rowCount: normalizedRowCount,
     };
   }
 
@@ -658,9 +667,12 @@ export function createQueryResourceUtils<
 
     const facetResults = await Promise.all(
       Array.from(groupedFacets.values()).map(async (group, groupIndex) => {
+        const firstGroupEntry = group[0];
+        if (!firstGroupEntry) return [];
+
         const matchingIds = (config.db as any)
           .$with(`facet_matching_ids_${groupIndex}`)
-          .as(buildMatchingIdsSelect(group[0].scopedRequest));
+          .as(buildMatchingIdsSelect(firstGroupEntry.scopedRequest));
 
         return Promise.all(
           group.map(async ({ facet }) => {
@@ -690,11 +702,15 @@ export function createQueryResourceUtils<
 
                 if (entry.isManyPath && entry.firstManyIndex === 0) {
                   const manyStep = entry.relationPath[0];
+                  if (!manyStep) {
+                    throw new Error(`Invalid many relation path for facet "${facet.key}"`);
+                  }
+
                   bucketsQuery = (config.db as any)
                     .with(matchingIds)
                     .select({
                       value: entry.column,
-                      count: sql<number>`count(distinct ${matchingIds.id})::int`.as("count"),
+                      count: sql<number>`count(distinct ${matchingIds.id})`.as("count"),
                     })
                     .from(matchingIds)
                     .innerJoin(
@@ -712,7 +728,7 @@ export function createQueryResourceUtils<
                     .with(matchingIds)
                     .select({
                       value: entry.column,
-                      count: sql<number>`count(distinct ${matchingIds.id})::int`.as("count"),
+                      count: sql<number>`count(distinct ${matchingIds.id})`.as("count"),
                     })
                     .from(rootTable)
                     .innerJoin(matchingIds, eq(matchingIds.id, rootTable.id));
@@ -732,7 +748,7 @@ export function createQueryResourceUtils<
               .select({
                 value: facetBuckets.value,
                 count: facetBuckets.count,
-                total: sql<number>`count(*) over ()::int`.as("total"),
+                total: sql<number>`count(*) over ()`.as("total"),
               })
               .from(facetBuckets)
               .orderBy(desc(facetBuckets.count), asc(facetBuckets.value));
@@ -753,7 +769,7 @@ export function createQueryResourceUtils<
                 .filter((row: any) => row.value !== null && row.value !== undefined)
                 .map((row: any) => ({
                   value: row.value,
-                  count: row.count,
+                  count: Number(row.count ?? 0),
                 })),
               nextCursor:
                 limit !== undefined
@@ -761,7 +777,7 @@ export function createQueryResourceUtils<
                     ? String(offset + limit)
                     : null
                   : undefined,
-              total,
+              total: Number(total),
             };
           }),
         );
