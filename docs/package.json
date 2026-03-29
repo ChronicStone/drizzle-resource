@@ -7,18 +7,24 @@
     "generate": "nuxt prepare && nuxt generate",
     "preview": "nuxt preview",
     "typecheck": "nuxt prepare",
+    "generate:playground-db": "node scripts/generate-playground-db.mjs",
     "twoslash:verify": "nuxt prepare && nuxt-content-twoslash verify",
     "check": "bun run build && bun run twoslash:verify"
   },
   "dependencies": {
+    "@faker-js/faker": "^10.4.0",
     "better-sqlite3": "^12.5.0",
     "docus": "latest",
     "drizzle-orm": "1.0.0-beta.16-ea816b6",
     "drizzle-resource": "workspace:*",
     "nuxt": "^4.2.2",
     "nuxt-content-twoslash": "^0.4.0",
+    "sql.js": "^1.14.1",
     "zod": "^4.3.6",
     "zod-to-json-schema": "^3.24.6"
+  },
+  "devDependencies": {
+    "@types/sql.js": "^1.4.11"
   },
   "packageManager": "bun@1.3.6"
 }

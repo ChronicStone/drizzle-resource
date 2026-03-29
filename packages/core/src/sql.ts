@@ -565,13 +565,14 @@ export function createQueryResourceUtils<
     const countQuery: any = (config.db as any)
       .with(matchingIds)
       .select({
-        rowCount: sql<number>`count(*)::int`,
+        rowCount: sql<number>`count(*)`,
       })
       .from(matchingIds);
 
     const [{ rowCount }] = await countQuery;
+    const normalizedRowCount = Number(rowCount ?? 0);
 
-    if (rowCount === 0) {
+    if (normalizedRowCount === 0) {
       return { ids: [], rowCount: 0 };
     }
 
@@ -588,12 +589,12 @@ export function createQueryResourceUtils<
 
     const pageIds = await idsQuery;
     if (pageIds.length === 0) {
-      return { ids: [], rowCount };
+      return { ids: [], rowCount: normalizedRowCount };
     }
 
     return {
       ids: pageIds.map((row: any) => row.id),
-      rowCount,
+      rowCount: normalizedRowCount,
     };
   }
 
@@ -694,7 +695,7 @@ export function createQueryResourceUtils<
                     .with(matchingIds)
                     .select({
                       value: entry.column,
-                      count: sql<number>`count(distinct ${matchingIds.id})::int`.as("count"),
+                      count: sql<number>`count(distinct ${matchingIds.id})`.as("count"),
                     })
                     .from(matchingIds)
                     .innerJoin(
@@ -712,7 +713,7 @@ export function createQueryResourceUtils<
                     .with(matchingIds)
                     .select({
                       value: entry.column,
-                      count: sql<number>`count(distinct ${matchingIds.id})::int`.as("count"),
+                      count: sql<number>`count(distinct ${matchingIds.id})`.as("count"),
                     })
                     .from(rootTable)
                     .innerJoin(matchingIds, eq(matchingIds.id, rootTable.id));
@@ -732,7 +733,7 @@ export function createQueryResourceUtils<
               .select({
                 value: facetBuckets.value,
                 count: facetBuckets.count,
-                total: sql<number>`count(*) over ()::int`.as("total"),
+                total: sql<number>`count(*) over ()`.as("total"),
               })
               .from(facetBuckets)
               .orderBy(desc(facetBuckets.count), asc(facetBuckets.value));
@@ -753,7 +754,7 @@ export function createQueryResourceUtils<
                 .filter((row: any) => row.value !== null && row.value !== undefined)
                 .map((row: any) => ({
                   value: row.value,
-                  count: row.count,
+                  count: Number(row.count ?? 0),
                 })),
               nextCursor:
                 limit !== undefined
@@ -761,7 +762,7 @@ export function createQueryResourceUtils<
                     ? String(offset + limit)
                     : null
                   : undefined,
-              total,
+              total: Number(total),
             };
           }),
         );
