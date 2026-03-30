@@ -84,8 +84,9 @@ export default defineNuxtConfig({
     highlight: {
       shikiEngine: "javascript",
       theme: {
-        dark: "dracula",
-        default: "catppuccin-latte",
+        light: "vitesse-light",
+        default: "vitesse-light",
+        dark: "vitesse-dark",
       },
       langs: ["ts", "tsx", "js", "json", "vue", "bash", "diff", "html", "css", "md", "yaml"],
       noApiRoute: true,
