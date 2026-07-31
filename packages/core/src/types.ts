@@ -156,6 +156,17 @@ export interface QueryRequest {
 }
 
 /**
+ * Client-safe request payload accepted by resource query methods.
+ *
+ * Request context belongs to the server-side `resource.query({ context })` call, so validators
+ * deliberately omit it from the transport payload.
+ */
+export type QueryRequestInput = Omit<QueryRequest, "context"> & {
+  /** @deprecated Pass trusted context through `resource.query({ context })` instead. */
+  context?: Record<string, unknown>;
+};
+
+/**
  * Result returned from `resource.query(...)`.
  */
 export interface QueryResponse<TRow = Record<string, unknown>> {
@@ -683,6 +694,37 @@ export interface ResourceQueryDefaultsConfig {
   sorting?: Readonly<QueryRequest["sorting"]>;
 }
 
+/** Upper bounds applied to every request, including requests that bypass a validator. */
+export interface ResourceQueryValidationConfig {
+  maxPageSize?: number;
+  maxFilterDepth?: number;
+  maxFilterNodes?: number;
+  maxFacetCount?: number;
+  maxFacetLimit?: number;
+}
+
+/** A validator-local restriction merged with a resource contract. */
+export interface QueryRequestSchemaOverride<TField extends string = string> {
+  defaults?: ResourceQueryDefaultsConfig;
+  limits?: ResourceQueryValidationConfig;
+  allow?: {
+    filters?: readonly TField[];
+    sorting?: readonly TField[];
+    search?: readonly TField[];
+    facets?: readonly TField[];
+  };
+}
+
+/** Fully resolved policy consumed by an integration validator. */
+export interface QueryRequestContract<TField extends string = string> {
+  filters: Set<TField>;
+  sorting: Set<TField>;
+  search: Set<TField>;
+  facets: Set<TField>;
+  defaults: ResourceQueryDefaultsConfig;
+  limits: Required<ResourceQueryValidationConfig>;
+}
+
 /**
  * Arguments shared by `strategy.query`, `strategy.ids`, and `strategy.rows`.
  */
@@ -838,6 +880,8 @@ export interface ResourceQueryConfig<
    * Request defaults applied before strategies run.
    */
   defaults?: ResourceQueryDefaultsConfig;
+  /** Defensive limits for request complexity and result size. */
+  validation?: ResourceQueryValidationConfig;
 }
 
 export interface ResourceRuntimeQueryConfig<TField extends string> {
@@ -856,6 +900,7 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
     allowed: Set<TField>;
   };
   defaults: ResourceQueryDefaultsConfig;
+  validation: Required<ResourceQueryValidationConfig>;
 }
 
 export interface QueryResource<
@@ -871,6 +916,10 @@ export interface QueryResource<
    * Root table key registered for this resource.
    */
   key: TRoot;
+  /** Drizzle schema used to derive this resource's row shape. */
+  schema: TSchema;
+  /** Drizzle relation graph used to derive selected nested row shapes. */
+  relationGraph: TRelations;
   /**
    * Drizzle relational `with` tree used for default row hydration.
    */
@@ -887,21 +936,21 @@ export interface QueryResource<
    * Resolve a page of rows, count, and optionally facets.
    */
   query: <TContextOverride extends TContext = TContext>(args: {
-    request: QueryRequest;
+    request: QueryRequestInput;
     context?: TContextOverride;
   }) => Promise<QueryResponse<TRow>>;
   /**
    * Resolve ordered IDs and total count without row hydration.
    */
   queryIds: <TContextOverride extends TContext = TContext>(args: {
-    request: QueryRequest;
+    request: QueryRequestInput;
     context?: TContextOverride;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   /**
    * Hydrate rows for a known ordered ID list.
    */
   queryRows: <TContextOverride extends TContext = TContext>(args: {
-    request: QueryRequest;
+    request: QueryRequestInput;
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     context?: TContextOverride;
   }) => Promise<TRow[]>;
@@ -912,7 +961,7 @@ export interface QueryResource<
     TFacetKey extends string = string,
     TContextOverride extends TContext = TContext,
   >(args: {
-    request: QueryRequest;
+    request: QueryRequestInput;
     facets: QueryFacetRequest<TFacetKey>[];
     context?: TContextOverride;
   }) => Promise<QueryFacetsResponse<TFacetKey>>;

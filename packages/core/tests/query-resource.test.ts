@@ -533,6 +533,7 @@ describe("defineResource", () => {
       resource.query({
         request: {
           ...baseRequest,
+          pagination: { pageIndex: 1, pageSize: 10 },
           filters: [
             {
               type: "condition",
@@ -600,6 +601,7 @@ describe("defineResource", () => {
       resource.query({
         request: {
           ...baseRequest,
+          pagination: { pageIndex: 1, pageSize: 10 },
           filters: [
             {
               type: "condition",
@@ -611,6 +613,49 @@ describe("defineResource", () => {
         },
       }),
     ).rejects.toThrow('Unknown filter field "email" for resource "employees"');
+  });
+
+  it("enforces configured request limits even without an integration schema", async () => {
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {
+      query: {
+        validation: { maxPageSize: 10, maxFilterDepth: 1, maxFacetLimit: 5 },
+      },
+      strategy: {
+        query: async () => ({ rows: [], rowCount: 0 }),
+      },
+    });
+
+    await expect(
+      resource.query({ request: { ...baseRequest, pagination: { pageIndex: 1, pageSize: 11 } } }),
+    ).rejects.toThrow("Page size cannot exceed 10");
+    await expect(
+      resource.query({
+        request: {
+          ...baseRequest,
+          pagination: { pageIndex: 1, pageSize: 10 },
+          filters: [
+            {
+              type: "group",
+              combinator: "and",
+              children: [{ type: "group", combinator: "and", children: [] }],
+            },
+          ],
+        },
+      }),
+    ).rejects.toThrow("Filter tree cannot exceed 1 levels");
+    await expect(
+      resource.query({
+        request: {
+          ...baseRequest,
+          pagination: { pageIndex: 1, pageSize: 10 },
+          facets: [{ key: "fullName", limit: 6 }],
+        },
+      }),
+    ).rejects.toThrow("Facet limit cannot exceed 5");
   });
 
   it("skips the facet strategy when the main query strategy already returns facets", async () => {

@@ -22,6 +22,9 @@ export default defineConfig({
   },
   pack: {
     clean: true,
+    deps: {
+      neverBundle: ["drizzle-orm", "drizzle-orm/zod", "drizzle-orm/valibot", "valibot", "zod"],
+    },
     dts: {
       oxc: true,
     },

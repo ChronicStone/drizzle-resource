@@ -14,6 +14,7 @@
   },
   "scripts": {
     "typecheck": "vp check",
+    "test": "vp test",
     "build": "vp pack",
     "check": "vp check && vp pack"
   }

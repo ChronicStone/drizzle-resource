@@ -1,5 +1,6 @@
 export { createQueryEngine } from "./src/engine.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
+export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contracts.js";
 export type {
   DefineResourceOptions,
   DefineQueryResourceOptions,
@@ -24,6 +25,9 @@ export type {
   QueryFilterInput,
   QueryFilterNode,
   QueryRequest,
+  QueryRequestContract,
+  QueryRequestInput,
+  QueryRequestSchemaOverride,
   QuerySortDescriptor,
   QuerySorting,
   ResourceQueryConfig,
@@ -32,6 +36,7 @@ export type {
   ResourceQueryFiltersConfig,
   ResourceQuerySearchConfig,
   ResourceQuerySortConfig,
+  ResourceQueryValidationConfig,
   ResourceQueryStrategyConfig,
   QueryResource,
   QueryResourceUtils,
