@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 1.1.0
+
+### Minor Changes
+
+- [#11](https://github.com/ChronicStone/drizzle-resource/pull/11) [`c4e5476`](https://github.com/ChronicStone/drizzle-resource/commit/c4e5476521e4b28a064191c1127258cb552ff213) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add resource-derived Zod and Valibot request and response schemas, including relation-aware response validation and defensive request limits.
+
 ## 1.0.3
 
 ### Patch Changes
