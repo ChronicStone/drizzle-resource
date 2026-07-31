@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.0.0
+
+### Major Changes
+
+- [#14](https://github.com/ChronicStone/drizzle-resource/pull/14) [`2cbe73b`](https://github.com/ChronicStone/drizzle-resource/commit/2cbe73b89c3e9068c6caea2c3ff1f576f44ec8fa) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add built-in cursor pagination with stable keyset ordering and optional exact counts. Pagination requests now use explicit offset or cursor modes, query responses expose mode-specific `pageInfo`, and the Zod and Valibot schemas validate the same discriminated contract.
+
 ## 1.1.1
 
 ### Patch Changes
