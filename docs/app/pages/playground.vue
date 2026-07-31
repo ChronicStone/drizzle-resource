@@ -111,6 +111,8 @@ const dateFormatter = new Intl.DateTimeFormat("en-US", {
   year: "numeric",
 });
 
+const countFormatter = new Intl.NumberFormat("en-US");
+
 const currencyFormatter = new Intl.NumberFormat("en-US", {
   style: "currency",
   currency: "USD",
@@ -288,9 +290,9 @@ onBeforeUnmount(() => {
 
       <div class="hidden items-center gap-2 text-xs text-toned sm:flex">
         <span>
-          {{ playgroundSeedSummary.orders.toLocaleString() }} orders ·
-          {{ playgroundSeedSummary.customers.toLocaleString() }} customers ·
-          {{ playgroundSeedSummary.products.toLocaleString() }} products
+          {{ countFormatter.format(playgroundSeedSummary.orders) }} orders ·
+          {{ countFormatter.format(playgroundSeedSummary.customers) }} customers ·
+          {{ countFormatter.format(playgroundSeedSummary.products) }} products
         </span>
         <UBadge color="neutral" variant="subtle" size="sm">
           orgId: {{ playgroundContext.orgId }}
