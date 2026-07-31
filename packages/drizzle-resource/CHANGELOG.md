@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 1.1.1
+
+### Patch Changes
+
+- [`17b5e36`](https://github.com/ChronicStone/drizzle-resource/commit/17b5e366a97c11bd40d3b1ffc7b48c4c4c8bbad2) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Preserve typed Zod and Valibot response-schema overrides, including nested relation transforms, in the generated declaration files.
+
 ## 1.1.0
 
 ### Minor Changes
