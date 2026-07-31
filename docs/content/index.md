@@ -100,7 +100,7 @@ const result = await orders.query({
   validation does not introduce a second contract to maintain.
 </p>
 
-::::u-button{color="primary" size="lg" to="/resource-setup/validation" trailing-icon="i-lucide-arrow-right"}
+::::u-button{color="primary" size="lg" to="/integration/validation" trailing-icon="i-lucide-arrow-right"}
 Explore validation
 ::::
 
@@ -109,10 +109,10 @@ Explore validation
 :::landing-split-right
 
 :::div{class="grid grid-cols-1 gap-4"}
-::::u-page-card{:spotlight="true" icon="i-lucide-badge-check" to="/resource-setup/validation" title="Zod" description="Use requestSchema and responseSchema with Zod. Parse nested relations and preserve transformed output through z.infer."}
+::::u-page-card{:spotlight="true" icon="i-lucide-badge-check" to="/integration/validation" title="Zod" description="Use requestSchema and responseSchema with Zod. Parse nested relations and preserve transformed output through z.infer."}
 ::::
 
-::::u-page-card{:spotlight="true" icon="i-lucide-shield-check" to="/resource-setup/validation" title="Valibot" description="Use the same resource contract with Valibot. Column overrides stay typed from input through v.InferOutput."}
+::::u-page-card{:spotlight="true" icon="i-lucide-shield-check" to="/integration/validation" title="Valibot" description="Use the same resource contract with Valibot. Column overrides stay typed from input through v.InferOutput."}
 ::::
 :::
 
@@ -315,7 +315,7 @@ await orders.query({
 ::::u-page-card{:spotlight="true" icon="i-lucide-shield-check" to="/resource-setup/scope" title="Multi-tenant APIs" description="Scope filters merge before any client filter and cannot be bypassed. Tenancy is a structural guarantee."}
 ::::
 
-::::u-page-card{:spotlight="true" icon="i-lucide-gauge" to="/performance/overview" title="Tunable performance" description="Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck."}
+::::u-page-card{:spotlight="true" icon="i-lucide-gauge" to="/performance/execution-cost" title="Tunable performance" description="Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck."}
 ::::
 
 ::::u-page-card{:spotlight="true" icon="i-lucide-braces" to="/reference/methods" title="Fully typed field paths" description="Field paths inferred from your schema and relations. Typos in sort keys or filter fields are compile-time errors."}
