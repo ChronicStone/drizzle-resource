@@ -308,33 +308,6 @@ const { subNavigationMode } = useSubNavigation(navigation);
   color: var(--ui-text-toned);
 }
 
-.landing-integrations {
-  display: flex;
-  flex-wrap: wrap;
-  align-items: center;
-  justify-content: space-between;
-  gap: 0.75rem 1.5rem;
-  border-radius: 1rem;
-  border: 1px dashed color-mix(in oklab, var(--ui-primary) 25%, var(--ui-border) 75%);
-  background: color-mix(in oklab, var(--ui-primary) 4%, var(--ui-bg) 96%);
-  padding: 0.9rem 1.15rem;
-}
-
-.landing-integrations-copy {
-  max-width: 46rem;
-  font-size: 0.9rem;
-  line-height: 1.6;
-  color: var(--ui-text-toned);
-}
-
-.landing-integrations-copy code {
-  border-radius: 0.35rem;
-  background: color-mix(in oklab, var(--ui-text) 6%, transparent);
-  padding: 0.1rem 0.35rem;
-  font-size: 0.8rem;
-  color: var(--ui-text-toned);
-}
-
 .landing-cta {
   margin: 0 auto;
   max-width: 42rem;

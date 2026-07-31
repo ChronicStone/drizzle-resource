@@ -258,19 +258,6 @@ await orders.query({
 ::::
 :::
 
-<div class="landing-integrations mt-6">
-  <div class="landing-integrations-copy">
-    <span class="font-semibold text-stone-800 dark:text-stone-200">Validator integrations included.</span>
-    Zod and Valibot entry points ship as subpath exports —
-    <code>drizzle-resource/zod</code> and <code>drizzle-resource/valibot</code>.
-  </div>
-
-:::u-button{color="neutral" size="sm" to="/reference/integrations" variant="link" trailing-icon="i-lucide-arrow-right"}
-Integrations reference
-:::
-
-</div>
-
 ::
 
 ::div{class="landing-section-pad py-12"}
