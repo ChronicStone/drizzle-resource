@@ -87,6 +87,41 @@ const result = await orders.query({
 
 ::div{class="landing-section-pad py-12"}
 
+::landing-split{class="landing-two-col landing-two-col--problem"}
+:::landing-split-left
+
+<p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">Validation integrations</p>
+
+<h2 class="mb-4 text-3xl font-bold sm:text-4xl">Keep the resource contract<br />at the transport boundary</h2>
+
+<p class="mb-8 max-w-lg text-lg leading-relaxed text-stone-600 dark:text-stone-400">
+  Derive strict request and relation-aware response schemas from the same resource your query runs.
+  Zod and Valibot overrides keep their column inputs and parsed output types intact, so endpoint
+  validation does not introduce a second contract to maintain.
+</p>
+
+::::u-button{color="primary" size="lg" to="/resource-setup/validation" trailing-icon="i-lucide-arrow-right"}
+Explore validation
+::::
+
+:::
+
+:::landing-split-right
+
+:::div{class="grid grid-cols-1 gap-4"}
+::::u-page-card{:spotlight="true" icon="i-lucide-badge-check" to="/resource-setup/validation" title="Zod" description="Use requestSchema and responseSchema with Zod. Parse nested relations and preserve transformed output through z.infer."}
+::::
+
+::::u-page-card{:spotlight="true" icon="i-lucide-shield-check" to="/resource-setup/validation" title="Valibot" description="Use the same resource contract with Valibot. Column overrides stay typed from input through v.InferOutput."}
+::::
+:::
+
+:::
+::
+::
+
+::div{class="landing-section-pad py-12"}
+
 <div class="mb-10 max-w-2xl">
   <h2 class="mb-4 text-3xl font-bold sm:text-4xl">The problem it solves</h2>
   <p class="text-lg leading-relaxed text-stone-600 dark:text-stone-400">

@@ -5,9 +5,82 @@ export type QueryZodIntegrationConfig = { readonly package: "zod" };
 
 export const queryZodIntegration: QueryZodIntegrationConfig = { package: "zod" };
 
-export interface QueryResponseSchemaOverride {
-  columns?: Record<string, (schema: any) => any>;
-  relations?: Record<string, QueryResponseSchemaOverride>;
+type ResourceRow<TResource> = TResource extends {
+  query: (...args: never[]) => Promise<{ rows: Array<infer TRow> }>;
+}
+  ? Extract<TRow, Record<string, unknown>>
+  : never;
+
+interface QuerySchemaResponse<TRow> {
+  rows: TRow[];
+  rowCount: number;
+  facets?: Array<{
+    key: string;
+    options: Array<{ value: unknown; count: number }>;
+    nextCursor?: string | null;
+    total?: number;
+  }>;
+}
+
+type RelationKey<TRow extends Record<string, unknown>> = {
+  [TKey in keyof TRow]-?: NonNullable<TRow[TKey]> extends
+    | readonly unknown[]
+    | Record<string, unknown>
+    ? TKey
+    : never;
+}[keyof TRow];
+
+type ColumnKey<TRow extends Record<string, unknown>> = Exclude<keyof TRow, RelationKey<TRow>>;
+
+type RelationRow<TValue> =
+  NonNullable<TValue> extends readonly (infer TItem)[]
+    ? Extract<TItem, Record<string, unknown>>
+    : Extract<NonNullable<TValue>, Record<string, unknown>>;
+
+type OverrideOutput<TSchema> = TSchema extends z.ZodType<infer TOutput> ? TOutput : never;
+
+type OverrideColumns<TRow extends Record<string, unknown>, TColumns> = TColumns extends object
+  ? Omit<TRow, keyof TColumns> & {
+      [TKey in keyof TColumns & keyof TRow]: TColumns[TKey] extends (
+        schema: z.ZodType<TRow[TKey]>,
+      ) => infer TSchema
+        ? OverrideOutput<TSchema>
+        : TRow[TKey];
+    }
+  : TRow;
+
+type OverrideRelation<TValue, TOverride> =
+  NonNullable<TValue> extends readonly unknown[]
+    ? Array<OverrideRow<RelationRow<TValue>, TOverride>>
+    : OverrideRow<RelationRow<TValue>, TOverride> | Extract<TValue, null | undefined>;
+
+type OverrideRelations<TRow extends Record<string, unknown>, TRowOverride> = TRowOverride extends {
+  relations?: infer TRelations;
+}
+  ? TRelations extends object
+    ? Omit<
+        OverrideColumns<TRow, TRowOverride extends { columns?: infer TColumns } ? TColumns : never>,
+        keyof TRelations
+      > & {
+        [TKey in keyof TRelations & keyof TRow]: OverrideRelation<TRow[TKey], TRelations[TKey]>;
+      }
+    : OverrideColumns<TRow, TRowOverride extends { columns?: infer TColumns } ? TColumns : never>
+  : OverrideColumns<TRow, TRowOverride extends { columns?: infer TColumns } ? TColumns : never>;
+
+type OverrideRow<TRow extends Record<string, unknown>, TRowOverride> = OverrideRelations<
+  TRow,
+  TRowOverride
+>;
+
+export interface QueryResponseSchemaOverride<
+  TRow extends Record<string, unknown> = Record<string, unknown>,
+> {
+  columns?: {
+    [TKey in ColumnKey<TRow>]?: (schema: z.ZodType<TRow[TKey]>) => z.ZodType;
+  };
+  relations?: {
+    [TKey in RelationKey<TRow>]?: QueryResponseSchemaOverride<RelationRow<TRow[TKey]>>;
+  };
 }
 
 interface QueryRequestSchemaOverride {
@@ -209,7 +282,14 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
 }
 
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
-export function responseSchema(resource: any, override?: QueryResponseSchemaOverride): any {
+export function responseSchema<
+  TResource extends { key: string; relations?: Record<string, unknown> },
+  const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>> | undefined =
+    undefined,
+>(
+  resource: TResource,
+  override?: TOverride,
+): z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>> {
   const row = responseRowSchema(resource, String(resource.key), resource.relations, override);
   return z.strictObject({
     rows: z.array(row),
@@ -226,5 +306,5 @@ export function responseSchema(resource: any, override?: QueryResponseSchemaOver
         }),
       )
       .optional(),
-  });
+  }) as z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
 }

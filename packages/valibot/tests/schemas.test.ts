@@ -1,6 +1,6 @@
 import { defineRelationsPart } from "drizzle-orm";
 import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import * as v from "valibot";
 import { createQueryEngine } from "../../core/index.js";
 
@@ -61,10 +61,32 @@ describe("Valibot schemas", () => {
     ).toBe(false);
   });
 
-  it("uses Drizzle column schemas and selected relation cardinality", () => {
+  it("infers override inputs and carries their output through selected relations", () => {
     const responseContract = responseSchema(resource, {
-      columns: { reference: () => v.pipe(v.string(), v.toUpperCase()) },
+      columns: {
+        reference: (columnSchema) =>
+          v.pipe(
+            columnSchema,
+            v.transform((value) => value.length),
+          ),
+      },
+      relations: {
+        customer: {
+          columns: {
+            name: (columnSchema) =>
+              v.pipe(
+                columnSchema,
+                v.transform((value) => value.length),
+              ),
+          },
+        },
+      },
     });
+    type Response = v.InferOutput<typeof responseContract>;
+
+    expectTypeOf<Response["rows"][number]["reference"]>().toEqualTypeOf<number>();
+    expectTypeOf<Response["rows"][number]["customer"]["name"]>().toEqualTypeOf<number>();
+
     const response = v.parse(responseContract, {
       rows: [
         {
@@ -77,7 +99,8 @@ describe("Valibot schemas", () => {
       rowCount: 1,
     });
 
-    expect(response.rows[0]?.reference).toBe("ORD-1");
+    expect(response.rows[0]?.reference).toBe(5);
+    expect(response.rows[0]?.customer.name).toBe(3);
     expect(v.safeParse(responseContract, { rows: [{ id: "bad" }], rowCount: 1 }).success).toBe(
       false,
     );

@@ -1,6 +1,6 @@
 import { defineRelationsPart } from "drizzle-orm";
 import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
-import { describe, expect, it } from "vite-plus/test";
+import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import { z } from "zod";
 import { createQueryEngine } from "../../core/index.js";
 
@@ -79,10 +79,24 @@ describe("Zod schemas", () => {
     ).toBe(false);
   });
 
-  it("uses Drizzle column schemas and recurses through selected relations", () => {
+  it("infers override inputs and carries their output through selected relations", () => {
     const responseContract = responseSchema(resource, {
-      columns: { reference: () => z.string().transform((value) => value.toUpperCase()) },
+      columns: {
+        reference: (columnSchema) => columnSchema.transform((value) => value.length),
+      },
+      relations: {
+        customer: {
+          columns: {
+            name: (columnSchema) => columnSchema.transform((value) => value.length),
+          },
+        },
+      },
     });
+    type Response = z.infer<typeof responseContract>;
+
+    expectTypeOf<Response["rows"][number]["reference"]>().toEqualTypeOf<number>();
+    expectTypeOf<Response["rows"][number]["customer"]["name"]>().toEqualTypeOf<number>();
+
     const response = responseContract.parse({
       rows: [
         {
@@ -95,7 +109,8 @@ describe("Zod schemas", () => {
       rowCount: 1,
     });
 
-    expect(response.rows[0]?.reference).toBe("ORD-1");
+    expect(response.rows[0]?.reference).toBe(5);
+    expect(response.rows[0]?.customer.name).toBe(3);
     expect(responseContract.safeParse({ rows: [{ id: "bad" }], rowCount: 1 }).success).toBe(false);
   });
 });
