@@ -3,7 +3,12 @@ import { integer, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { defineRelationsPart } from "drizzle-orm";
 
 import { createQueryEngine } from "../index.js";
-import type { QueryFieldPath, QueryFilterBuilder, QueryIdsResponse } from "../index.js";
+import type {
+  QueryFieldPath,
+  QueryFilterBuilder,
+  QueryIdsResponse,
+  QueryPageInfo,
+} from "../index.js";
 
 const companies = pgTable("companies", {
   id: uuid().defaultRandom().primaryKey(),
@@ -180,6 +185,14 @@ const baseRequest = {
   context: {},
   filters: [],
 };
+const pageInfo = {
+  mode: "offset" as const,
+  pageIndex: 1,
+  pageSize: 25,
+  hasNextPage: false,
+  count: "exact" as const,
+  rowCount: 1,
+};
 
 describe("defineResource typing", () => {
   it("narrows inline scope filters to inferred field paths", () => {
@@ -216,7 +229,7 @@ describe("defineResource typing", () => {
       strategy: {
         ids: async () => ({
           ids: ["emp_1"],
-          rowCount: 1,
+          pageInfo,
         }),
         rows: async ({ ids }) => ids.map((id) => ({ id, fullName: "Ada" })),
       },
@@ -234,7 +247,7 @@ describe("defineResource typing", () => {
       strategy: {
         ids: async () => ({
           ids: ["emp_1"],
-          rowCount: 1,
+          pageInfo,
         }),
       },
     });
@@ -260,7 +273,7 @@ describe("defineResource typing", () => {
           };
         };
       }>;
-      rowCount: number;
+      pageInfo: QueryPageInfo;
       facets?: Array<{
         key: string;
         options: Array<{
@@ -290,7 +303,7 @@ describe("defineResource typing", () => {
             };
           };
         }>;
-        rowCount: number;
+        pageInfo: QueryPageInfo;
         facets?: Array<{
           key: string;
           options: Array<{
@@ -310,7 +323,7 @@ describe("defineResource typing", () => {
       strategy: {
         ids: async () => ({
           ids: ["emp_1"],
-          rowCount: 1,
+          pageInfo,
         }),
       },
     });

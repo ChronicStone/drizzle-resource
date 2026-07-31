@@ -52,8 +52,10 @@ const filterNodeSchema: z.ZodType<FilterNode> = z.lazy(() =>
 export const playgroundRequestSchema = z.object({
   context: z.record(z.string(), z.unknown()),
   pagination: z.object({
+    mode: z.literal("offset"),
     pageIndex: z.number().int().min(1),
     pageSize: z.number().int().min(1).max(100),
+    count: z.literal("exact"),
   }),
   sorting: z.array(
     z.object({
@@ -84,8 +86,10 @@ export type PlaygroundRequest = z.infer<typeof playgroundRequestSchema>;
 export const basePlaygroundRequest: QueryRequest = {
   context: {},
   pagination: {
+    mode: "offset",
     pageIndex: 1,
     pageSize: 25,
+    count: "exact",
   },
   sorting: [{ key: "createdAt", dir: "desc" }],
   search: {
@@ -110,8 +114,10 @@ export const basePlaygroundRequest: QueryRequest = {
 export const defaultPlaygroundRequest: QueryRequest = {
   context: {},
   pagination: {
+    mode: "offset",
     pageIndex: 1,
     pageSize: 25,
+    count: "exact",
   },
   sorting: [{ key: "createdAt", dir: "desc" }],
   search: {

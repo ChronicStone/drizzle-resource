@@ -13,7 +13,37 @@ type ResourceRow<TResource> = TResource extends {
 
 interface QuerySchemaResponse<TRow> {
   rows: TRow[];
-  rowCount: number;
+  pageInfo:
+    | {
+        mode: "offset";
+        pageIndex: number;
+        pageSize: number;
+        hasNextPage: boolean;
+        count: "none";
+        rowCount: null;
+      }
+    | {
+        mode: "offset";
+        pageIndex: number;
+        pageSize: number;
+        hasNextPage: boolean;
+        count: "exact";
+        rowCount: number;
+      }
+    | {
+        mode: "cursor";
+        pageSize: number;
+        nextCursor: string | null;
+        count: "none";
+        rowCount: null;
+      }
+    | {
+        mode: "cursor";
+        pageSize: number;
+        nextCursor: string | null;
+        count: "exact";
+        rowCount: number;
+      };
   facets?: Array<{
     key: string;
     options: Array<{ value: unknown; count: number }>;
@@ -84,13 +114,28 @@ export interface QueryResponseSchemaOverride<
 }
 
 interface QueryRequestSchemaOverride {
-  defaults?: { pagination?: { pageIndex?: number; pageSize?: number }; sorting?: readonly any[] };
+  defaults?: {
+    pagination?: {
+      mode?: "offset" | "cursor";
+      pageIndex?: number;
+      pageSize?: number;
+      count?: "none" | "exact";
+    };
+    sorting?: readonly any[];
+  };
   limits?: Partial<ReturnType<typeof defaultLimits>>;
-  allow?: Partial<Record<"filters" | "sorting" | "search" | "facets", readonly string[]>>;
+  allow?: {
+    filters?: readonly string[];
+    sorting?: readonly string[];
+    search?: readonly string[];
+    facets?: readonly string[];
+    pagination?: readonly ("offset" | "cursor")[];
+  };
 }
 
 const defaultLimits = () => ({
   maxPageSize: 100,
+  maxCursorLength: 2048,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -121,6 +166,7 @@ function resolveQueryRequestContract(resource: any, override?: QueryRequestSchem
     ),
     search: restrict(resource.queryConfig.search.allowed, override?.allow?.search),
     facets: restrict(resource.queryConfig.facets.allowed, override?.allow?.facets),
+    pagination: restrict(resource.queryConfig.pagination.modes, override?.allow?.pagination),
     defaults,
     limits: Object.fromEntries(
       Object.entries(defaultLimits()).map(([key, fallback]) => [
@@ -140,6 +186,12 @@ function resolveQueryRequestContract(resource: any, override?: QueryRequestSchem
       );
     }
   }
+  const defaultPaginationMode = contract.defaults.pagination?.mode ?? "offset";
+  if (!contract.pagination.has(defaultPaginationMode)) {
+    throw new Error(
+      `Default pagination mode "${defaultPaginationMode}" is not allowed for resource "${String(resource.key)}"`,
+    );
+  }
   return contract;
 }
 
@@ -153,7 +205,7 @@ function hasAllowedFilterDepth(filters: any[], maxDepth: number) {
     const { filter, depth } = stack.pop()!;
     if (depth > maxDepth) return false;
     if (filter.type === "group") {
-      stack.push(...filter.children.map((child) => ({ filter: child, depth: depth + 1 })));
+      stack.push(...filter.children.map((child: any) => ({ filter: child, depth: depth + 1 })));
     }
   }
   return true;
@@ -194,7 +246,7 @@ function responseRowSchema(
 /** Build a strict transport schema from a resource's request contract. */
 export function requestSchema(resource: any, override?: QueryRequestSchemaOverride): any {
   const contract = resolveQueryRequestContract(resource, override);
-  const filter = z.lazy(() =>
+  const filter: z.ZodType<any> = z.lazy(() =>
     z.discriminatedUnion("type", [
       z.strictObject({
         type: z.literal("condition"),
@@ -223,23 +275,45 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
   );
   const defaultPageIndex = contract.defaults.pagination?.pageIndex ?? 1;
   const defaultPageSize = contract.defaults.pagination?.pageSize ?? 25;
+  const defaultMode = contract.defaults.pagination?.mode ?? "offset";
+  const defaultCount =
+    contract.defaults.pagination?.count ?? (defaultMode === "cursor" ? "none" : "exact");
   const defaultSorting = [...(contract.defaults.sorting ?? [])];
   const defaultSearchFields = [...resource.queryConfig.search.defaults].filter((field) =>
     contract.search.has(field),
   );
 
+  const pageSize = z.number().int().positive().max(contract.limits.maxPageSize);
+  const offsetPagination = z.strictObject({
+    mode: z.literal("offset").default("offset"),
+    pageIndex: z.number().int().positive().default(defaultPageIndex),
+    pageSize: pageSize.default(defaultPageSize),
+    count: z.enum(["none", "exact"]).default(defaultMode === "offset" ? defaultCount : "exact"),
+  });
+  const cursorPagination = z.strictObject({
+    mode: z.literal("cursor"),
+    cursor: z.string().max(contract.limits.maxCursorLength).nullable().default(null),
+    pageSize: pageSize.default(defaultPageSize),
+    count: z.enum(["none", "exact"]).default(defaultMode === "cursor" ? defaultCount : "none"),
+  });
+  const paginationDefault =
+    defaultMode === "cursor"
+      ? { mode: "cursor" as const, cursor: null, pageSize: defaultPageSize, count: defaultCount }
+      : {
+          mode: "offset" as const,
+          pageIndex: defaultPageIndex,
+          pageSize: defaultPageSize,
+          count: defaultCount,
+        };
+
   return z.strictObject({
     pagination: z
-      .object({
-        pageIndex: z.number().int().positive().default(defaultPageIndex),
-        pageSize: z
-          .number()
-          .int()
-          .positive()
-          .max(contract.limits.maxPageSize)
-          .default(defaultPageSize),
-      })
-      .default({ pageIndex: defaultPageIndex, pageSize: defaultPageSize }),
+      .union([offsetPagination, cursorPagination])
+      .refine(
+        (pagination) => contract.pagination.has(pagination.mode),
+        "Pagination mode is not allowed",
+      )
+      .default(paginationDefault),
     sorting: z
       .array(
         z.strictObject({
@@ -284,16 +358,50 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
 export function responseSchema<
   TResource extends { key: string; relations?: Record<string, unknown> },
-  const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>> | undefined =
-    undefined,
+  const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>>,
 >(
   resource: TResource,
-  override?: TOverride,
-): z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>> {
+  override: QueryResponseSchemaOverride<ResourceRow<TResource>> & TOverride,
+): z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
+export function responseSchema<
+  TResource extends { key: string; relations?: Record<string, unknown> },
+>(resource: TResource): z.ZodType<QuerySchemaResponse<ResourceRow<TResource>>>;
+export function responseSchema(resource: any, override?: QueryResponseSchemaOverride): any {
   const row = responseRowSchema(resource, String(resource.key), resource.relations, override);
   return z.strictObject({
     rows: z.array(row),
-    rowCount: z.number().int().nonnegative(),
+    pageInfo: z.union([
+      z.strictObject({
+        mode: z.literal("offset"),
+        pageIndex: z.number().int().positive(),
+        pageSize: z.number().int().positive(),
+        hasNextPage: z.boolean(),
+        count: z.literal("none"),
+        rowCount: z.null(),
+      }),
+      z.strictObject({
+        mode: z.literal("offset"),
+        pageIndex: z.number().int().positive(),
+        pageSize: z.number().int().positive(),
+        hasNextPage: z.boolean(),
+        count: z.literal("exact"),
+        rowCount: z.number().int().nonnegative(),
+      }),
+      z.strictObject({
+        mode: z.literal("cursor"),
+        pageSize: z.number().int().positive(),
+        nextCursor: z.string().nullable(),
+        count: z.literal("none"),
+        rowCount: z.null(),
+      }),
+      z.strictObject({
+        mode: z.literal("cursor"),
+        pageSize: z.number().int().positive(),
+        nextCursor: z.string().nullable(),
+        count: z.literal("exact"),
+        rowCount: z.number().int().nonnegative(),
+      }),
+    ]),
     facets: z
       .array(
         z.strictObject({
@@ -306,5 +414,5 @@ export function responseSchema<
         }),
       )
       .optional(),
-  }) as z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
+  });
 }

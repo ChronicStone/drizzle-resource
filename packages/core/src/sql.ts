@@ -1,4 +1,18 @@
-import { and, asc, desc, eq, exists, like, not, or, sql } from "drizzle-orm";
+import {
+  and,
+  asc,
+  desc,
+  eq,
+  exists,
+  gt,
+  isNotNull,
+  isNull,
+  like,
+  lt,
+  not,
+  or,
+  sql,
+} from "drizzle-orm";
 import { getColumns } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 
@@ -15,11 +29,13 @@ import type {
   QueryFilterNode,
   QueryRelationsConfig,
   QueryRequest,
+  QueryPageInfo,
   QueryResource,
   QueryResourceUtils,
   QueryRootKey,
   QueryWith,
 } from "./types.js";
+import { decodeCursor, encodeCursor } from "./cursor.js";
 
 const utilsCache = new WeakMap<object, QueryResourceUtils<any>>();
 
@@ -562,47 +578,139 @@ export function createQueryResourceUtils<
   }
 
   async function executeIdsQuery({ request }: { request: QueryRequest }) {
-    const pageIndex = request.pagination.pageIndex <= 0 ? 1 : request.pagination.pageIndex;
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
-    const offset = (pageIndex - 1) * pageSize;
     const orderBy = compileOrderBy(request.sorting);
     const matchingIds = (config.db as any)
       .$with("matching_ids")
       .as(buildMatchingIdsSelect(request));
 
-    const countQuery: any = (config.db as any)
-      .with(matchingIds)
-      .select({
-        rowCount: sql<number>`count(*)`,
-      })
-      .from(matchingIds);
+    let rowCount: number | null = null;
+    if (request.pagination.count === "exact") {
+      const countQuery: any = (config.db as any)
+        .with(matchingIds)
+        .select({
+          rowCount: sql<number>`count(*)`,
+        })
+        .from(matchingIds);
+      const [countResult] = await countQuery;
+      rowCount = Number(countResult?.rowCount ?? 0);
 
-    const [{ rowCount }] = await countQuery;
-    const normalizedRowCount = Number(rowCount ?? 0);
-
-    if (normalizedRowCount === 0) {
-      return { ids: [], rowCount: 0 };
+      if (rowCount === 0) {
+        return {
+          ids: [],
+          pageInfo:
+            request.pagination.mode === "cursor"
+              ? {
+                  mode: "cursor" as const,
+                  pageSize,
+                  nextCursor: null,
+                  count: "exact" as const,
+                  rowCount,
+                }
+              : {
+                  mode: "offset" as const,
+                  pageIndex: request.pagination.pageIndex,
+                  pageSize,
+                  hasNextPage: false,
+                  count: "exact" as const,
+                  rowCount,
+                },
+        };
+      }
     }
+
+    const cursorSelection = Object.fromEntries(
+      request.sorting.map((rule, index) => [`__cursor_${index}`, resolveField(rule.key)?.column]),
+    );
 
     let idsQuery: any = (config.db as any)
       .with(matchingIds)
-      .select({ id: matchingIds.id })
+      .select({ id: matchingIds.id, ...cursorSelection })
       .from(matchingIds)
       .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
 
-    idsQuery = applyOuterJoins(idsQuery, request)
+    idsQuery = applyOuterJoins(idsQuery, request);
+
+    if (request.pagination.mode === "cursor" && request.pagination.cursor) {
+      const cursorValues = decodeCursor(
+        request.pagination.cursor,
+        String(resource.key),
+        request.sorting,
+      );
+      const branches = request.sorting.map((rule, index) => {
+        const previousEqualities = request.sorting
+          .slice(0, index)
+          .map((previousRule, priorIndex) => {
+            const column = resolveField(previousRule.key)?.column;
+            const value = cursorValues[priorIndex];
+            return value === null ? isNull(column as any) : eq(column as any, value as any);
+          });
+        const column = resolveField(rule.key)?.column;
+        const value = cursorValues[index];
+        const comparison =
+          rule.dir === "asc"
+            ? value === null
+              ? sql`false`
+              : or(gt(column as any, value as any), isNull(column as any))
+            : value === null
+              ? isNotNull(column as any)
+              : lt(column as any, value as any);
+        return and(...previousEqualities, comparison);
+      });
+      idsQuery = idsQuery.where(or(...branches) ?? sql`false`);
+    }
+
+    const offset =
+      request.pagination.mode === "offset"
+        ? (Math.max(request.pagination.pageIndex, 1) - 1) * pageSize
+        : 0;
+    const needsLookahead =
+      request.pagination.mode === "cursor" || request.pagination.count === "none";
+    idsQuery = idsQuery
       .orderBy(...(orderBy.length > 0 ? orderBy : [asc(rootTable.id)]))
-      .limit(pageSize)
+      .limit(pageSize + (needsLookahead ? 1 : 0))
       .offset(offset);
 
-    const pageIds = await idsQuery;
-    if (pageIds.length === 0) {
-      return { ids: [], rowCount: normalizedRowCount };
+    const queriedRows = await idsQuery;
+    const hasNextPage =
+      request.pagination.count === "exact" && request.pagination.mode === "offset"
+        ? offset + Math.min(queriedRows.length, pageSize) < (rowCount ?? 0)
+        : queriedRows.length > pageSize;
+    const pageRows = queriedRows.slice(0, pageSize);
+    const countInfo =
+      request.pagination.count === "exact"
+        ? ({ count: "exact", rowCount: rowCount ?? 0 } as const)
+        : ({ count: "none", rowCount: null } as const);
+    let pageInfo: QueryPageInfo;
+
+    if (request.pagination.mode === "cursor") {
+      const lastRow = pageRows.at(-1);
+      pageInfo = {
+        mode: "cursor",
+        pageSize,
+        nextCursor:
+          hasNextPage && lastRow
+            ? encodeCursor(
+                String(resource.key),
+                request.sorting,
+                request.sorting.map((_, index) => lastRow[`__cursor_${index}`]),
+              )
+            : null,
+        ...countInfo,
+      };
+    } else {
+      pageInfo = {
+        mode: "offset",
+        pageIndex: request.pagination.pageIndex,
+        pageSize,
+        hasNextPage,
+        ...countInfo,
+      };
     }
 
     return {
-      ids: pageIds.map((row: any) => row.id),
-      rowCount: normalizedRowCount,
+      ids: pageRows.map((row: any) => row.id),
+      pageInfo,
     };
   }
 
@@ -629,13 +737,13 @@ export function createQueryResourceUtils<
   }
 
   async function executeHydratedPage({ request }: { request: QueryRequest }) {
-    const { ids, rowCount } = await executeIdsQuery({ request });
+    const { ids, pageInfo } = await executeIdsQuery({ request });
     if (ids.length === 0) {
-      return { rows: [], rowCount };
+      return { rows: [], pageInfo };
     }
 
     const rows = await executeRowsQuery({ ids, request });
-    return { rows, rowCount };
+    return { rows, pageInfo };
   }
 
   async function resolveFacets({

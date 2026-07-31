@@ -64,7 +64,7 @@ const result = await orders.query({
   context: { orgId: "acme" },
   request: {
     context: {},
-    pagination: { pageIndex: 1, pageSize: 25 },
+    pagination: { mode: "offset", pageIndex: 1, pageSize: 25 },
     sorting: [{ key: "createdAt", dir: "desc" }],
     search: { value: "laptop", fields: [] },
     filters: [
@@ -194,7 +194,7 @@ await orders.query({
   context: { orgId: "acme" },
   request: {
     context: {},
-    pagination: { pageIndex: 1, pageSize: 25 },
+    pagination: { mode: "offset", pageIndex: 1, pageSize: 25 },
     sorting: [{ key: "customer.name", dir: "asc" }],
     search: { value: "laptop", fields: [] },
     filters: [
@@ -279,7 +279,7 @@ await orders.query({
 
 ::::div{class="landing-method"}
 <code class="landing-method-name">resource.queryIds()</code>
-<p class="landing-method-desc">Page ids and total count only — cache or batch the rest.</p>
+<p class="landing-method-desc">Page ids and pagination metadata only — cache or batch the rest.</p>
 ::::
 
 ::::div{class="landing-method"}

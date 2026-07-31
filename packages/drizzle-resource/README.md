@@ -24,7 +24,7 @@ import { queryValibotIntegration } from "drizzle-resource/valibot";
 
 - **🔒 Type-safe field paths** — sort keys, filter fields, search fields, and facet paths are all inferred from your Drizzle schema and declared relations. Typos fail at compile time.
 - **🔍 Filter trees** — AND/OR nested conditions with 11 operators (`is`, `isAnyOf`, `contains`, `between`, `before`, `after`, …)
-- **📄 Pagination** — 1-based page + size with configurable defaults
+- **📄 Pagination** — offset and cursor modes with opt-in exact counts
 - **↕️ Sorting** — multi-column, default sort, per-resource disabled paths
 - **🔎 Free-text search** — ILIKE across configurable field paths, with separate `allowed` and `defaults` lists
 - **🗂️ Facets** — bucket counts for filter sidebars, traveling in the same request as the main query
@@ -68,8 +68,11 @@ export const ordersResource = engine.defineResource("orders", {
     facets: {
       allowed: ["status", "customer.name"],
     },
+    pagination: {
+      modes: ["cursor", "offset"],
+    },
     defaults: {
-      pagination: { pageSize: 25 },
+      pagination: { mode: "cursor", pageSize: 25 },
     },
   },
 });
@@ -77,7 +80,7 @@ export const ordersResource = engine.defineResource("orders", {
 const result = await ordersResource.query({
   context: { orgId: "acme" },
   request: {
-    pagination: { pageIndex: 1, pageSize: 25 },
+    pagination: { mode: "cursor", pageSize: 25 },
     sorting: [{ key: "createdAt", dir: "desc" }],
     search: { value: "laptop", fields: [] },
     filters: [

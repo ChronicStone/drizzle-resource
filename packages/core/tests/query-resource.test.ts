@@ -112,10 +112,20 @@ const relations = defineRelationsPart(
 );
 
 describe("defineResource", () => {
+  const exactOffsetPageInfo = (rowCount: number, pageIndex = 1, pageSize = 25) => ({
+    mode: "offset" as const,
+    pageIndex,
+    pageSize,
+    hasNextPage: pageIndex * pageSize < rowCount,
+    count: "exact" as const,
+    rowCount,
+  });
   const baseRequest: QueryRequest = {
     pagination: {
+      mode: "offset",
       pageIndex: 1,
       pageSize: 25,
+      count: "exact",
     },
     sorting: [],
     search: {
@@ -179,7 +189,7 @@ describe("defineResource", () => {
           capturedRequest = request;
           return {
             rows: [],
-            rowCount: 0,
+            pageInfo: exactOffsetPageInfo(0),
           };
         },
       },
@@ -209,7 +219,7 @@ describe("defineResource", () => {
           capturedRequest = request;
           return {
             rows: [],
-            rowCount: 0,
+            pageInfo: exactOffsetPageInfo(0),
           };
         },
       },
@@ -284,7 +294,7 @@ describe("defineResource", () => {
         }),
         query: async () => ({
           rows: [{ id: "emp_1" }],
-          rowCount: 1,
+          pageInfo: exactOffsetPageInfo(1),
         }),
       },
     });
@@ -303,7 +313,7 @@ describe("defineResource", () => {
     });
 
     expect(queryResult.rows).toEqual([{ id: "emp_1" }]);
-    expect(queryResult.rowCount).toBe(1);
+    expect(queryResult.pageInfo.rowCount).toBe(1);
     expect(queryResult.facets).toEqual([
       {
         key: "fullName",
@@ -379,7 +389,7 @@ describe("defineResource", () => {
       strategy: {
         ids: async () => ({
           ids: ["emp_1", "emp_2", "emp_1"],
-          rowCount: 42,
+          pageInfo: exactOffsetPageInfo(42),
         }),
       },
     });
@@ -390,7 +400,7 @@ describe("defineResource", () => {
 
     expect(idsResult).toEqual({
       ids: ["emp_1", "emp_2", "emp_1"],
-      rowCount: 42,
+      pageInfo: exactOffsetPageInfo(42),
     });
 
     const rows = await resource.queryRows({
@@ -413,7 +423,7 @@ describe("defineResource", () => {
         { id: "emp_1", fullName: "Ada" },
         { id: "emp_2", fullName: "Grace" },
       ],
-      rowCount: 42,
+      pageInfo: exactOffsetPageInfo(42),
     });
   });
 
@@ -451,7 +461,7 @@ describe("defineResource", () => {
           capturedRequest = request;
           return {
             ids: [],
-            rowCount: 0,
+            pageInfo: exactOffsetPageInfo(0, 3, 10),
           };
         },
       },
@@ -470,11 +480,96 @@ describe("defineResource", () => {
 
     expect(capturedRequest).toMatchObject({
       pagination: {
+        mode: "offset",
         pageIndex: 3,
         pageSize: 10,
+        count: "exact",
       },
       sorting: [{ key: "id", dir: "desc" }],
     });
+  });
+
+  it("normalizes cursor pagination with a stable id tiebreaker and optional exact count", async () => {
+    const capturedRequests: QueryRequest[] = [];
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {
+      query: {
+        pagination: { modes: ["offset", "cursor"] },
+        sort: { defaults: [{ key: "fullName", dir: "desc" }] },
+      },
+      strategy: {
+        ids: async ({ request }) => {
+          capturedRequests.push(request);
+          const countInfo =
+            request.pagination.count === "exact"
+              ? ({ count: "exact", rowCount: 42 } as const)
+              : ({ count: "none", rowCount: null } as const);
+          return {
+            ids: [],
+            pageInfo: {
+              mode: "cursor",
+              pageSize: request.pagination.pageSize,
+              nextCursor: null,
+              ...countInfo,
+            },
+          };
+        },
+      },
+    });
+
+    await resource.query({
+      request: {
+        ...baseRequest,
+        pagination: { mode: "cursor", pageSize: 10 },
+        sorting: [],
+      },
+    });
+    await resource.query({
+      request: {
+        ...baseRequest,
+        pagination: { mode: "cursor", pageSize: 10, count: "exact" },
+        sorting: [{ key: "fullName", dir: "asc" }],
+      },
+    });
+
+    expect(capturedRequests[0]).toMatchObject({
+      pagination: { mode: "cursor", cursor: null, pageSize: 10, count: "none" },
+      sorting: [
+        { key: "fullName", dir: "desc" },
+        { key: "id", dir: "desc" },
+      ],
+    });
+    expect(capturedRequests[1]).toMatchObject({
+      pagination: { mode: "cursor", cursor: null, pageSize: 10, count: "exact" },
+      sorting: [
+        { key: "fullName", dir: "asc" },
+        { key: "id", dir: "asc" },
+      ],
+    });
+  });
+
+  it("rejects cursor mode unless the resource exposes it", async () => {
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {
+      strategy: {
+        query: async () => ({ rows: [], pageInfo: exactOffsetPageInfo(0) }),
+      },
+    });
+
+    await expect(
+      resource.query({
+        request: {
+          ...baseRequest,
+          pagination: { mode: "cursor", pageSize: 10 },
+        },
+      }),
+    ).rejects.toThrow('Pagination mode "cursor" is not allowed for resource "employees"');
   });
 
   it("rejects unknown sorting, search, filter, and facet fields", async () => {
@@ -503,7 +598,7 @@ describe("defineResource", () => {
       strategy: {
         query: async () => ({
           rows: [],
-          rowCount: 0,
+          pageInfo: exactOffsetPageInfo(0),
         }),
       },
     });
@@ -587,7 +682,7 @@ describe("defineResource", () => {
       strategy: {
         query: async () => ({
           rows: [],
-          rowCount: 0,
+          pageInfo: exactOffsetPageInfo(0),
         }),
       },
     });
@@ -625,7 +720,7 @@ describe("defineResource", () => {
         validation: { maxPageSize: 10, maxFilterDepth: 1, maxFacetLimit: 5 },
       },
       strategy: {
-        query: async () => ({ rows: [], rowCount: 0 }),
+        query: async () => ({ rows: [], pageInfo: exactOffsetPageInfo(0) }),
       },
     });
 
@@ -682,7 +777,7 @@ describe("defineResource", () => {
         facets: facetsStrategy,
         query: async () => ({
           rows: [{ id: "emp_1" }],
-          rowCount: 1,
+          pageInfo: exactOffsetPageInfo(1),
           facets: [
             {
               key: "fullName",
@@ -728,7 +823,7 @@ describe("defineResource", () => {
       strategy: {
         query: async () => ({
           rows: [{ id: "emp_1" }],
-          rowCount: 1,
+          pageInfo: exactOffsetPageInfo(1),
         }),
       },
     });
@@ -739,7 +834,7 @@ describe("defineResource", () => {
       }),
     ).resolves.toEqual({
       rows: [{ id: "emp_1" }],
-      rowCount: 1,
+      pageInfo: exactOffsetPageInfo(1),
     });
   });
 });
