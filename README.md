@@ -8,7 +8,7 @@ Instead of reimplementing sort params, WHERE builders, count queries, and filter
 
 - **🔒 Type-safe field paths** — sort keys, filter fields, search fields, and facet paths are all inferred from your Drizzle schema and declared relations. Typos fail at compile time.
 - **🔍 Filter trees** — AND/OR nested conditions with 11 operators (`is`, `isAnyOf`, `contains`, `between`, `before`, `after`, …)
-- **📄 Pagination** — 1-based page + size with configurable defaults
+- **📄 Pagination** — offset and cursor modes with opt-in exact counts
 - **↕️ Sorting** — multi-column, default sort, per-resource disabled paths
 - **🔎 Free-text search** — ILIKE across configurable field paths, with separate `allowed` and `defaults` lists
 - **🗂️ Facets** — bucket counts for filter sidebars, traveling in the same request as the main query
@@ -55,8 +55,11 @@ export const ordersResource = engine.defineResource("orders", {
     facets: {
       allowed: ["status", "customer.name"],
     },
+    pagination: {
+      modes: ["cursor", "offset"],
+    },
     defaults: {
-      pagination: { pageSize: 25 },
+      pagination: { mode: "cursor", pageSize: 25 },
     },
   },
 });
@@ -65,7 +68,7 @@ export const ordersResource = engine.defineResource("orders", {
 const result = await ordersResource.query({
   context: { orgId: "acme" },
   request: {
-    pagination: { pageIndex: 1, pageSize: 25 },
+    pagination: { mode: "cursor", pageSize: 25 },
     sorting: [{ key: "createdAt", dir: "desc" }],
     search: { value: "laptop", fields: [] },
     filters: [
@@ -75,9 +78,10 @@ const result = await ordersResource.query({
   },
 });
 
-// result.rows     — typed hydrated rows
-// result.rowCount — total matching rows before pagination
-// result.facets   — bucket counts per requested facet
+// result.rows                     — typed hydrated rows
+// result.pageInfo.nextCursor      — cursor for the next page, or null
+// result.pageInfo.rowCount        — null unless count: "exact" was requested
+// result.facets                   — bucket counts per requested facet
 ```
 
 ## Four query methods
@@ -85,7 +89,7 @@ const result = await ordersResource.query({
 | Method                      | Use when                                     |
 | --------------------------- | -------------------------------------------- |
 | `resource.query(...)`       | Full pipeline — ids + rows + optional facets |
-| `resource.queryIds(...)`    | Page ids + count only (caching, batching)    |
+| `resource.queryIds(...)`    | Page ids + pagination metadata               |
 | `resource.queryRows(...)`   | Hydrate a known id list without re-selecting |
 | `resource.queryFacets(...)` | Facets independently from the page           |
 

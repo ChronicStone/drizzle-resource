@@ -260,8 +260,15 @@ function definePlaygroundResource(sqlite: SqlJsDatabase) {
 
   return resource as {
     query(args: { context: typeof playgroundContext; request: PlaygroundRequest }): Promise<{
-      rowCount: number;
       rows: PlaygroundRow[];
+      pageInfo: {
+        mode: "offset";
+        pageIndex: number;
+        pageSize: number;
+        hasNextPage: boolean;
+        count: "exact";
+        rowCount: number;
+      };
       facets?: Array<{
         key: string;
         options: Array<{ count: number; value: unknown }>;
@@ -297,7 +304,7 @@ export async function createPlaygroundClient() {
         request,
       })) as Awaited<ReturnType<typeof resource.query>>;
       console.debug("[playground] request complete", {
-        rowCount: result.rowCount,
+        rowCount: result.pageInfo.rowCount,
         pageRows: result.rows.length,
         facetCount: result.facets?.length ?? 0,
       });

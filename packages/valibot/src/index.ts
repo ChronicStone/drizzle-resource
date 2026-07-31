@@ -13,7 +13,37 @@ type ResourceRow<TResource> = TResource extends {
 
 interface QuerySchemaResponse<TRow> {
   rows: TRow[];
-  rowCount: number;
+  pageInfo:
+    | {
+        mode: "offset";
+        pageIndex: number;
+        pageSize: number;
+        hasNextPage: boolean;
+        count: "none";
+        rowCount: null;
+      }
+    | {
+        mode: "offset";
+        pageIndex: number;
+        pageSize: number;
+        hasNextPage: boolean;
+        count: "exact";
+        rowCount: number;
+      }
+    | {
+        mode: "cursor";
+        pageSize: number;
+        nextCursor: string | null;
+        count: "none";
+        rowCount: null;
+      }
+    | {
+        mode: "cursor";
+        pageSize: number;
+        nextCursor: string | null;
+        count: "exact";
+        rowCount: number;
+      };
   facets?: Array<{
     key: string;
     options: Array<{ value: unknown; count: number }>;
@@ -87,13 +117,28 @@ export interface QueryResponseSchemaOverride<
 }
 
 interface QueryRequestSchemaOverride {
-  defaults?: { pagination?: { pageIndex?: number; pageSize?: number }; sorting?: readonly any[] };
+  defaults?: {
+    pagination?: {
+      mode?: "offset" | "cursor";
+      pageIndex?: number;
+      pageSize?: number;
+      count?: "none" | "exact";
+    };
+    sorting?: readonly any[];
+  };
   limits?: Partial<ReturnType<typeof defaultLimits>>;
-  allow?: Partial<Record<"filters" | "sorting" | "search" | "facets", readonly string[]>>;
+  allow?: {
+    filters?: readonly string[];
+    sorting?: readonly string[];
+    search?: readonly string[];
+    facets?: readonly string[];
+    pagination?: readonly ("offset" | "cursor")[];
+  };
 }
 
 const defaultLimits = () => ({
   maxPageSize: 100,
+  maxCursorLength: 2048,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -124,6 +169,7 @@ function resolveQueryRequestContract(resource: any, override?: QueryRequestSchem
     ),
     search: restrict(resource.queryConfig.search.allowed, override?.allow?.search),
     facets: restrict(resource.queryConfig.facets.allowed, override?.allow?.facets),
+    pagination: restrict(resource.queryConfig.pagination.modes, override?.allow?.pagination),
     defaults,
     limits: Object.fromEntries(
       Object.entries(defaultLimits()).map(([key, fallback]) => [
@@ -143,6 +189,12 @@ function resolveQueryRequestContract(resource: any, override?: QueryRequestSchem
       );
     }
   }
+  const defaultPaginationMode = contract.defaults.pagination?.mode ?? "offset";
+  if (!contract.pagination.has(defaultPaginationMode)) {
+    throw new Error(
+      `Default pagination mode "${defaultPaginationMode}" is not allowed for resource "${String(resource.key)}"`,
+    );
+  }
   return contract;
 }
 
@@ -159,7 +211,7 @@ function hasAllowedFilterDepth(filters: any[], maxDepth: number) {
     const { filter, depth } = stack.pop()!;
     if (depth > maxDepth) return false;
     if (filter.type === "group") {
-      stack.push(...filter.children.map((child) => ({ filter: child, depth: depth + 1 })));
+      stack.push(...filter.children.map((child: any) => ({ filter: child, depth: depth + 1 })));
     }
   }
   return true;
@@ -229,21 +281,61 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
   );
   const defaultPageIndex = contract.defaults.pagination?.pageIndex ?? 1;
   const defaultPageSize = contract.defaults.pagination?.pageSize ?? 25;
+  const defaultMode = contract.defaults.pagination?.mode ?? "offset";
+  const defaultCount =
+    contract.defaults.pagination?.count ?? (defaultMode === "cursor" ? "none" : "exact");
   const defaultSorting = [...(contract.defaults.sorting ?? [])];
   const defaultSearchFields = [...resource.queryConfig.search.defaults].filter((field) =>
     contract.search.has(field),
   );
 
+  const pageSize = v.pipe(
+    v.number(),
+    v.integer(),
+    v.minValue(1),
+    v.maxValue(contract.limits.maxPageSize),
+  );
+  const offsetPagination = v.strictObject({
+    mode: v.optional(v.literal("offset"), "offset"),
+    pageIndex: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), defaultPageIndex),
+    pageSize: v.optional(pageSize, defaultPageSize),
+    count: v.optional(
+      v.picklist(["none", "exact"]),
+      defaultMode === "offset" ? defaultCount : "exact",
+    ),
+  });
+  const cursorPagination = v.strictObject({
+    mode: v.literal("cursor"),
+    cursor: v.optional(
+      v.nullable(v.pipe(v.string(), v.maxLength(contract.limits.maxCursorLength))),
+      null,
+    ),
+    pageSize: v.optional(pageSize, defaultPageSize),
+    count: v.optional(
+      v.picklist(["none", "exact"]),
+      defaultMode === "cursor" ? defaultCount : "none",
+    ),
+  });
+  const paginationDefault =
+    defaultMode === "cursor"
+      ? { mode: "cursor" as const, cursor: null, pageSize: defaultPageSize, count: defaultCount }
+      : {
+          mode: "offset" as const,
+          pageIndex: defaultPageIndex,
+          pageSize: defaultPageSize,
+          count: defaultCount,
+        };
+
   return v.strictObject({
     pagination: v.optional(
-      v.strictObject({
-        pageIndex: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), defaultPageIndex),
-        pageSize: v.optional(
-          v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(contract.limits.maxPageSize)),
-          defaultPageSize,
+      v.pipe(
+        v.union([offsetPagination, cursorPagination]),
+        v.check(
+          (pagination) => contract.pagination.has(pagination.mode),
+          "Pagination mode is not allowed",
         ),
-      }),
-      { pageIndex: defaultPageIndex, pageSize: defaultPageSize },
+      ),
+      paginationDefault,
     ),
     sorting: v.optional(
       v.pipe(
@@ -308,16 +400,50 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
 export function responseSchema<
   TResource extends { key: string; relations?: Record<string, unknown> },
-  const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>> | undefined =
-    undefined,
+  const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>>,
 >(
   resource: TResource,
-  override?: TOverride,
-): v.GenericSchema<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>> {
+  override: QueryResponseSchemaOverride<ResourceRow<TResource>> & TOverride,
+): v.GenericSchema<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
+export function responseSchema<
+  TResource extends { key: string; relations?: Record<string, unknown> },
+>(resource: TResource): v.GenericSchema<QuerySchemaResponse<ResourceRow<TResource>>>;
+export function responseSchema(resource: any, override?: QueryResponseSchemaOverride): any {
   const row = responseRowSchema(resource, String(resource.key), resource.relations, override);
   return v.strictObject({
     rows: v.array(row),
-    rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+    pageInfo: v.union([
+      v.strictObject({
+        mode: v.literal("offset"),
+        pageIndex: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        hasNextPage: v.boolean(),
+        count: v.literal("none"),
+        rowCount: v.null(),
+      }),
+      v.strictObject({
+        mode: v.literal("offset"),
+        pageIndex: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        hasNextPage: v.boolean(),
+        count: v.literal("exact"),
+        rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+      }),
+      v.strictObject({
+        mode: v.literal("cursor"),
+        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        nextCursor: v.nullable(v.string()),
+        count: v.literal("none"),
+        rowCount: v.null(),
+      }),
+      v.strictObject({
+        mode: v.literal("cursor"),
+        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+        nextCursor: v.nullable(v.string()),
+        count: v.literal("exact"),
+        rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+      }),
+    ]),
     facets: v.optional(
       v.array(
         v.strictObject({
@@ -333,5 +459,5 @@ export function responseSchema<
         }),
       ),
     ),
-  }) as v.GenericSchema<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
+  });
 }

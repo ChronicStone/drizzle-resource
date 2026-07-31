@@ -138,7 +138,7 @@ const tableColumns: TableColumn<PlaygroundRow>[] = [
 
 const rows = computed(() => result.value?.rows ?? []);
 const facets = computed(() => result.value?.facets ?? []);
-const rowCount = computed(() => result.value?.rowCount ?? 0);
+const rowCount = computed(() => result.value?.pageInfo.rowCount ?? 0);
 const activeFilterCount = computed(() => lastAppliedRequest.value?.filters.length ?? 0);
 
 const sampleOptions = computed(() =>

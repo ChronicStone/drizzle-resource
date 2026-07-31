@@ -11,15 +11,11 @@ export const ordersResource = engine.defineResource("orders", {
   },
   query: {
     defaults: {
-      pagination: { pageSize: 25 },
+      pagination: { mode: "cursor", pageSize: 25 },
     },
+    pagination: { modes: ["cursor", "offset"] },
     facets: {
-      allowed: [
-        "status",
-        "customer.name",
-        "orderLines.product.category",
-        "orderLines.product.category.label",
-      ],
+      allowed: ["status", "customer.name", "orderLines.product.category"],
     },
     filters: {
       disabled: ["deletedAt"],
@@ -32,7 +28,7 @@ export const ordersResource = engine.defineResource("orders", {
     },
     sort: {
       defaults: [{ dir: "desc", key: "createdAt" }],
-      disabled: ["orderLines.product.name", "tags.name"],
+      disabled: ["orderLines.product.name"],
     },
   },
 });

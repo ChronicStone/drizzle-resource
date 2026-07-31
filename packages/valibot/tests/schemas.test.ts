@@ -37,7 +37,11 @@ const resource = createQueryEngine({
   relations,
 }).defineResource("orders", {
   relations: { customer: true },
-  query: { search: { allowed: ["reference"] }, validation: { maxPageSize: 75 } },
+  query: {
+    search: { allowed: ["reference"] },
+    pagination: { modes: ["offset", "cursor"] },
+    validation: { maxPageSize: 75 },
+  },
 });
 
 describe("Valibot schemas", () => {
@@ -59,6 +63,28 @@ describe("Valibot schemas", () => {
         ],
       }).success,
     ).toBe(false);
+  });
+
+  it("validates cursor pagination, defaults its count, and can require exact totals", () => {
+    const request = requestSchema(resource, {
+      defaults: { pagination: { mode: "cursor", pageSize: 20 } },
+      allow: { pagination: ["cursor"] },
+    });
+
+    expect(v.parse(request, {}).pagination).toEqual({
+      mode: "cursor",
+      cursor: null,
+      pageSize: 20,
+      count: "none",
+    });
+    expect(
+      v.parse(request, {
+        pagination: { mode: "cursor", cursor: "opaque", pageSize: 10, count: "exact" },
+      }).pagination,
+    ).toEqual({ mode: "cursor", cursor: "opaque", pageSize: 10, count: "exact" });
+    expect(v.safeParse(request, { pagination: { pageIndex: 1, pageSize: 10 } }).success).toBe(
+      false,
+    );
   });
 
   it("infers override inputs and carries their output through selected relations", () => {
@@ -96,13 +122,18 @@ describe("Valibot schemas", () => {
           customer: { id: "018f2d22-2580-7c0b-8a9b-2195a619d8d5", name: "Ada" },
         },
       ],
-      rowCount: 1,
+      pageInfo: {
+        mode: "offset",
+        pageIndex: 1,
+        pageSize: 25,
+        hasNextPage: false,
+        count: "exact",
+        rowCount: 1,
+      },
     });
 
     expect(response.rows[0]?.reference).toBe(5);
     expect(response.rows[0]?.customer.name).toBe(3);
-    expect(v.safeParse(responseContract, { rows: [{ id: "bad" }], rowCount: 1 }).success).toBe(
-      false,
-    );
+    expect(v.safeParse(responseContract, { rows: [{ id: "bad" }] }).success).toBe(false);
   });
 });

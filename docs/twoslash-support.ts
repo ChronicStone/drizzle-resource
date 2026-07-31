@@ -4,6 +4,7 @@ import type {
   QueryFacetsResponse,
   QueryFilterOperator,
   QueryIdsResponse,
+  QueryPageInfo,
   QueryRequest,
   QueryResponse,
   QueryFilterBuilder,
@@ -27,8 +28,10 @@ export const request: QueryRequest = {
   facets: [{ key: "status", limit: 10, mode: "exclude-self" }],
   filters: [],
   pagination: {
+    mode: "offset",
     pageIndex: 1,
     pageSize: 25,
+    count: "exact",
   },
   search: {
     fields: [],
@@ -38,6 +41,15 @@ export const request: QueryRequest = {
 };
 
 export const ids = ["order_1", "order_2", "order_3", "order_4"];
+
+export const offsetPageInfo = {
+  mode: "offset",
+  pageIndex: 1,
+  pageSize: 25,
+  hasNextPage: false,
+  count: "exact",
+  rowCount: 0,
+} satisfies QueryPageInfo;
 
 export const result = {
   facets: [
@@ -80,7 +92,14 @@ export const utils = {
     request?: QueryRequest;
   }): Promise<QueryIdsResponse<string>> => ({
     ids: ["order_1", "order_2", "order_3"],
-    rowCount: 3,
+    pageInfo: {
+      mode: "offset",
+      pageIndex: 1,
+      pageSize: 25,
+      hasNextPage: false,
+      count: "exact",
+      rowCount: 3,
+    },
   }),
   executeRowsQuery: async (_options: { ids: unknown[] }): Promise<{ rows: unknown[] }> => ({
     rows: [],

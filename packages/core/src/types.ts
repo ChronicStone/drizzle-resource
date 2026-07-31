@@ -105,27 +105,73 @@ export type QueryFilterInput<TField extends string = string> =
 
 export type QueryFilters<TField extends string = string> = QueryFilterNode<TField>[];
 
+export type QueryCountMode = "none" | "exact";
+
+export interface QueryOffsetPagination {
+  mode: "offset";
+  /** One-based page number. */
+  pageIndex: number;
+  /** Number of rows requested per page. */
+  pageSize: number;
+  /** Whether the filtered row count should be computed. */
+  count: QueryCountMode;
+}
+
+export interface QueryCursorPagination {
+  mode: "cursor";
+  /** Opaque cursor returned by the previous page, or `null` for the first page. */
+  cursor: string | null;
+  /** Number of rows requested per page. */
+  pageSize: number;
+  /** Whether the filtered row count should be computed. */
+  count: QueryCountMode;
+}
+
+export type QueryPagination = QueryOffsetPagination | QueryCursorPagination;
+
+/** Transport input accepted before pagination defaults are normalized. */
+export type QueryPaginationInput =
+  | {
+      /** Omitted for backwards compatibility with the original offset payload. */
+      mode?: "offset";
+      pageIndex: number;
+      pageSize: number;
+      count?: QueryCountMode;
+    }
+  | {
+      mode: "cursor";
+      cursor?: string | null;
+      pageSize: number;
+      count?: QueryCountMode;
+    };
+
+export type QueryPageCount =
+  | { count: "none"; rowCount: null }
+  | { count: "exact"; rowCount: number };
+
+export type QueryOffsetPageInfo = {
+  mode: "offset";
+  pageIndex: number;
+  pageSize: number;
+  hasNextPage: boolean;
+} & QueryPageCount;
+
+export type QueryCursorPageInfo = {
+  mode: "cursor";
+  pageSize: number;
+  nextCursor: string | null;
+} & QueryPageCount;
+
+export type QueryPageInfo = QueryOffsetPageInfo | QueryCursorPageInfo;
+
 /**
  * Normalized request consumed by all resource query methods.
  */
 export interface QueryRequest {
   /**
-   * Offset pagination settings.
+   * Normalized offset or cursor pagination settings.
    */
-  pagination: {
-    /**
-     * One-based page number.
-     *
-     * Invalid values are replaced with `query.defaults.pagination.pageIndex` or `1`.
-     */
-    pageIndex: number;
-    /**
-     * Number of rows requested per page.
-     *
-     * Invalid values are replaced with `query.defaults.pagination.pageSize` or `25`.
-     */
-    pageSize: number;
-  };
+  pagination: QueryPagination;
   /**
    * Sort descriptors applied in order.
    *
@@ -161,7 +207,8 @@ export interface QueryRequest {
  * Request context belongs to the server-side `resource.query({ context })` call, so validators
  * deliberately omit it from the transport payload.
  */
-export type QueryRequestInput = Omit<QueryRequest, "context"> & {
+export type QueryRequestInput = Omit<QueryRequest, "context" | "pagination"> & {
+  pagination: QueryPaginationInput;
   /** @deprecated Pass trusted context through `resource.query({ context })` instead. */
   context?: Record<string, unknown>;
 };
@@ -175,9 +222,9 @@ export interface QueryResponse<TRow = Record<string, unknown>> {
    */
   rows: TRow[];
   /**
-   * Total rows matching the current request before pagination.
+   * Metadata for the selected pagination mode and count policy.
    */
-  rowCount: number;
+  pageInfo: QueryPageInfo;
   /**
    * Optional facet payloads.
    *
@@ -195,9 +242,9 @@ export interface QueryIdsResponse<TId = unknown> {
    */
   ids: TId[];
   /**
-   * Total rows matching the current request before pagination.
+   * Metadata for the selected pagination mode and count policy.
    */
-  rowCount: number;
+  pageInfo: QueryPageInfo;
 }
 
 /**
@@ -680,6 +727,22 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
   allowed?: readonly TField[];
 }
 
+export interface ResourceQueryPaginationConfig {
+  /** Pagination modes accepted by this resource. Offset pagination is enabled by default. */
+  modes?: readonly QueryPagination["mode"][];
+}
+
+export interface ResourceQueryPaginationDefaultsConfig {
+  /** Default mode used when a validator supplies an omitted pagination object. */
+  mode?: QueryPagination["mode"];
+  /** Offset page fallback. */
+  pageIndex?: number;
+  /** Shared page-size fallback. */
+  pageSize?: number;
+  /** Count fallback for the default mode. Offset defaults to exact and cursor to none. */
+  count?: QueryCountMode;
+}
+
 /**
  * Request defaults applied before strategies run.
  */
@@ -687,7 +750,7 @@ export interface ResourceQueryDefaultsConfig {
   /**
    * Pagination fallback values.
    */
-  pagination?: Partial<QueryRequest["pagination"]>;
+  pagination?: ResourceQueryPaginationDefaultsConfig;
   /**
    * Sorting fallback values.
    */
@@ -697,6 +760,7 @@ export interface ResourceQueryDefaultsConfig {
 /** Upper bounds applied to every request, including requests that bypass a validator. */
 export interface ResourceQueryValidationConfig {
   maxPageSize?: number;
+  maxCursorLength?: number;
   maxFilterDepth?: number;
   maxFilterNodes?: number;
   maxFacetCount?: number;
@@ -712,6 +776,7 @@ export interface QueryRequestSchemaOverride<TField extends string = string> {
     sorting?: readonly TField[];
     search?: readonly TField[];
     facets?: readonly TField[];
+    pagination?: readonly QueryPagination["mode"][];
   };
 }
 
@@ -721,6 +786,7 @@ export interface QueryRequestContract<TField extends string = string> {
   sorting: Set<TField>;
   search: Set<TField>;
   facets: Set<TField>;
+  pagination: Set<QueryPagination["mode"]>;
   defaults: ResourceQueryDefaultsConfig;
   limits: Required<ResourceQueryValidationConfig>;
 }
@@ -876,6 +942,8 @@ export interface ResourceQueryConfig<
    * Facet configuration.
    */
   facets?: ResourceQueryFacetsConfig<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>;
+  /** Pagination modes exposed by this resource. */
+  pagination?: ResourceQueryPaginationConfig;
   /**
    * Request defaults applied before strategies run.
    */
@@ -898,6 +966,9 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   };
   facets: {
     allowed: Set<TField>;
+  };
+  pagination: {
+    modes: Set<QueryPagination["mode"]>;
   };
   defaults: ResourceQueryDefaultsConfig;
   validation: Required<ResourceQueryValidationConfig>;
@@ -932,16 +1003,12 @@ export interface QueryResource<
    * Runtime-normalized query configuration.
    */
   queryConfig: ResourceRuntimeQueryConfig<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>;
-  /**
-   * Resolve a page of rows, count, and optionally facets.
-   */
+  /** Resolve a page of rows with pagination metadata and optional facets. */
   query: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;
     context?: TContextOverride;
   }) => Promise<QueryResponse<TRow>>;
-  /**
-   * Resolve ordered IDs and total count without row hydration.
-   */
+  /** Resolve ordered IDs with pagination metadata without row hydration. */
   queryIds: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;
     context?: TContextOverride;

@@ -13,6 +13,7 @@ import type {
   QueryResponse,
   QueryResource,
   QueryRootKey,
+  ResourceQueryDefaultsConfig,
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
 import { createQueryFilterBuilder } from "./filters.js";
@@ -21,24 +22,41 @@ import { defaultQueryValidation } from "./contracts.js";
 function normalizeRequest(
   request: QueryRequestInput,
   defaultSearchFields: readonly string[],
-  defaults?: {
-    pagination?: Partial<QueryRequest["pagination"]>;
-    sorting?: Readonly<QueryRequest["sorting"]>;
-  },
+  defaults?: ResourceQueryDefaultsConfig,
 ): QueryRequest {
   const searchFields =
     request.search.fields.length > 0 ? request.search.fields : defaultSearchFields;
   const defaultPageIndex = defaults?.pagination?.pageIndex ?? 1;
   const defaultPageSize = defaults?.pagination?.pageSize ?? 25;
-  const sorting = request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
+  const requestedMode = request.pagination.mode ?? "offset";
+  const defaultCount =
+    defaults?.pagination?.mode === requestedMode ? defaults.pagination.count : undefined;
+  const pagination =
+    request.pagination.mode === "cursor"
+      ? {
+          mode: "cursor" as const,
+          cursor: request.pagination.cursor ?? null,
+          pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
+          count: request.pagination.count ?? defaultCount ?? ("none" as const),
+        }
+      : {
+          mode: "offset" as const,
+          pageIndex:
+            request.pagination.pageIndex > 0 ? request.pagination.pageIndex : defaultPageIndex,
+          pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
+          count: request.pagination.count ?? defaultCount ?? ("exact" as const),
+        };
+  const requestedSorting =
+    request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
+  const sorting =
+    pagination.mode === "cursor" && !requestedSorting.some(({ key }) => key === "id")
+      ? [...requestedSorting, { key: "id", dir: requestedSorting.at(-1)?.dir ?? ("asc" as const) }]
+      : requestedSorting;
 
   return {
     ...request,
     context: {},
-    pagination: {
-      pageIndex: request.pagination.pageIndex > 0 ? request.pagination.pageIndex : defaultPageIndex,
-      pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
-    },
+    pagination,
     sorting,
     search: {
       ...request.search,
@@ -51,6 +69,7 @@ function assertRequestLimits(
   request: QueryRequest,
   limits: {
     maxPageSize: number;
+    maxCursorLength: number;
     maxFilterDepth: number;
     maxFilterNodes: number;
     maxFacetCount: number;
@@ -59,6 +78,12 @@ function assertRequestLimits(
 ) {
   if (request.pagination.pageSize > limits.maxPageSize) {
     throw new Error(`Page size cannot exceed ${limits.maxPageSize}`);
+  }
+  if (
+    request.pagination.mode === "cursor" &&
+    (request.pagination.cursor?.length ?? 0) > limits.maxCursorLength
+  ) {
+    throw new Error(`Cursor cannot exceed ${limits.maxCursorLength} characters`);
   }
 
   let filterNodes = 0;
@@ -91,6 +116,11 @@ function assertKnownFields(
   resource: QueryResource<any, any, any, any, any, any, any>,
   request: QueryRequest,
 ) {
+  if (!resource.queryConfig.pagination.modes.has(request.pagination.mode)) {
+    throw new Error(
+      `Pagination mode "${request.pagination.mode}" is not allowed for resource "${String(resource.key)}"`,
+    );
+  }
   const invalidSort = request.sorting.find(({ key }) => !resource.fields.has(key));
   if (invalidSort) {
     throw new Error(
@@ -285,6 +315,21 @@ export function createQueryEngine<
       const disabledFilterFields = new Set(
         (options.query?.filters?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
       ) as Set<any>;
+      const paginationModes = new Set<"offset" | "cursor">(
+        options.query?.pagination?.modes ?? ["offset"],
+      );
+      const defaultPaginationMode = options.query?.defaults?.pagination?.mode ?? "offset";
+      if (paginationModes.size === 0) {
+        throw new Error(`Resource "${String(root)}" must allow at least one pagination mode`);
+      }
+      if (!paginationModes.has(defaultPaginationMode)) {
+        throw new Error(
+          `Default pagination mode "${defaultPaginationMode}" is not allowed for resource "${String(root)}"`,
+        );
+      }
+      if (paginationModes.has("cursor") && !fieldRegistry.get("id")?.sortable) {
+        throw new Error(`Cursor pagination requires a visible, sortable root "id" field`);
+      }
 
       const filterBuilder = createQueryFilterBuilder<any>();
 
@@ -309,6 +354,9 @@ export function createQueryEngine<
           facets: {
             allowed: allowedFacetFields,
           },
+          pagination: {
+            modes: paginationModes,
+          },
           defaults: {
             pagination: options.query?.defaults?.pagination,
             sorting: options.query?.sort?.defaults,
@@ -316,6 +364,8 @@ export function createQueryEngine<
           validation: {
             maxPageSize:
               options.query?.validation?.maxPageSize ?? defaultQueryValidation.maxPageSize,
+            maxCursorLength:
+              options.query?.validation?.maxCursorLength ?? defaultQueryValidation.maxCursorLength,
             maxFilterDepth:
               options.query?.validation?.maxFilterDepth ?? defaultQueryValidation.maxFilterDepth,
             maxFilterNodes:
@@ -357,7 +407,7 @@ export function createQueryEngine<
 
             response = {
               rows,
-              rowCount: idsResponse.rowCount,
+              pageInfo: idsResponse.pageInfo,
             };
           }
 

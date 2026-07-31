@@ -8,6 +8,7 @@ import type {
 
 export const defaultQueryValidation: Required<ResourceQueryValidationConfig> = {
   maxPageSize: 100,
+  maxCursorLength: 2048,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -20,6 +21,10 @@ function resolveLimits(
 ): Required<ResourceQueryValidationConfig> {
   return {
     maxPageSize: Math.min(resourceLimits.maxPageSize, override?.maxPageSize ?? Infinity),
+    maxCursorLength: Math.min(
+      resourceLimits.maxCursorLength,
+      override?.maxCursorLength ?? Infinity,
+    ),
     maxFilterDepth: Math.min(resourceLimits.maxFilterDepth, override?.maxFilterDepth ?? Infinity),
     maxFilterNodes: Math.min(resourceLimits.maxFilterNodes, override?.maxFilterNodes ?? Infinity),
     maxFacetCount: Math.min(resourceLimits.maxFacetCount, override?.maxFacetCount ?? Infinity),
@@ -63,6 +68,7 @@ export function resolveQueryRequestContract(
   );
   const search = restrict(resource.queryConfig.search.allowed, override?.allow?.search);
   const facets = restrict(resource.queryConfig.facets.allowed, override?.allow?.facets);
+  const pagination = restrict(resource.queryConfig.pagination.modes, override?.allow?.pagination);
   const defaults = mergeDefaults(resource.queryConfig.defaults, override?.defaults);
 
   for (const descriptor of defaults.sorting ?? []) {
@@ -72,12 +78,19 @@ export function resolveQueryRequestContract(
       );
     }
   }
+  const defaultPaginationMode = defaults.pagination?.mode ?? "offset";
+  if (!pagination.has(defaultPaginationMode)) {
+    throw new Error(
+      `Default pagination mode "${defaultPaginationMode}" is not allowed for resource "${String(resource.key)}"`,
+    );
+  }
 
   return {
     filters,
     sorting,
     search,
     facets,
+    pagination,
     defaults,
     limits: resolveLimits(resource.queryConfig.validation, override?.limits),
   };
