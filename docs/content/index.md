@@ -18,7 +18,7 @@ seo:
 ::landing-split{class="landing-two-col landing-two-col--hero relative py-10"}
 :::landing-split-left{class="landing-hero-copy"}
 
-<div class="landing-badge mb-8">For Drizzle ORM</div>
+<div class="landing-badge mb-8">Typed query layer for Drizzle ORM</div>
 
 <h1 class="landing-hero-title mb-6">
   One contract.
@@ -44,6 +44,11 @@ Get started
 Playground
 ::::
 
+</div>
+
+<div class="landing-install mt-8">
+  <span class="landing-install-prompt">$</span>
+  <code>npm install drizzle-resource</code>
 </div>
 
 :::
@@ -79,6 +84,7 @@ const result = await orders.query({
 
 ::
 ::
+
 ::div{class="landing-section-pad py-12"}
 
 <div class="mb-10 max-w-2xl">
@@ -91,56 +97,31 @@ const result = await orders.query({
   </p>
 </div>
 
+:::landing-pipeline
+:::
+
+::
+
+::div{class="landing-section-pad py-12"}
+
 ::landing-split{class="landing-two-col landing-two-col--problem"}
 :::landing-split-left
-::::u-page-card{:spotlight="true" class="landing-pipeline-card"}
 
-<div>
-  <p class="mb-1 text-[11px] font-semibold uppercase tracking-widest text-primary">Staged pipeline</p>
-  <h3 class="text-lg font-semibold text-stone-900 dark:text-white">Not a monolithic query</h3>
-  <p class="mt-1 text-sm text-stone-500 dark:text-stone-400">
-    Each stage runs in order. Any stage can be replaced independently.
-  </p>
-</div>
+<p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">Define once</p>
 
-<div class="mt-6 flex flex-col">
-  <div class="landing-pipeline-item">
-    <div class="landing-pipeline-icon">1</div>
-    <div class="landing-pipeline-copy">
-      <div class="landing-pipeline-label">Scope merge</div>
-      <div class="landing-pipeline-desc">Tenant filters run before any client filter.</div>
-    </div>
-  </div>
-  <div class="landing-pipeline-item">
-    <div class="landing-pipeline-icon">2</div>
-    <div class="landing-pipeline-copy">
-      <div class="landing-pipeline-label">Field validation</div>
-      <div class="landing-pipeline-desc">Sort keys and filter paths checked against your schema.</div>
-    </div>
-  </div>
-  <div class="landing-pipeline-item">
-    <div class="landing-pipeline-icon">3</div>
-    <div class="landing-pipeline-copy">
-      <div class="landing-pipeline-label">ID select</div>
-      <div class="landing-pipeline-desc">Paginated primary-key query with all filters applied.</div>
-    </div>
-  </div>
-  <div class="landing-pipeline-item">
-    <div class="landing-pipeline-icon">4</div>
-    <div class="landing-pipeline-copy">
-      <div class="landing-pipeline-label">Row hydration</div>
-      <div class="landing-pipeline-desc">Rows loaded by ID with declared relations, in order.</div>
-    </div>
-  </div>
-  <div class="landing-pipeline-item is-last">
-    <div class="landing-pipeline-icon">5</div>
-    <div class="landing-pipeline-copy">
-      <div class="landing-pipeline-label">Facets</div>
-      <div class="landing-pipeline-desc">Bucket counts resolved only when requested.</div>
-    </div>
-  </div>
-</div>
-::::
+<h2 class="mb-4 text-3xl font-bold sm:text-4xl">The resource is<br />the contract</h2>
+
+<p class="mb-8 max-w-lg text-lg leading-relaxed text-stone-600 dark:text-stone-400">
+  Declare relations, scope, search, sort, and facet policy next to your schema. Every endpoint
+  speaks the same request shape — the server decides what is allowed.
+</p>
+
+<ul class="landing-ticks">
+  <li>Scope filters merge server-side — clients cannot bypass tenancy</li>
+  <li>Unknown sort keys and filter paths are rejected before any SQL runs</li>
+  <li>The request shape never changes from one table to the next</li>
+</ul>
+
 :::
 
 :::landing-split-right{class="landing-code-panel"}
@@ -214,28 +195,108 @@ await orders.query({
 
 ::div{class="landing-section-pad py-12"}
 
+<div class="mb-8 max-w-2xl">
+  <p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">The contract</p>
+  <h2 class="text-3xl font-bold sm:text-4xl">Six capabilities, one request</h2>
+</div>
+
+<div class="landing-spec">
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Filters</div>
+    <div class="landing-spec-def">Nested AND/OR trees with 11 operators — <code>is</code>, <code>isAnyOf</code>, <code>contains</code>, <code>between</code>, <code>before</code>, <code>after</code>, and more.</div>
+  </div>
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Search</div>
+    <div class="landing-spec-def">Free-text matching across allowed field paths, with separate <code>allowed</code> and <code>defaults</code> lists per resource.</div>
+  </div>
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Sorting</div>
+    <div class="landing-spec-def">Multi-column with per-resource defaults. Disable expensive paths until they are benchmarked.</div>
+  </div>
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Pagination</div>
+    <div class="landing-spec-def">1-based page index and page size, with configurable defaults.</div>
+  </div>
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Facets</div>
+    <div class="landing-spec-def">Bucket counts for filter sidebars, traveling in the same payload as the main query.</div>
+  </div>
+  <div class="landing-spec-row">
+    <div class="landing-spec-term">Scope</div>
+    <div class="landing-spec-def">Context filters merged into every query before client input. Tenancy as a structural guarantee.</div>
+  </div>
+</div>
+
+::
+
+::div{class="landing-section-pad py-12"}
+
+<div class="mb-8 max-w-2xl">
+  <p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">Granular execution</p>
+  <h2 class="text-3xl font-bold sm:text-4xl">Four methods, one pipeline</h2>
+</div>
+
+:::div{class="landing-methods"}
+::::div{class="landing-method"}
+<code class="landing-method-name">resource.query()</code>
+<p class="landing-method-desc">The full pipeline — ids, rows, and optional facets in one call.</p>
+::::
+
+::::div{class="landing-method"}
+<code class="landing-method-name">resource.queryIds()</code>
+<p class="landing-method-desc">Page ids and total count only — cache or batch the rest.</p>
+::::
+
+::::div{class="landing-method"}
+<code class="landing-method-name">resource.queryRows()</code>
+<p class="landing-method-desc">Hydrate a known id list without re-running selection.</p>
+::::
+
+::::div{class="landing-method"}
+<code class="landing-method-name">resource.queryFacets()</code>
+<p class="landing-method-desc">Resolve facet buckets independently from the page.</p>
+::::
+:::
+
+<div class="landing-integrations mt-6">
+  <div class="landing-integrations-copy">
+    <span class="font-semibold text-stone-800 dark:text-stone-200">Validator integrations included.</span>
+    Zod and Valibot entry points ship as subpath exports —
+    <code>drizzle-resource/zod</code> and <code>drizzle-resource/valibot</code>.
+  </div>
+
+:::u-button{color="neutral" size="sm" to="/reference/integrations" variant="link" trailing-icon="i-lucide-arrow-right"}
+Integrations reference
+:::
+
+</div>
+
+::
+
+::div{class="landing-section-pad py-12"}
+
 <div class="mb-8">
   <p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">Use cases</p>
   <h2 class="text-3xl font-bold sm:text-4xl">Where it fits in your stack</h2>
 </div>
 
 :::div{class="grid grid-cols-1 gap-4 sm:grid-cols-2 lg:grid-cols-3"}
-::::u-page-card{:spotlight="true" to="/getting-started/introduction" title="Admin & data tables" description="One request shape drives filter bars, column sorting, search, pagination, and row selection. No bespoke API per table."}
+::::u-page-card{:spotlight="true" icon="i-lucide-table-2" to="/getting-started/introduction" title="Admin & data tables" description="One request shape drives filter bars, column sorting, search, pagination, and row selection. No bespoke API per table."}
 ::::
 
-::::u-page-card{:spotlight="true" to="/query-contract/facets" title="Faceted explorer UIs" description="Facet requests travel in the same payload as the main query. No parallel API needed."}
+::::u-page-card{:spotlight="true" icon="i-lucide-filter" to="/query-contract/facets" title="Faceted explorer UIs" description="Facet requests travel in the same payload as the main query. No parallel API needed."}
 ::::
 
-::::u-page-card{:spotlight="true" to="/resource-setup/strategies" title="IDs-first pipelines" description="Cache or delay row hydration by splitting into queryIds and queryRows. The contract stays identical."}
+::::u-page-card{:spotlight="true" icon="i-lucide-layers" to="/resource-setup/strategies" title="IDs-first pipelines" description="Cache or delay row hydration by splitting into queryIds and queryRows. The contract stays identical."}
 ::::
 
-::::u-page-card{:spotlight="true" to="/resource-setup/scope" title="Multi-tenant APIs" description="Scope filters merge before any client filter and cannot be bypassed. Tenancy is a structural guarantee."}
+::::u-page-card{:spotlight="true" icon="i-lucide-shield-check" to="/resource-setup/scope" title="Multi-tenant APIs" description="Scope filters merge before any client filter and cannot be bypassed. Tenancy is a structural guarantee."}
 ::::
 
-::::u-page-card{:spotlight="true" to="/performance/overview" title="Tunable performance" description="Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck."}
+::::u-page-card{:spotlight="true" icon="i-lucide-gauge" to="/performance/overview" title="Tunable performance" description="Start with automatic execution. Replace only the expensive stage when benchmarks show a bottleneck."}
 ::::
 
-::::u-page-card{:spotlight="true" to="/reference/methods" title="Fully typed field paths" description="Field paths inferred from your schema and relations. Typos in sort keys or filter fields are compile-time errors."}
+::::u-page-card{:spotlight="true" icon="i-lucide-braces" to="/reference/methods" title="Fully typed field paths" description="Field paths inferred from your schema and relations. Typos in sort keys or filter fields are compile-time errors."}
 ::::
 :::
 ::

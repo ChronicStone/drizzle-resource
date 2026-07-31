@@ -9,9 +9,8 @@ const { seo } = appConfig;
 const site = useSiteConfig();
 const { locale, locales, isEnabled, switchLocalePath } = useDocusI18n();
 
-const nuxtUiLocale = computed(
-  () => nuxtUiLocales[locale.value as keyof typeof nuxtUiLocales] || nuxtUiLocales.en,
-);
+const localeByCode: Record<string, (typeof nuxtUiLocales)["en"]> = nuxtUiLocales;
+const nuxtUiLocale = computed(() => localeByCode[locale.value] || localeByCode.en);
 const lang = computed(() => nuxtUiLocale.value.code);
 const dir = computed(() => nuxtUiLocale.value.dir);
 const collectionName = computed(() => (isEnabled.value ? `docs_${locale.value}` : "docs"));
@@ -111,37 +110,6 @@ const { subNavigationMode } = useSubNavigation(navigation);
   background-image: radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
 }
 
-.landing-card {
-  display: block;
-  border-radius: 1.5rem;
-  border: 1px solid color-mix(in oklab, var(--ui-border) 92%, transparent);
-  background: color-mix(in oklab, var(--ui-bg) 92%, white 8%);
-  padding: 1.25rem;
-  transition:
-    transform 160ms ease,
-    border-color 160ms ease,
-    background 160ms ease;
-}
-
-.landing-card:hover {
-  transform: translateY(-2px);
-  border-color: color-mix(in oklab, var(--ui-primary) 40%, var(--ui-border) 60%);
-  background: color-mix(in oklab, var(--ui-bg) 88%, white 12%);
-}
-
-.landing-card h3 {
-  margin: 0;
-  font-size: 1.05rem;
-  font-weight: 600;
-  color: var(--ui-text-highlighted);
-}
-
-.landing-card p {
-  margin: 0.65rem 0 0;
-  line-height: 1.6;
-  color: var(--ui-text-toned);
-}
-
 .landing-badge {
   display: inline-flex;
   align-items: center;
@@ -195,67 +163,175 @@ const { subNavigationMode } = useSubNavigation(navigation);
   min-width: 0;
 }
 
-.landing-pipeline-card {
-  border-radius: 1.75rem;
-  border: 1px solid color-mix(in oklab, var(--ui-border) 92%, transparent);
-  background: color-mix(in oklab, var(--ui-bg) 94%, white 6%);
-  padding: 1.5rem;
-  box-shadow: 0 24px 60px -50px rgba(0, 0, 0, 0.28);
-}
-
-.landing-pipeline-item {
-  position: relative;
-  display: flex;
-  gap: 0.75rem;
-  padding-bottom: 1rem;
-}
-
-.landing-pipeline-item::after {
-  content: "";
-  position: absolute;
-  left: 0.95rem;
-  top: 2.4rem;
-  bottom: 0;
-  width: 1px;
-  background: color-mix(in oklab, var(--ui-border) 82%, transparent);
-}
-
-.landing-pipeline-item.is-last {
-  padding-bottom: 0;
-}
-
-.landing-pipeline-item.is-last::after {
-  display: none;
-}
-
-.landing-pipeline-icon {
-  display: flex;
-  height: 2rem;
-  width: 2rem;
-  flex: 0 0 auto;
+.landing-install {
+  display: inline-flex;
   align-items: center;
-  justify-content: center;
+  gap: 0.6rem;
   border-radius: 0.75rem;
-  background: color-mix(in oklab, var(--ui-primary) 10%, var(--ui-bg) 90%);
-  color: var(--ui-primary);
+  border: 1px dashed color-mix(in oklab, var(--ui-border) 95%, transparent);
+  background: color-mix(in oklab, var(--ui-bg) 96%, white 4%);
+  padding: 0.5rem 0.95rem;
+}
+
+.landing-install-prompt {
+  font-family: var(--vp-font-family-mono);
   font-size: 0.82rem;
   font-weight: 700;
+  color: var(--ui-primary);
 }
 
-.landing-pipeline-copy {
-  padding-top: 0.1rem;
+.landing-install code {
+  background: none;
+  padding: 0;
+  font-size: 0.82rem;
+  color: var(--ui-text-toned);
 }
 
-.landing-pipeline-label {
-  font-size: 0.92rem;
-  font-weight: 600;
+.landing-ticks {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 0.7rem;
+  max-width: 30rem;
+}
+
+.landing-ticks li {
+  position: relative;
+  padding-left: 1.9rem;
+  font-size: 0.95rem;
+  line-height: 1.55;
+  color: var(--ui-text-toned);
+}
+
+.landing-ticks li::before {
+  content: "✓";
+  position: absolute;
+  left: 0;
+  top: 0.12rem;
+  display: flex;
+  height: 1.15rem;
+  width: 1.15rem;
+  align-items: center;
+  justify-content: center;
+  border-radius: 999px;
+  background: color-mix(in oklab, var(--ui-primary) 12%, var(--ui-bg) 88%);
+  color: var(--ui-primary);
+  font-size: 0.68rem;
+  font-weight: 800;
+}
+
+.landing-spec {
+  counter-reset: spec;
+  border-top: 1px solid color-mix(in oklab, var(--ui-border) 80%, transparent);
+}
+
+.landing-spec-row {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 0.35rem 2.5rem;
+  padding: 1.05rem 0.15rem;
+  border-bottom: 1px solid color-mix(in oklab, var(--ui-border) 80%, transparent);
+  transition: background 140ms ease;
+}
+
+.landing-spec-row:hover {
+  background: color-mix(in oklab, var(--ui-primary) 3%, transparent);
+}
+
+.landing-spec-term {
+  display: flex;
+  align-items: baseline;
+  gap: 0.65rem;
+  font-size: 0.98rem;
+  font-weight: 650;
   color: var(--ui-text-highlighted);
 }
 
-.landing-pipeline-desc {
-  margin-top: 0.2rem;
-  font-size: 0.78rem;
+.landing-spec-term::before {
+  counter-increment: spec;
+  content: counter(spec, decimal-leading-zero);
+  font-size: 0.68rem;
+  font-weight: 700;
+  letter-spacing: 0.06em;
+  color: var(--ui-primary);
+}
+
+.landing-spec-def {
+  font-size: 0.92rem;
+  line-height: 1.6;
+  color: var(--ui-text-toned);
+}
+
+.landing-spec-def code {
+  border-radius: 0.35rem;
+  background: color-mix(in oklab, var(--ui-text) 6%, transparent);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.8rem;
+  color: var(--ui-text-toned);
+}
+
+.landing-methods {
+  display: grid;
+  grid-template-columns: 1fr;
+  gap: 1px;
+  overflow: hidden;
+  border-radius: 1.25rem;
+  border: 1px solid color-mix(in oklab, var(--ui-border) 88%, transparent);
+  background: color-mix(in oklab, var(--ui-border) 88%, transparent);
+}
+
+.landing-method {
+  background: color-mix(in oklab, var(--ui-bg) 96%, white 4%);
+  padding: 1.15rem 1.25rem;
+  transition: background 140ms ease;
+}
+
+.landing-method:hover {
+  background: color-mix(in oklab, var(--ui-primary) 4%, var(--ui-bg) 96%);
+}
+
+.landing-method-name {
+  display: inline-block;
+  background: none;
+  padding: 0;
+  font-size: 0.86rem;
+  font-weight: 650;
+  color: color-mix(in oklab, var(--ui-primary) 70%, var(--ui-text) 30%);
+}
+
+.landing-method-desc {
+  margin: 0.35rem 0 0;
+  font-size: 0.88rem;
   line-height: 1.55;
+  color: var(--ui-text-toned);
+}
+
+.landing-integrations {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: space-between;
+  gap: 0.75rem 1.5rem;
+  border-radius: 1rem;
+  border: 1px dashed color-mix(in oklab, var(--ui-primary) 25%, var(--ui-border) 75%);
+  background: color-mix(in oklab, var(--ui-primary) 4%, var(--ui-bg) 96%);
+  padding: 0.9rem 1.15rem;
+}
+
+.landing-integrations-copy {
+  max-width: 46rem;
+  font-size: 0.9rem;
+  line-height: 1.6;
+  color: var(--ui-text-toned);
+}
+
+.landing-integrations-copy code {
+  border-radius: 0.35rem;
+  background: color-mix(in oklab, var(--ui-text) 6%, transparent);
+  padding: 0.1rem 0.35rem;
+  font-size: 0.8rem;
   color: var(--ui-text-toned);
 }
 
@@ -484,7 +560,6 @@ const { subNavigationMode } = useSubNavigation(navigation);
 
 @media (max-width: 767px) {
   .landing-code-panel,
-  .landing-pipeline-card,
   .landing-cta {
     margin-inline: 0.25rem;
   }
@@ -510,6 +585,19 @@ const { subNavigationMode } = useSubNavigation(navigation);
   }
 }
 
+@media (min-width: 640px) {
+  .landing-methods {
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+  }
+}
+
+@media (min-width: 768px) {
+  .landing-spec-row {
+    grid-template-columns: 15rem minmax(0, 1fr);
+    padding: 1.15rem 0.25rem;
+  }
+}
+
 @media (min-width: 1024px) {
   .landing-two-col {
     display: grid;
@@ -520,6 +608,10 @@ const { subNavigationMode } = useSubNavigation(navigation);
 
   .landing-two-col--hero {
     column-gap: 2.5rem;
+  }
+
+  .landing-methods {
+    grid-template-columns: repeat(4, minmax(0, 1fr));
   }
 }
 </style>
