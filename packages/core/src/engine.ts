@@ -7,6 +7,7 @@ import type {
   QueryFacetRequest,
   QueryFilterNode,
   QueryRequest,
+  QueryRequestInput,
   QueryRelationsConfig,
   QueryResultRowShape,
   QueryResponse,
@@ -15,9 +16,10 @@ import type {
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
 import { createQueryFilterBuilder } from "./filters.js";
+import { defaultQueryValidation } from "./contracts.js";
 
 function normalizeRequest(
-  request: QueryRequest,
+  request: QueryRequestInput,
   defaultSearchFields: readonly string[],
   defaults?: {
     pagination?: Partial<QueryRequest["pagination"]>;
@@ -32,6 +34,7 @@ function normalizeRequest(
 
   return {
     ...request,
+    context: {},
     pagination: {
       pageIndex: request.pagination.pageIndex > 0 ? request.pagination.pageIndex : defaultPageIndex,
       pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
@@ -44,6 +47,46 @@ function normalizeRequest(
   };
 }
 
+function assertRequestLimits(
+  request: QueryRequest,
+  limits: {
+    maxPageSize: number;
+    maxFilterDepth: number;
+    maxFilterNodes: number;
+    maxFacetCount: number;
+    maxFacetLimit: number;
+  },
+) {
+  if (request.pagination.pageSize > limits.maxPageSize) {
+    throw new Error(`Page size cannot exceed ${limits.maxPageSize}`);
+  }
+
+  let filterNodes = 0;
+  const stack = request.filters.map((node) => ({ node, depth: 1 }));
+  while (stack.length > 0) {
+    const { node, depth } = stack.pop()!;
+    filterNodes += 1;
+    if (filterNodes > limits.maxFilterNodes) {
+      throw new Error(`Filter tree cannot exceed ${limits.maxFilterNodes} nodes`);
+    }
+    if (depth > limits.maxFilterDepth) {
+      throw new Error(`Filter tree cannot exceed ${limits.maxFilterDepth} levels`);
+    }
+    if (node.type === "group") {
+      stack.push(...node.children.map((child) => ({ node: child, depth: depth + 1 })));
+    }
+  }
+
+  if ((request.facets?.length ?? 0) > limits.maxFacetCount) {
+    throw new Error(`A request cannot contain more than ${limits.maxFacetCount} facets`);
+  }
+  for (const facet of request.facets ?? []) {
+    if ((facet.limit ?? 0) > limits.maxFacetLimit) {
+      throw new Error(`Facet limit cannot exceed ${limits.maxFacetLimit}`);
+    }
+  }
+}
+
 function assertKnownFields(
   resource: QueryResource<any, any, any, any, any, any, any>,
   request: QueryRequest,
@@ -52,6 +95,13 @@ function assertKnownFields(
   if (invalidSort) {
     throw new Error(
       `Unknown sorting field "${invalidSort.key}" for resource "${String(resource.key)}"`,
+    );
+  }
+
+  const disabledSort = request.sorting.find(({ key }) => !resource.fields.get(key)?.sortable);
+  if (disabledSort) {
+    throw new Error(
+      `Sorting field "${disabledSort.key}" is not allowed for resource "${String(resource.key)}"`,
     );
   }
 
@@ -101,6 +151,7 @@ async function executeFacetsForResource(
   facets: QueryFacetRequest[],
   context?: unknown,
 ): Promise<QueryFacetsResponse> {
+  assertRequestLimits(request, resource.queryConfig.validation);
   assertKnownFacetFields(resource, facets);
 
   if (options.strategy?.facets) {
@@ -239,6 +290,8 @@ export function createQueryEngine<
 
       const resource: QueryResource<any, any, any, any, any, any, any> = {
         key: root,
+        schema: config.schema,
+        relationGraph: config.relations,
         relations: relationsClause,
         fields: fieldRegistry,
         queryConfig: {
@@ -260,12 +313,24 @@ export function createQueryEngine<
             pagination: options.query?.defaults?.pagination,
             sorting: options.query?.sort?.defaults,
           },
+          validation: {
+            maxPageSize:
+              options.query?.validation?.maxPageSize ?? defaultQueryValidation.maxPageSize,
+            maxFilterDepth:
+              options.query?.validation?.maxFilterDepth ?? defaultQueryValidation.maxFilterDepth,
+            maxFilterNodes:
+              options.query?.validation?.maxFilterNodes ?? defaultQueryValidation.maxFilterNodes,
+            maxFacetCount:
+              options.query?.validation?.maxFacetCount ?? defaultQueryValidation.maxFacetCount,
+            maxFacetLimit:
+              options.query?.validation?.maxFacetLimit ?? defaultQueryValidation.maxFacetLimit,
+          },
         },
         query: async ({
           request,
           context,
         }: {
-          request: QueryRequest;
+          request: QueryRequestInput;
           context?: any;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
@@ -322,7 +387,7 @@ export function createQueryEngine<
           request,
           context,
         }: {
-          request: QueryRequest;
+          request: QueryRequestInput;
           context?: any;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
@@ -337,7 +402,7 @@ export function createQueryEngine<
           ids,
           context,
         }: {
-          request: QueryRequest;
+          request: QueryRequestInput;
           ids: unknown[];
           context?: any;
         }): Promise<any> => {
@@ -353,7 +418,7 @@ export function createQueryEngine<
           facets,
           context,
         }: {
-          request: QueryRequest;
+          request: QueryRequestInput;
           facets: QueryFacetRequest[];
           context?: any;
         }): Promise<any> => {
@@ -373,7 +438,7 @@ export function createQueryEngine<
         },
       };
 
-      function prepareRequest(request: QueryRequest, context: any) {
+      function prepareRequest(request: QueryRequestInput, context: any) {
         const scopedFilters = options.query?.scope?.(filterBuilder, context);
         const normalizedRequest = normalizeRequest(
           {
@@ -386,6 +451,8 @@ export function createQueryEngine<
             sorting: options.query?.sort?.defaults,
           },
         );
+
+        assertRequestLimits(normalizedRequest, resource.queryConfig.validation);
 
         assertKnownFields(
           resource as QueryResource<any, any, any, any, any, any, any>,

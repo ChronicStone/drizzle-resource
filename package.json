@@ -13,7 +13,7 @@
     "format:check": "vp fmt --check",
     "lint": "vp lint",
     "typecheck": "vp run @drizzle-resource/core#typecheck && vp run @drizzle-resource/zod#typecheck && vp run @drizzle-resource/valibot#typecheck && vp run drizzle-resource#typecheck",
-    "test": "vp run @drizzle-resource/core#test",
+    "test": "vp run @drizzle-resource/core#test && vp run @drizzle-resource/zod#test && vp run @drizzle-resource/valibot#test",
     "build": "vp run @drizzle-resource/core#build && vp run @drizzle-resource/zod#build && vp run @drizzle-resource/valibot#build && vp run drizzle-resource#build",
     "prepare": "vp config",
     "pack:check": "vp run drizzle-resource#pack:check",
@@ -32,6 +32,7 @@
     "@changesets/cli": "^2.31.1",
     "drizzle-orm": "1.0.0-rc.4",
     "typescript": "5.9.3",
+    "valibot": "^1.4.2",
     "vite-plus": "^0.2.7",
     "zod": "^4.4.3",
     "zod-to-json-schema": "^3.25.2"

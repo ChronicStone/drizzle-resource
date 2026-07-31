@@ -1,8 +1,14 @@
 import { defineConfig } from "vite-plus";
 
 export default defineConfig({
+  test: {
+    include: ["tests/**/*.test.ts"],
+  },
   pack: {
     clean: true,
+    deps: {
+      neverBundle: ["drizzle-orm", "drizzle-orm/zod", "zod"],
+    },
     dts: {
       oxc: true,
     },
