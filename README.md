@@ -24,7 +24,7 @@ pnpm add drizzle-resource       # pnpm
 bun add drizzle-resource        # bun
 ```
 
-Requires `drizzle-orm >= 1.0.0-beta` as a peer dependency.
+Requires `drizzle-orm >= 1.0.0-rc.4` as a peer dependency.
 
 ## Quick start
 

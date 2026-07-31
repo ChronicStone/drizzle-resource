@@ -30,7 +30,9 @@ export default defineConfig({
   },
   pack: {
     clean: true,
-    dts: true,
+    dts: {
+      oxc: true,
+    },
     entry: ["./index.ts"],
     fixedExtension: false,
     format: "esm",

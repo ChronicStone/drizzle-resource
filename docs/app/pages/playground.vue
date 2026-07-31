@@ -713,8 +713,7 @@ onBeforeUnmount(() => {
 
             <pre
               class="max-h-64 overflow-y-auto rounded-lg bg-muted text-xs leading-6 text-toned"
-              >{{ JSON.stringify(lastAppliedRequest ?? basePlaygroundRequest, null, 2) }}</pre
-            >
+              >{{ JSON.stringify(lastAppliedRequest ?? basePlaygroundRequest, null, 2) }}</pre>
           </UCard>
         </div>
       </div>

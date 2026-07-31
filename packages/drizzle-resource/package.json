@@ -57,9 +57,9 @@
     "check": "vp check && vp pack && npm pack --dry-run"
   },
   "devDependencies": {
-    "drizzle-orm": "1.0.0-beta.16-ea816b6"
+    "drizzle-orm": "1.0.0-rc.4"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=1.0.0-beta"
+    "drizzle-orm": ">=1.0.0-rc.4"
   }
 }
