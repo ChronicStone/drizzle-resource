@@ -4,7 +4,7 @@ import { schema } from "./schema";
 
 export const relations = defineRelationsPart(
   schema,
-  ({ customers, orderLines, orders, products, many, one }) => ({
+  ({ customers, orderLines, orderTags, orders, products, tags, many, one }) => ({
     customers: {
       orders: many.orders({
         from: customers.id,
@@ -20,6 +20,11 @@ export const relations = defineRelationsPart(
       orderLines: many.orderLines({
         from: orders.id,
         to: orderLines.orderId,
+      }),
+      // Many-to-many through the order_tags junction table.
+      tags: many.tags({
+        from: orders.id.through(orderTags.orderId),
+        to: tags.id.through(orderTags.tagId),
       }),
     },
     orderLines: {
@@ -40,6 +45,12 @@ export const relations = defineRelationsPart(
         to: orderLines.productId,
       }),
     },
-    tags: {},
+    tags: {
+      orders: many.orders({
+        from: tags.id.through(orderTags.tagId),
+        to: orders.id.through(orderTags.orderId),
+      }),
+    },
+    orderTags: {},
   }),
 );
