@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 1.0.3
+
+### Patch Changes
+
+- [#8](https://github.com/ChronicStone/drizzle-resource/pull/8) [`b8e55ce`](https://github.com/ChronicStone/drizzle-resource/commit/b8e55ce1eee2c9d37252eceab5366f2042040654) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Upgrade dependencies, including Drizzle ORM 1.0.0-rc.4.
+
 ## 1.0.2
 
 ### Patch Changes
