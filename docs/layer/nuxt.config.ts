@@ -29,6 +29,10 @@ export default defineNuxtConfig({
     "nuxt-llms",
     () => {
       extendViteConfig((config) => {
+        config.resolve ||= {};
+        config.resolve.dedupe ||= [];
+        config.resolve.dedupe.push("@codemirror/state", "@codemirror/view");
+
         config.optimizeDeps ||= {};
         config.optimizeDeps.include ||= [];
         config.optimizeDeps.include.push("@nuxt/content > slugify");
