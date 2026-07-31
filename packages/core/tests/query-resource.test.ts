@@ -156,7 +156,7 @@ describe("defineResource", () => {
       relations,
     }).withContext<{ orgId: string }>();
 
-    const _resource = engine.defineResource("employees", {
+    void engine.defineResource("employees", {
       relations: {
         department: {
           with: {
@@ -628,7 +628,7 @@ describe("defineResource", () => {
       relations,
     });
 
-    const facetsStrategy = vi.fn(async () => ({
+    const facetsStrategy = vi.fn<() => Promise<{ facets: [] }>>(async () => ({
       facets: [],
     }));
 

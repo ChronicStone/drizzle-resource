@@ -22,7 +22,9 @@ export default defineConfig({
   },
   pack: {
     clean: true,
-    dts: true,
+    dts: {
+      oxc: true,
+    },
     entry: ["./index.ts", "./core.ts", "./zod.ts", "./valibot.ts"],
     fixedExtension: false,
     format: "esm",
