@@ -1,0 +1,27 @@
+{
+  "name": "@drizzle-resource/vine",
+  "version": "1.0.0",
+  "private": true,
+  "type": "module",
+  "main": "./build/index.js",
+  "types": "./build/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./build/index.d.ts",
+      "import": "./build/index.js",
+      "default": "./build/index.js"
+    }
+  },
+  "scripts": {
+    "typecheck": "vp check && tsc --noEmit",
+    "test": "vp test",
+    "build": "vp pack",
+    "check": "vp check && tsc --noEmit && vp pack"
+  },
+  "dependencies": {
+    "@drizzle-resource/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@vinejs/vine": "^4.4.0"
+  }
+}
