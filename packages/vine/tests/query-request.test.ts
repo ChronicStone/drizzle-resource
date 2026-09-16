@@ -1,6 +1,8 @@
 import vine from "@vinejs/vine";
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import { pgEnum, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
+import { defineRelations } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 
 import { createQueryEngine } from "../../core/index.js";
 import {
@@ -55,6 +57,22 @@ function validationMessages(input: unknown, vineSchema: QueryRequestVineSchema) 
 }
 
 describe("Vine request schema", () => {
+  it("accepts a native Drizzle database and a context-scoped resource", async () => {
+    const nativeRelations = defineRelations(databaseSchema);
+    const nativeDatabase = drizzle.mock({ relations: nativeRelations });
+    const nativeEngine = createQueryEngine({
+      db: nativeDatabase,
+      schema: databaseSchema,
+      relations: nativeRelations,
+    }).withContext<{ requesterId: string }>();
+    const nativeResource = nativeEngine.defineResource("items", {
+      query: { scope: (filters, context) => filters.is("id", context.requesterId) },
+    });
+    const validator = vine.compile(requestSchema(nativeResource));
+
+    expect((await validator.validate({})).pagination.pageSize).toBeGreaterThan(0);
+  });
+
   it("keeps required nested fields required in transport input types", () => {
     expectTypeOf<{ sorting: [{}] }>().not.toMatchTypeOf<QueryRequestVineInput>();
     expectTypeOf<{ filters: [{}] }>().not.toMatchTypeOf<QueryRequestVineInput>();

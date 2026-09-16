@@ -2,7 +2,6 @@ import vine, { VineObject } from "@vinejs/vine";
 import type { Infer, InferInput, SchemaTypes } from "@vinejs/vine/types";
 import {
   resolveQueryRequestContract,
-  type GenericObject,
   type QueryFilterCondition,
   type QueryRequest,
   type QueryRequestInput,
@@ -10,10 +9,6 @@ import {
   type QueryCursorPagination,
   type QueryRequestSchemaOverride,
   type QueryResource,
-  type QueryRootKey,
-  type QueryEngineDb,
-  type QueryEngineRelations,
-  type QueryEngineSchema,
 } from "@drizzle-resource/core";
 
 type QueryRequestInputWithoutContext = Omit<QueryRequestInput, "context">;
@@ -390,16 +385,11 @@ function requestSchemaProperties(
   };
 }
 
-export function requestSchema<
-  TDb extends QueryEngineDb,
-  TSchema extends QueryEngineSchema,
-  TRelations extends QueryEngineRelations,
-  TRoot extends QueryRootKey<TDb, TSchema>,
-  TWith extends object | undefined,
-  TContext extends GenericObject,
-  TRow extends GenericObject,
->(
-  resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
+export function requestSchema(
+  resource: Pick<
+    QueryResource<any, any, any, any, any, any, any>,
+    "key" | "fields" | "queryConfig"
+  >,
   override?: QueryRequestSchemaOverride,
 ): QueryRequestVineSchema {
   const contract = resolveQueryRequestContract(resource, override);
