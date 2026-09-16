@@ -13,9 +13,9 @@
     }
   },
   "scripts": {
-    "typecheck": "vp check",
+    "typecheck": "vp check && tsc --noEmit",
     "test": "vp test",
     "build": "vp pack",
-    "check": "vp check && vp pack"
+    "check": "vp check && tsc --noEmit && vp pack"
   }
 }

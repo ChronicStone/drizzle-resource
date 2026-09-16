@@ -13,11 +13,11 @@
     }
   },
   "scripts": {
-    "typecheck": "vp check",
+    "typecheck": "vp check && tsc --noEmit",
     "test": "vp test",
     "build": "vp pack",
     "pack:check": "npm pack --dry-run",
-    "check": "vp check && vp test && vp pack"
+    "check": "vp check && tsc --noEmit && vp pack"
   },
   "devDependencies": {
     "drizzle-orm": "1.0.0-rc.4"
