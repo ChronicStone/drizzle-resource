@@ -105,6 +105,48 @@ describe("Vine request schema", () => {
       filters: [],
       search: { value: "", fields: ["name"] },
     });
+
+    await expect(
+      bulk.validate({
+        selection: {
+          pagination: { mode: "offset", pageIndex: "1", pageSize: "10", count: "exact" },
+          facets: [{ key: "status", limit: "2" }],
+        },
+      }),
+    ).resolves.toMatchObject({
+      selection: {
+        pagination: { mode: "offset", pageIndex: 1, pageSize: 10, count: "exact" },
+        sorting: [{ key: "id", dir: "asc" }],
+        filters: [],
+        search: { value: "", fields: ["name"] },
+        facets: [{ key: "status", limit: 2 }],
+      },
+    });
+  });
+
+  it("normalizes numeric query strings before applying request defaults", async () => {
+    const validator = vine.compile(requestSchema(resource));
+
+    await expect(
+      validator.validate({
+        pagination: { mode: "offset", pageIndex: "1", pageSize: "10", count: "exact" },
+      }),
+    ).resolves.toMatchObject({
+      pagination: { mode: "offset", pageIndex: 1, pageSize: 10, count: "exact" },
+      sorting: [{ key: "id", dir: "asc" }],
+      filters: [],
+      search: { value: "", fields: ["name"] },
+    });
+
+    await expect(
+      validator.validate({
+        pagination: { mode: "offset", pageIndex: "invalid", pageSize: "10", count: "exact" },
+      }),
+    ).rejects.toMatchObject({
+      messages: expect.arrayContaining([
+        expect.objectContaining({ field: "pagination.pageIndex", rule: "number" }),
+      ]),
+    });
   });
 
   it("uses offset defaults when a supplied pagination object omits its mode", async () => {

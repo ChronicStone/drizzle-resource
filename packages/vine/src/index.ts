@@ -182,6 +182,18 @@ function hasOnlyKeys(value: Record<string, unknown>, keys: readonly string[]): b
   return Object.keys(value).every((key) => allowed.has(key));
 }
 
+function isFiniteNumberInput(value: unknown): boolean {
+  if (typeof value === "number") return Number.isFinite(value);
+  return typeof value === "string" && Number.isFinite(Number(value));
+}
+
+function normalizeNumberInput(value: unknown): unknown {
+  if (typeof value !== "string") return value;
+
+  const normalized = Number(value);
+  return Number.isFinite(normalized) ? normalized : value;
+}
+
 function isValidPaginationInput(value: unknown): boolean {
   if (!isRecord(value)) return false;
 
@@ -193,16 +205,8 @@ function isValidPaginationInput(value: unknown): boolean {
       ? ["mode", "cursor", "pageSize", "count"]
       : ["mode", "pageIndex", "pageSize", "count"];
   if (!hasOnlyKeys(value, allowedKeys)) return false;
-  if (
-    value.pageIndex !== undefined &&
-    (typeof value.pageIndex !== "number" || !Number.isFinite(value.pageIndex))
-  )
-    return false;
-  if (
-    value.pageSize !== undefined &&
-    (typeof value.pageSize !== "number" || !Number.isFinite(value.pageSize))
-  )
-    return false;
+  if (value.pageIndex !== undefined && !isFiniteNumberInput(value.pageIndex)) return false;
+  if (value.pageSize !== undefined && !isFiniteNumberInput(value.pageSize)) return false;
   if (value.count !== undefined && value.count !== "none" && value.count !== "exact") return false;
   if (
     mode === "cursor" &&
@@ -263,10 +267,9 @@ function normalizeRequestDefaults(
         ? {
             mode: "cursor" as const,
             cursor: typeof paginationInput.cursor === "string" ? paginationInput.cursor : null,
-            pageSize:
-              typeof paginationInput.pageSize === "number"
-                ? paginationInput.pageSize
-                : defaultPageSize,
+            pageSize: isFiniteNumberInput(paginationInput.pageSize)
+              ? normalizeNumberInput(paginationInput.pageSize)
+              : defaultPageSize,
             count:
               paginationInput.count === "none" || paginationInput.count === "exact"
                 ? paginationInput.count
@@ -276,14 +279,12 @@ function normalizeRequestDefaults(
           }
         : {
             mode: "offset" as const,
-            pageIndex:
-              typeof paginationInput.pageIndex === "number"
-                ? paginationInput.pageIndex
-                : defaultPageIndex,
-            pageSize:
-              typeof paginationInput.pageSize === "number"
-                ? paginationInput.pageSize
-                : defaultPageSize,
+            pageIndex: isFiniteNumberInput(paginationInput.pageIndex)
+              ? normalizeNumberInput(paginationInput.pageIndex)
+              : defaultPageIndex,
+            pageSize: isFiniteNumberInput(paginationInput.pageSize)
+              ? normalizeNumberInput(paginationInput.pageSize)
+              : defaultPageSize,
             count:
               paginationInput.count === "none" || paginationInput.count === "exact"
                 ? paginationInput.count
