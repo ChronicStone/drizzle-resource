@@ -9,12 +9,12 @@ import {
   isNull,
   like,
   lt,
-  not,
   or,
   sql,
+  isSQLWrapper,
 } from "drizzle-orm";
 import { getColumns } from "drizzle-orm";
-import type { SQL } from "drizzle-orm";
+import type { SQL, SQLWrapper } from "drizzle-orm";
 
 import type {
   FieldRegistryEntry,
@@ -95,10 +95,34 @@ function mergeScopeFilters<TField extends string>(
   return [normalizedScope, ...requestChildren];
 }
 
-function eqColumns(sourceColumns: any[], targetColumns: any[]) {
-  const predicates = sourceColumns.map((sourceColumn, index) =>
-    eq(sourceColumn, targetColumns[index]),
-  );
+function resolveRelationColumn(value: unknown): SQLWrapper {
+  if (isSQLWrapper(value)) return value;
+
+  if (value === null || typeof value !== "object" || !("_" in value)) {
+    throw new TypeError("Drizzle relation metadata did not resolve to a SQL wrapper");
+  }
+
+  const metadata = value._;
+  if (
+    metadata === null ||
+    typeof metadata !== "object" ||
+    !("column" in metadata) ||
+    !isSQLWrapper(metadata.column)
+  ) {
+    throw new TypeError("Drizzle relation metadata did not resolve to a SQL wrapper");
+  }
+
+  return metadata.column;
+}
+
+function resolveRelationColumns(columns: readonly unknown[]) {
+  return columns.map(resolveRelationColumn);
+}
+
+function eqColumns(sourceColumns: readonly unknown[], targetColumns: readonly unknown[]) {
+  const source = resolveRelationColumns(sourceColumns);
+  const target = resolveRelationColumns(targetColumns);
+  const predicates = source.map((sourceColumn, index) => eq(sourceColumn, target[index]!));
   return and(...predicates) ?? sql`true`;
 }
 
@@ -217,7 +241,7 @@ function joinRelationPath(
   for (const step of relationPath) {
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -232,7 +256,7 @@ function joinRelationSteps(
   for (const step of relationSteps) {
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -257,10 +281,7 @@ function buildExistsCondition(
     .select({ one: sql<number>`1` })
     .from((schema as any)[manyStep.targetTableName]);
 
-  const correlationCondition = eqColumns(
-    manyStep.sourceColumns as any[],
-    manyStep.targetColumns as any[],
-  );
+  const correlationCondition = eqColumns(manyStep.sourceColumns, manyStep.targetColumns);
 
   for (let index = entry.firstManyIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
@@ -270,7 +291,7 @@ function buildExistsCondition(
 
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -357,8 +378,8 @@ export function buildFieldRegistry<
           relationType: relation.relationType,
           sourceTableName: currentRoot,
           targetTableName: targetRoot,
-          sourceColumns: relation.sourceColumns,
-          targetColumns: relation.targetColumns,
+          sourceColumns: resolveRelationColumns(relation.sourceColumns),
+          targetColumns: resolveRelationColumns(relation.targetColumns),
         } satisfies FieldRegistryRelationStep,
       ];
 
@@ -467,11 +488,13 @@ export function createQueryResourceUtils<
         if (scalar === null) return isNotNull(column as any);
         if (typeof scalar === "boolean")
           return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
-        return typeof scalar === "string"
-          ? text
-            ? not(eq(sql`lower(${column})`, normalizeString(scalar)))
-            : not(eq(column, scalar as any))
-          : not(eq(column, scalar as any));
+        const comparison =
+          typeof scalar === "string"
+            ? text
+              ? eq(sql`lower(${column})`, normalizeString(scalar))
+              : eq(column, scalar as any)
+            : eq(column, scalar as any);
+        return sql`not (${comparison})`;
       }
       case "gt":
       case "after":
@@ -568,7 +591,7 @@ export function createQueryResourceUtils<
     for (const step of joins) {
       query = query.innerJoin(
         (config.schema as any)[step.targetTableName],
-        eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+        eqColumns(step.sourceColumns, step.targetColumns),
       );
     }
     return query;
@@ -831,7 +854,7 @@ export function createQueryResourceUtils<
                     .from(matchingIds)
                     .innerJoin(
                       (config.schema as any)[manyStep.targetTableName],
-                      eqColumns([matchingIds.id], manyStep.targetColumns as any[]),
+                      eqColumns([matchingIds.id], manyStep.targetColumns),
                     );
 
                   bucketsQuery = joinRelationSteps(

@@ -20,9 +20,9 @@
     "check": "vp check && tsc --noEmit && vp pack"
   },
   "devDependencies": {
-    "drizzle-orm": "1.0.0-rc.4"
+    "drizzle-orm": "1.0.0-rc.5-5935859"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=1.0.0-rc.4"
+    "drizzle-orm": ">=1.0.0-rc.5-5935859"
   }
 }
