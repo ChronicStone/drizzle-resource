@@ -323,7 +323,13 @@ export type QueryEngineDb = {
   query: Record<string, { findMany: (args?: any) => Promise<any[]> }>;
 };
 
-export type QueryEngineSchema = Record<string, { _: { columns: Record<string, unknown> } }>;
+export type QueryEngineTable = { _: { columns: Record<string, unknown> } };
+
+export type QueryEngineSchema = Record<string, unknown>;
+
+type QueryEngineTableKey<TSchema extends QueryEngineSchema> = {
+  [TKey in keyof TSchema]-?: TSchema[TKey] extends QueryEngineTable ? TKey : never;
+}[keyof TSchema];
 
 export type QueryEngineRelations = Record<
   string,
@@ -341,7 +347,7 @@ export type QueryEngineRelations = Record<
 >;
 
 export type QueryRootKey<TDb extends QueryEngineDb, TSchema extends QueryEngineSchema> = Extract<
-  keyof TDb["query"] & keyof TSchema,
+  keyof TDb["query"] & QueryEngineTableKey<TSchema>,
   string
 >;
 
@@ -390,10 +396,12 @@ export type QueryResultRowShape<
     : QueryRowShape<TDb, TSchema, TRoot>
   : QueryRowShape<TDb, TSchema, TRoot>;
 
-type RootColumnKey<TSchema extends QueryEngineSchema, TRoot extends keyof TSchema> = Extract<
-  keyof TSchema[TRoot]["_"]["columns"],
-  string
->;
+type RootColumnKey<
+  TSchema extends QueryEngineSchema,
+  TRoot extends keyof TSchema,
+> = TSchema[TRoot] extends QueryEngineTable
+  ? Extract<keyof TSchema[TRoot]["_"]["columns"], string>
+  : never;
 
 type RootRelations<
   TRelations extends QueryEngineRelations,
@@ -1007,11 +1015,13 @@ export interface QueryResource<
   query: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;
     context?: TContextOverride;
+    db?: QueryEngineDb;
   }) => Promise<QueryResponse<TRow>>;
   /** Resolve ordered IDs with pagination metadata without row hydration. */
   queryIds: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;
     context?: TContextOverride;
+    db?: QueryEngineDb;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   /**
    * Hydrate rows for a known ordered ID list.
@@ -1020,6 +1030,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     context?: TContextOverride;
+    db?: QueryEngineDb;
   }) => Promise<TRow[]>;
   /**
    * Resolve facets independently of the main query pipeline.
@@ -1031,6 +1042,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     facets: QueryFacetRequest<TFacetKey>[];
     context?: TContextOverride;
+    db?: QueryEngineDb;
   }) => Promise<QueryFacetsResponse<TFacetKey>>;
 }
 

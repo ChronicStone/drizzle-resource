@@ -21,6 +21,8 @@ import type {
   FieldRegistryRelationStep,
   GenericObject,
   QueryEngineConfig,
+  QueryEngineDb,
+  QueryEngineSchema,
   QueryFacetRequest,
   QueryFacetsResponse,
   QueryFilterCondition,
@@ -278,7 +280,7 @@ function buildExistsCondition(
 
 export function buildFieldRegistry<
   TDb extends { query: Record<string, { findMany: (args?: any) => Promise<any[]> }> },
-  TSchema extends Record<string, { _: { columns: Record<string, unknown> } }>,
+  TSchema extends QueryEngineSchema,
   TRelations extends Record<string, { relations?: Record<string, any> }>,
   TRoot extends QueryRootKey<TDb, TSchema>,
   TWith extends QueryRelationsConfig<TRelations, TRoot> | undefined,
@@ -400,9 +402,15 @@ export function createQueryResourceUtils<
   TRow extends GenericObject,
 >(
   config: QueryEngineConfig<TDb, TSchema, TRelations>,
-  resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
+  {
+    resource,
+    db: database = config.db,
+  }: {
+    resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>;
+    db?: QueryEngineDb;
+  },
 ): QueryResourceUtils<TRow> {
-  const cached = utilsCache.get(resource);
+  const cached = database === config.db ? utilsCache.get(resource) : undefined;
   if (cached) return cached;
 
   const rootTable = (config.schema as any)[resource.key];
@@ -427,6 +435,7 @@ export function createQueryResourceUtils<
         const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
         if (typeof scalar === "boolean")
           return sql`${column} = ${scalar ? sql.raw("true") : sql.raw("false")}`;
+        if (scalar === null) return isNull(column as any);
         return typeof scalar === "string"
           ? text
             ? eq(sql`lower(${column})`, normalizeString(scalar))
@@ -455,6 +464,7 @@ export function createQueryResourceUtils<
               : eq(column, condition.value as any);
       case "isNot": {
         const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
+        if (scalar === null) return isNotNull(column as any);
         if (typeof scalar === "boolean")
           return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
         return typeof scalar === "string"
@@ -498,7 +508,7 @@ export function createQueryResourceUtils<
   function compileCondition(condition: QueryFilterCondition): SQL {
     const entry = resolveField(condition.key);
     if (!entry) return sql`true`;
-    return buildExistsCondition(config.db, config.schema, entry, condition, buildScalarCondition);
+    return buildExistsCondition(database, config.schema, entry, condition, buildScalarCondition);
   }
 
   function compileFilterNode(node: QueryFilterNode): SQL {
@@ -567,7 +577,7 @@ export function createQueryResourceUtils<
   function buildMatchingIdsSelect(request: QueryRequest) {
     const whereClause = buildWhereClause(request);
 
-    let matchingIdsQuery: any = (config.db as any)
+    let matchingIdsQuery: any = (database as any)
       .selectDistinct({
         id: rootTable.id,
       })
@@ -580,13 +590,11 @@ export function createQueryResourceUtils<
   async function executeIdsQuery({ request }: { request: QueryRequest }) {
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const orderBy = compileOrderBy(request.sorting);
-    const matchingIds = (config.db as any)
-      .$with("matching_ids")
-      .as(buildMatchingIdsSelect(request));
+    const matchingIds = (database as any).$with("matching_ids").as(buildMatchingIdsSelect(request));
 
     let rowCount: number | null = null;
     if (request.pagination.count === "exact") {
-      const countQuery: any = (config.db as any)
+      const countQuery: any = (database as any)
         .with(matchingIds)
         .select({
           rowCount: sql<number>`count(*)`,
@@ -623,7 +631,7 @@ export function createQueryResourceUtils<
       request.sorting.map((rule, index) => [`__cursor_${index}`, resolveField(rule.key)?.column]),
     );
 
-    let idsQuery: any = (config.db as any)
+    let idsQuery: any = (database as any)
       .with(matchingIds)
       .select({ id: matchingIds.id, ...cursorSelection })
       .from(matchingIds)
@@ -718,7 +726,7 @@ export function createQueryResourceUtils<
     const orderedIds = dedupeIds(ids);
     if (orderedIds.length === 0) return [];
 
-    const rows = await (config.db.query as any)[resource.key].findMany({
+    const rows = await (database.query as any)[resource.key].findMany({
       where: {
         id: {
           in: orderedIds,
@@ -778,7 +786,7 @@ export function createQueryResourceUtils<
         const firstGroupEntry = group[0];
         if (!firstGroupEntry) return [];
 
-        const matchingIds = (config.db as any)
+        const matchingIds = (database as any)
           .$with(`facet_matching_ids_${groupIndex}`)
           .as(buildMatchingIdsSelect(firstGroupEntry.scopedRequest));
 
@@ -803,7 +811,7 @@ export function createQueryResourceUtils<
             }
 
             const valuePredicate = buildFacetValuePredicate(entry.column, facet.search);
-            const facetBuckets = (config.db as any)
+            const facetBuckets = (database as any)
               .$with(`facet_buckets_${groupIndex}_${facet.key.replaceAll(".", "_")}`)
               .as(() => {
                 let bucketsQuery: any;
@@ -814,7 +822,7 @@ export function createQueryResourceUtils<
                     throw new Error(`Invalid many relation path for facet "${facet.key}"`);
                   }
 
-                  bucketsQuery = (config.db as any)
+                  bucketsQuery = (database as any)
                     .with(matchingIds)
                     .select({
                       value: entry.column,
@@ -832,7 +840,7 @@ export function createQueryResourceUtils<
                     entry.relationPath.slice(1),
                   );
                 } else {
-                  bucketsQuery = (config.db as any)
+                  bucketsQuery = (database as any)
                     .with(matchingIds)
                     .select({
                       value: entry.column,
@@ -851,7 +859,7 @@ export function createQueryResourceUtils<
                 return bucketsQuery.groupBy(entry.column as any);
               });
 
-            let facetQuery: any = (config.db as any)
+            let facetQuery: any = (database as any)
               .with(matchingIds, facetBuckets)
               .select({
                 value: facetBuckets.value,
@@ -912,7 +920,7 @@ export function createQueryResourceUtils<
     resolveField,
   } satisfies QueryResourceUtils<TRow>;
 
-  utilsCache.set(resource, utils);
+  if (database === config.db) utilsCache.set(resource, utils);
   return utils;
 }
 

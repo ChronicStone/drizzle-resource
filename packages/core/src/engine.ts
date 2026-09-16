@@ -3,6 +3,7 @@ import type {
   GenericObject,
   QueryEngine,
   QueryEngineConfig,
+  QueryEngineDb,
   QueryFacetsResponse,
   QueryFacetRequest,
   QueryFilterNode,
@@ -379,15 +380,17 @@ export function createQueryEngine<
         query: async ({
           request,
           context,
+          db,
         }: {
           request: QueryRequestInput;
           context?: any;
+          db?: QueryEngineDb;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
-          const utils = createQueryResourceUtils(
-            config,
-            resource as QueryResource<any, any, any, any, any, any, any>,
-          );
+          const utils = createQueryResourceUtils(config, {
+            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            db,
+          });
           const customQueryStrategy = resolveQueryStrategy(options);
           let response: QueryResponse<any>;
 
@@ -436,47 +439,53 @@ export function createQueryEngine<
         queryIds: async ({
           request,
           context,
+          db,
         }: {
           request: QueryRequestInput;
           context?: any;
+          db?: QueryEngineDb;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
-          const utils = createQueryResourceUtils(
-            config,
-            resource as QueryResource<any, any, any, any, any, any, any>,
-          );
+          const utils = createQueryResourceUtils(config, {
+            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            db,
+          });
           return executeIds(normalizedRequest, context, utils);
         },
         queryRows: async ({
           request,
           ids,
           context,
+          db,
         }: {
           request: QueryRequestInput;
           ids: unknown[];
           context?: any;
+          db?: QueryEngineDb;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
-          const utils = createQueryResourceUtils(
-            config,
-            resource as QueryResource<any, any, any, any, any, any, any>,
-          );
+          const utils = createQueryResourceUtils(config, {
+            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            db,
+          });
           return executeRows(normalizedRequest, ids, context, utils);
         },
         queryFacets: async ({
           request,
           facets,
           context,
+          db,
         }: {
           request: QueryRequestInput;
           facets: QueryFacetRequest[];
           context?: any;
+          db?: QueryEngineDb;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
-          const utils = createQueryResourceUtils(
-            config,
-            resource as QueryResource<any, any, any, any, any, any, any>,
-          );
+          const utils = createQueryResourceUtils(config, {
+            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            db,
+          });
           return executeFacetsForResource(
             options,
             resource as QueryResource<any, any, any, any, any, any, any>,
