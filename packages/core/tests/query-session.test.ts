@@ -136,9 +136,16 @@ describe("null filter SQL", () => {
             operator: "isNot",
             value: "Ada",
           };
+          const isAnyOfTextCondition: QueryFilterCondition = {
+            type: "condition",
+            key: "name",
+            operator: "isAnyOf",
+            value: ["Ada", "Grace"],
+          };
           compiled.push(utils.compileCondition(isNullCondition));
           compiled.push(utils.compileCondition(isNotNullCondition));
           compiled.push(utils.compileCondition(isNotTextCondition));
+          compiled.push(utils.compileCondition(isAnyOfTextCondition));
           return { rows: [], pageInfo };
         },
       },
@@ -158,12 +165,16 @@ describe("null filter SQL", () => {
     const isNotTextQuery = dialect.sqlToQuery(compiled[2]!);
     expect(isNotTextQuery.sql).toContain('not (lower("items"."name") = $1)');
     expect(isNotTextQuery.params).toEqual(["ada"]);
+    const isAnyOfTextQuery = dialect.sqlToQuery(compiled[3]!);
+    expect(isAnyOfTextQuery.sql).toContain('lower("items"."name") = $1');
+    expect(isAnyOfTextQuery.params).toEqual(["ada", "grace"]);
   });
 });
 
 describe("native relation SQL", () => {
-  it("unwraps RC5 relation columns before compiling scope predicates", async () => {
-    const compiled: SQL[] = [];
+  it("preserves configured casing for root and relation equality filters", async () => {
+    const rootCompiled: SQL[] = [];
+    const relationCompiled: SQL[] = [];
     const database = {
       query: {
         relationParents: { findMany: async () => [] },
@@ -174,7 +185,7 @@ describe("native relation SQL", () => {
           return this;
         },
         where(condition: SQL) {
-          compiled.push(condition);
+          relationCompiled.push(condition);
           return this;
         },
       }),
@@ -188,13 +199,54 @@ describe("native relation SQL", () => {
       relations: {
         children: true,
       },
+      query: {
+        filters: {
+          caseSensitive: ["id", "children.parentId"],
+        },
+      },
       strategy: {
         query: async ({ utils }) => {
+          rootCompiled.push(
+            utils.compileCondition({
+              type: "condition",
+              key: "id",
+              operator: "is",
+              value: "Acct_1",
+            }),
+          );
+          rootCompiled.push(
+            utils.compileCondition({
+              type: "condition",
+              key: "id",
+              operator: "isAnyOf",
+              value: ["Acct_1", "Acct_2"],
+            }),
+          );
+          rootCompiled.push(
+            utils.compileCondition({
+              type: "condition",
+              key: "id",
+              operator: "isNot",
+              value: "Acct_1",
+            }),
+          );
           utils.compileCondition({
             type: "condition",
             key: "children.parentId",
             operator: "is",
-            value: "acct_1",
+            value: "Acct_1",
+          });
+          utils.compileCondition({
+            type: "condition",
+            key: "children.parentId",
+            operator: "isAnyOf",
+            value: ["Acct_1", "Acct_2"],
+          });
+          utils.compileCondition({
+            type: "condition",
+            key: "children.parentId",
+            operator: "isNot",
+            value: "Acct_1",
           });
           return { rows: [], pageInfo };
         },
@@ -203,11 +255,37 @@ describe("native relation SQL", () => {
 
     await resource.query({ request: baseRequest });
 
-    expect(compiled).toHaveLength(1);
-    const query = new PgDialect().sqlToQuery(compiled[0]!);
-    expect(query.sql).toContain('"relation_parent"."id" = "relation_child"."parent_id"');
-    expect(query.sql).toContain('lower("relation_child"."parent_id") = $1');
-    expect(query.params).toEqual(["acct_1"]);
-    expect(query.params.every((param) => typeof param !== "object")).toBe(true);
+    expect(rootCompiled).toHaveLength(3);
+    expect(relationCompiled).toHaveLength(3);
+
+    const dialect = new PgDialect();
+    const rootIsQuery = dialect.sqlToQuery(rootCompiled[0]!);
+    expect(rootIsQuery).toEqual({
+      sql: '"relation_parent"."id" = $1',
+      params: ["Acct_1"],
+    });
+
+    const rootAnyOfQuery = dialect.sqlToQuery(rootCompiled[1]!);
+    expect(rootAnyOfQuery.sql).not.toContain("lower(");
+    expect(rootAnyOfQuery.params).toEqual(["Acct_1", "Acct_2"]);
+
+    const rootIsNotQuery = dialect.sqlToQuery(rootCompiled[2]!);
+    expect(rootIsNotQuery.sql).toContain('not ("relation_parent"."id" = $1)');
+    expect(rootIsNotQuery.params).toEqual(["Acct_1"]);
+
+    const relationIsQuery = dialect.sqlToQuery(relationCompiled[0]!);
+    expect(relationIsQuery.sql).toContain('"relation_parent"."id" = "relation_child"."parent_id"');
+    expect(relationIsQuery.sql).toContain('"relation_child"."parent_id" = $1');
+    expect(relationIsQuery.sql).not.toContain("lower(");
+    expect(relationIsQuery.params).toEqual(["Acct_1"]);
+
+    const relationAnyOfQuery = dialect.sqlToQuery(relationCompiled[1]!);
+    expect(relationAnyOfQuery.sql).not.toContain("lower(");
+    expect(relationAnyOfQuery.params).toEqual(["Acct_1", "Acct_2"]);
+
+    const relationIsNotQuery = dialect.sqlToQuery(relationCompiled[2]!);
+    expect(relationIsNotQuery.sql).toContain('not ("relation_child"."parent_id" = $1)');
+    expect(relationIsNotQuery.sql).not.toContain("lower(");
+    expect(relationIsNotQuery.params).toEqual(["Acct_1"]);
   });
 });

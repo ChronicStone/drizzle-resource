@@ -724,6 +724,12 @@ export interface ResourceQueryFiltersConfig<TField extends string> {
    * Fields present in the registry but not accepted in filters.
    */
   disabled?: readonly TField[];
+  /**
+   * Text fields whose equality filters preserve the database value's casing.
+   *
+   * `contains` and free-text search keep their case-insensitive behavior.
+   */
+  caseSensitive?: readonly TField[];
 }
 
 export interface ResourceQueryFacetsConfig<TField extends string> {
@@ -971,6 +977,7 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   filters: {
     hidden: Set<TField>;
     disabled: Set<TField>;
+    caseSensitive: Set<TField>;
   };
   facets: {
     allowed: Set<TField>;

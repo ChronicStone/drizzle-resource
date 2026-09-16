@@ -316,6 +316,11 @@ export function createQueryEngine<
       const disabledFilterFields = new Set(
         (options.query?.filters?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
       ) as Set<any>;
+      const caseSensitiveFilterFields = new Set(
+        (options.query?.filters?.caseSensitive ?? []).filter((field: any) =>
+          fieldRegistry.has(field),
+        ),
+      ) as Set<any>;
       const paginationModes = new Set<"offset" | "cursor">(
         options.query?.pagination?.modes ?? ["offset"],
       );
@@ -351,6 +356,7 @@ export function createQueryEngine<
           filters: {
             hidden: hiddenFilterFields,
             disabled: disabledFilterFields,
+            caseSensitive: caseSensitiveFilterFields,
           },
           facets: {
             allowed: allowedFacetFields,

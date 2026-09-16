@@ -447,6 +447,8 @@ export function createQueryResourceUtils<
 
   function buildScalarCondition(column: any, condition: QueryFilterCondition): SQL {
     const text = isTextColumn(column);
+    const caseSensitiveFields: ReadonlySet<string> = resource.queryConfig.filters.caseSensitive;
+    const caseSensitive = caseSensitiveFields.has(condition.key);
     switch (condition.operator) {
       case "contains":
         return text
@@ -458,7 +460,7 @@ export function createQueryResourceUtils<
           return sql`${column} = ${scalar ? sql.raw("true") : sql.raw("false")}`;
         if (scalar === null) return isNull(column as any);
         return typeof scalar === "string"
-          ? text
+          ? text && !caseSensitive
             ? eq(sql`lower(${column})`, normalizeString(scalar))
             : eq(column, scalar as any)
           : eq(column, scalar as any);
@@ -470,7 +472,7 @@ export function createQueryResourceUtils<
                 typeof value === "boolean"
                   ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
                   : typeof value === "string"
-                    ? text
+                    ? text && !caseSensitive
                       ? eq(sql`lower(${column})`, normalizeString(value))
                       : eq(column, value as any)
                     : eq(column, value as any),
@@ -479,7 +481,7 @@ export function createQueryResourceUtils<
           : typeof condition.value === "boolean"
             ? sql`${column} = ${condition.value ? sql.raw("true") : sql.raw("false")}`
             : typeof condition.value === "string"
-              ? text
+              ? text && !caseSensitive
                 ? eq(sql`lower(${column})`, normalizeString(condition.value))
                 : eq(column, condition.value as any)
               : eq(column, condition.value as any);
@@ -490,7 +492,7 @@ export function createQueryResourceUtils<
           return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
         const comparison =
           typeof scalar === "string"
-            ? text
+            ? text && !caseSensitive
               ? eq(sql`lower(${column})`, normalizeString(scalar))
               : eq(column, scalar as any)
             : eq(column, scalar as any);
