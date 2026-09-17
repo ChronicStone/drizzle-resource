@@ -1,42 +1,86 @@
 import { createQueryFilterBuilder } from "drizzle-resource";
 import type {
   QueryFacetResult,
-  QueryFacetsResponse,
+  QueryFieldPath,
   QueryFilterOperator,
-  QueryIdsResponse,
   QueryPageInfo,
   QueryRequest,
+  QueryRequestInput,
+  QueryResourceUtils,
   QueryResponse,
   QueryFilterBuilder,
   ResourceQueryDefaultsConfig,
   ResourceQueryFacetsConfig,
   ResourceQueryFiltersConfig,
+  ResourceQueryPaginationConfig,
   ResourceQuerySearchConfig,
   ResourceQuerySortConfig,
+  ResourceQueryValidationConfig,
 } from "drizzle-resource";
 
 import { db } from "./db";
 import { engine } from "./engine";
-import { ordersResource } from "./orders.resource";
+import { ordersResource, ordersRelations } from "./orders.resource";
 import { relations } from "./relations";
-import { customers, orders, products, schema, tags } from "./schema";
+import { customers, orderLines, orderTags, orders, products, schema, tags } from "./schema";
 
-export { customers, db, engine, orders, ordersResource, products, relations, schema, tags };
+export {
+  customers,
+  db,
+  engine,
+  orderLines,
+  orderTags,
+  orders,
+  ordersResource,
+  products,
+  relations,
+  schema,
+  tags,
+};
 
-export const request: QueryRequest = {
+/** Real Drizzle operators, so strategy examples compose actual SQL. */
+export { and, count, desc, eq, gt, gte, inArray, like, lt, lte, or, sql } from "drizzle-orm";
+
+/**
+ * Field paths are DERIVED from the schema and the resource relation tree — never
+ * hand-written. A path that does not exist cannot be used in an example.
+ */
+export type MyFieldPaths = QueryFieldPath<
+  typeof schema,
+  typeof relations,
+  "orders",
+  typeof ordersRelations
+>;
+
+/** The hydrated row type the orders resource returns. */
+export type OrderRow = Awaited<ReturnType<typeof ordersResource.query>>["rows"][number];
+
+export const f = createQueryFilterBuilder<MyFieldPaths>();
+
+export const offsetRequest: QueryRequest = {
   context: {},
   facets: [{ key: "status", limit: 10, mode: "exclude-self" }],
   filters: [],
-  pagination: {
-    mode: "offset",
-    pageIndex: 1,
-    pageSize: 25,
-    count: "exact",
-  },
-  search: {
-    fields: [],
-    value: "",
-  },
+  pagination: { mode: "offset", pageIndex: 1, pageSize: 25, count: "exact" },
+  search: { fields: [], value: "" },
+  sorting: [{ dir: "desc", key: "createdAt" }],
+};
+
+export const cursorRequest: QueryRequest = {
+  context: {},
+  filters: [],
+  pagination: { mode: "cursor", cursor: null, pageSize: 25, count: "none" },
+  search: { fields: [], value: "" },
+  sorting: [{ dir: "desc", key: "createdAt" }],
+};
+
+/** Kept as the historical name used across examples. */
+export const request = offsetRequest;
+
+export const requestInput: QueryRequestInput = {
+  filters: [],
+  pagination: { mode: "offset", pageIndex: 1, pageSize: 25 },
+  search: { fields: [], value: "" },
   sorting: [{ dir: "desc", key: "createdAt" }],
 };
 
@@ -49,6 +93,14 @@ export const offsetPageInfo = {
   hasNextPage: false,
   count: "exact",
   rowCount: 0,
+} satisfies QueryPageInfo;
+
+export const cursorPageInfo = {
+  mode: "cursor",
+  pageSize: 25,
+  nextCursor: null,
+  count: "none",
+  rowCount: null,
 } satisfies QueryPageInfo;
 
 export const result = {
@@ -65,74 +117,20 @@ export const result = {
   ],
 } satisfies { facets: QueryFacetResult[] };
 
-export type MyFieldPaths =
-  | "createdAt"
-  | "customer.name"
-  | "customer.orgId"
-  | "deletedAt"
-  | "orderLines.product.category"
-  | "orderLines.product.category.label"
-  | "orderLines.product.name"
-  | "orderLines.product.sku"
-  | "reference"
-  | "status"
-  | "tags.name"
-  | "totalAmount";
-
-export const f = createQueryFilterBuilder<MyFieldPaths>();
-
-export const utils = {
-  buildWhereClause: (_input: {
-    filters: QueryRequest["filters"];
-    search: QueryRequest["search"];
-  }) => ({}) as any,
-  compileOrderBy: (_sorting: QueryRequest["sorting"]) => [] as any[],
-  executeIdsQuery: async (_options: {
-    context?: unknown;
-    request?: QueryRequest;
-  }): Promise<QueryIdsResponse<string>> => ({
-    ids: ["order_1", "order_2", "order_3"],
-    pageInfo: {
-      mode: "offset",
-      pageIndex: 1,
-      pageSize: 25,
-      hasNextPage: false,
-      count: "exact",
-      rowCount: 3,
-    },
-  }),
-  executeRowsQuery: async (_options: { ids: unknown[] }): Promise<{ rows: unknown[] }> => ({
-    rows: [],
-  }),
-  resolveFacets: async (_options: {
-    facets: QueryRequest["facets"];
-    request: QueryRequest;
-  }): Promise<QueryFacetsResponse> => ({
-    facets: result.facets,
-  }),
-  resolveField: (path: string) => ({ path }) as any,
-};
-
-export const and = (..._args: unknown[]) => ({}) as any;
-export const count = () => ({}) as any;
-export const eq = (..._args: unknown[]) => ({}) as any;
-export const inArray = (..._args: unknown[]) => ({}) as any;
-export const ilike = (..._args: unknown[]) => ({}) as any;
-export const or = (..._args: unknown[]) => ({}) as any;
-
-export class Pool {
-  readonly options: Record<string, unknown>;
-
-  constructor(options: Record<string, unknown>) {
-    this.options = options;
-  }
-}
+/**
+ * Typed as the real `QueryResourceUtils`, so every helper carries its true
+ * signature and all twelve members exist. Examples that misuse a helper now
+ * fail Twoslash instead of silently shipping.
+ */
+export const utils = {} as QueryResourceUtils<OrderRow>;
 
 export type ExampleDefaultsConfig = ResourceQueryDefaultsConfig;
 export type ExampleFacetsConfig = ResourceQueryFacetsConfig<MyFieldPaths>;
 export type ExampleFiltersConfig = ResourceQueryFiltersConfig<MyFieldPaths>;
+export type ExamplePaginationConfig = ResourceQueryPaginationConfig;
 export type ExampleSearchConfig = ResourceQuerySearchConfig<MyFieldPaths>;
 export type ExampleSortConfig = ResourceQuerySortConfig<MyFieldPaths>;
-export type ExampleQueryResponse = QueryResponse<Awaited<ReturnType<typeof ordersResource.query>>>;
+export type ExampleValidationConfig = ResourceQueryValidationConfig;
+export type ExampleQueryResponse = QueryResponse<OrderRow>;
 export type ExampleFilterOperator = QueryFilterOperator;
 export type ExampleFilterBuilder = QueryFilterBuilder<MyFieldPaths>;

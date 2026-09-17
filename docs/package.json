@@ -33,7 +33,8 @@
     "zod-to-json-schema": "^3.25.2"
   },
   "devDependencies": {
-    "@types/sql.js": "^1.4.11"
+    "@types/sql.js": "^1.4.11",
+    "beautiful-mermaid": "^1.1.3"
   },
   "packageManager": "bun@1.3.6"
 }

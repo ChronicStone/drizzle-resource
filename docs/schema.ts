@@ -1,7 +1,8 @@
-import { integer, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
+import { boolean, integer, pgTable, timestamp, uuid, varchar } from "drizzle-orm/pg-core";
 
 export const customers = pgTable("customers", {
   id: uuid().defaultRandom().primaryKey(),
+  billingCountry: varchar({ length: 2 }).notNull(),
   name: varchar({ length: 255 }).notNull(),
   orgId: varchar({ length: 255 }).notNull(),
 });
@@ -16,11 +17,12 @@ export const products = pgTable("products", {
 
 export const orders = pgTable("orders", {
   id: uuid().defaultRandom().primaryKey(),
-  createdAt: varchar({ length: 255 }).notNull(),
+  createdAt: timestamp({ withTimezone: true }).notNull(),
   customerId: uuid()
     .notNull()
     .references(() => customers.id),
-  deletedAt: varchar({ length: 255 }),
+  deletedAt: timestamp({ withTimezone: true }),
+  isPriority: boolean().notNull().default(false),
   reference: varchar({ length: 255 }).notNull(),
   status: varchar({ length: 64 }).notNull(),
   totalAmount: integer().notNull(),
@@ -42,9 +44,20 @@ export const tags = pgTable("tags", {
   name: varchar({ length: 255 }).notNull(),
 });
 
+/** Junction table backing the `orders.tags` many-to-many relation. */
+export const orderTags = pgTable("order_tags", {
+  orderId: uuid()
+    .notNull()
+    .references(() => orders.id),
+  tagId: uuid()
+    .notNull()
+    .references(() => tags.id),
+});
+
 export const schema = {
   customers,
   orderLines,
+  orderTags,
   orders,
   products,
   tags,
