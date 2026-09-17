@@ -21,7 +21,7 @@
     "better-sqlite3": "^13.0.2",
     "codemirror": "^6.0.2",
     "docus": "^5.12.3",
-    "drizzle-orm": "1.0.0-rc.4",
+    "drizzle-orm": "1.0.0-rc.5-5935859",
     "drizzle-resource": "workspace:*",
     "nuxt": "^4.5.1",
     "nuxt-content-twoslash": "^0.4.0",
