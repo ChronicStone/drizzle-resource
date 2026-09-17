@@ -268,13 +268,18 @@ await orders.query({
 
 <div class="mb-8 max-w-2xl">
   <p class="mb-3 text-[11px] font-semibold uppercase tracking-widest text-primary">Granular execution</p>
-  <h2 class="text-3xl font-bold sm:text-4xl">Four methods, one pipeline</h2>
+  <h2 class="text-3xl font-bold sm:text-4xl">Five methods, one pipeline</h2>
 </div>
 
 :::div{class="landing-methods"}
 ::::div{class="landing-method"}
 <code class="landing-method-name">resource.query()</code>
 <p class="landing-method-desc">The full pipeline — ids, rows, and optional facets in one call.</p>
+::::
+
+::::div{class="landing-method"}
+<code class="landing-method-name">resource.findById()</code>
+<p class="landing-method-desc">Resolve one scoped, hydrated row without building a collection request.</p>
 ::::
 
 ::::div{class="landing-method"}
