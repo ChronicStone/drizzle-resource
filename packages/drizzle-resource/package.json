@@ -44,28 +44,37 @@
       "types": "./build/valibot.d.ts",
       "import": "./build/valibot.js",
       "default": "./build/valibot.js"
+    },
+    "./vine": {
+      "types": "./build/vine.d.ts",
+      "import": "./build/vine.js",
+      "default": "./build/vine.js"
     }
   },
   "publishConfig": {
     "access": "public"
   },
   "scripts": {
-    "typecheck": "vp check",
+    "typecheck": "vp check && tsc --noEmit",
     "build": "vp pack",
     "prepack": "vp pack",
     "pack:check": "npm pack --dry-run",
-    "check": "vp check && vp pack && npm pack --dry-run"
+    "check": "vp check && tsc --noEmit && vp pack"
   },
   "devDependencies": {
-    "drizzle-orm": "1.0.0-rc.4"
+    "drizzle-orm": "1.0.0-rc.5-5935859"
   },
   "peerDependencies": {
-    "drizzle-orm": ">=1.0.0-rc.4",
+    "@vinejs/vine": "^4.4.0",
+    "drizzle-orm": ">=1.0.0-rc.5-5935859",
     "valibot": "^1.4.2",
     "zod": "^4.4.3"
   },
   "peerDependenciesMeta": {
     "valibot": {
+      "optional": true
+    },
+    "@vinejs/vine": {
       "optional": true
     },
     "zod": {

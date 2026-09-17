@@ -3,6 +3,7 @@ import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
+import { decodeCursor } from "../src/cursor.js";
 
 const employees = pgTable("employees", {
   id: uuid().primaryKey(),
@@ -125,6 +126,34 @@ describe("built-in cursor pagination", () => {
       offsets: [0, 0],
       cursorBoundaries: 1,
     });
+  });
+
+  it("adds the root ID as a cursor tie-breaker for duplicate sort values", async () => {
+    const { db } = createDatabase([
+      [
+        { id: "emp_1", __cursor_0: "Ada", __cursor_1: "emp_1" },
+        { id: "emp_2", __cursor_0: "Ada", __cursor_1: "emp_2" },
+        { id: "emp_3", __cursor_0: "Grace", __cursor_1: "emp_3" },
+      ],
+      [{ id: "emp_3", __cursor_0: "Grace", __cursor_1: "emp_3" }],
+    ]);
+    const resource = createQueryEngine({ db, schema, relations }).defineResource("employees", {
+      query: { pagination: { modes: ["cursor"] }, defaults: { pagination: { mode: "cursor" } } },
+    });
+
+    const first = await resource.query({ request: request() });
+    const cursor = first.pageInfo.mode === "cursor" ? first.pageInfo.nextCursor : null;
+
+    expect(cursor).not.toBeNull();
+    expect(
+      decodeCursor(cursor!, "employees", [
+        { key: "fullName", dir: "asc" },
+        { key: "id", dir: "asc" },
+      ]),
+    ).toEqual(["Ada", "emp_2"]);
+
+    const second = await resource.query({ request: request(cursor) });
+    expect(second.rows.map(({ id }) => id)).toEqual(["emp_3"]);
   });
 
   it("runs the exact count only when requested", async () => {

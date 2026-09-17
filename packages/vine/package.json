@@ -1,5 +1,5 @@
 {
-  "name": "@drizzle-resource/valibot",
+  "name": "@drizzle-resource/vine",
   "version": "1.0.0",
   "private": true,
   "type": "module",
@@ -17,5 +17,11 @@
     "test": "vp test",
     "build": "vp pack",
     "check": "vp check && tsc --noEmit && vp pack"
+  },
+  "dependencies": {
+    "@drizzle-resource/core": "workspace:*"
+  },
+  "peerDependencies": {
+    "@vinejs/vine": "^4.4.0"
   }
 }

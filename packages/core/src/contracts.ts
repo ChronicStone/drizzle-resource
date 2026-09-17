@@ -56,7 +56,10 @@ function mergeDefaults(
 
 /** Resolve the validator-facing contract for a resource without widening its policy. */
 export function resolveQueryRequestContract(
-  resource: QueryResource<any, any, any, any, any, any, any>,
+  resource: Pick<
+    QueryResource<any, any, any, any, any, any, any>,
+    "key" | "fields" | "queryConfig"
+  >,
   override?: QueryRequestSchemaOverride,
 ): QueryRequestContract {
   const filters = restrict(resource.fields.keys(), override?.allow?.filters);

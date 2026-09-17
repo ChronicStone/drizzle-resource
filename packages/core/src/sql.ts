@@ -9,18 +9,20 @@ import {
   isNull,
   like,
   lt,
-  not,
   or,
   sql,
+  isSQLWrapper,
 } from "drizzle-orm";
 import { getColumns } from "drizzle-orm";
-import type { SQL } from "drizzle-orm";
+import type { SQL, SQLWrapper } from "drizzle-orm";
 
 import type {
   FieldRegistryEntry,
   FieldRegistryRelationStep,
   GenericObject,
   QueryEngineConfig,
+  QueryEngineDb,
+  QueryEngineSchema,
   QueryFacetRequest,
   QueryFacetsResponse,
   QueryFilterCondition,
@@ -93,10 +95,34 @@ function mergeScopeFilters<TField extends string>(
   return [normalizedScope, ...requestChildren];
 }
 
-function eqColumns(sourceColumns: any[], targetColumns: any[]) {
-  const predicates = sourceColumns.map((sourceColumn, index) =>
-    eq(sourceColumn, targetColumns[index]),
-  );
+function resolveRelationColumn(value: unknown): SQLWrapper {
+  if (isSQLWrapper(value)) return value;
+
+  if (value === null || typeof value !== "object" || !("_" in value)) {
+    throw new TypeError("Drizzle relation metadata did not resolve to a SQL wrapper");
+  }
+
+  const metadata = value._;
+  if (
+    metadata === null ||
+    typeof metadata !== "object" ||
+    !("column" in metadata) ||
+    !isSQLWrapper(metadata.column)
+  ) {
+    throw new TypeError("Drizzle relation metadata did not resolve to a SQL wrapper");
+  }
+
+  return metadata.column;
+}
+
+function resolveRelationColumns(columns: readonly unknown[]) {
+  return columns.map(resolveRelationColumn);
+}
+
+function eqColumns(sourceColumns: readonly unknown[], targetColumns: readonly unknown[]) {
+  const source = resolveRelationColumns(sourceColumns);
+  const target = resolveRelationColumns(targetColumns);
+  const predicates = source.map((sourceColumn, index) => eq(sourceColumn, target[index]!));
   return and(...predicates) ?? sql`true`;
 }
 
@@ -215,7 +241,7 @@ function joinRelationPath(
   for (const step of relationPath) {
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -230,7 +256,7 @@ function joinRelationSteps(
   for (const step of relationSteps) {
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -255,10 +281,7 @@ function buildExistsCondition(
     .select({ one: sql<number>`1` })
     .from((schema as any)[manyStep.targetTableName]);
 
-  const correlationCondition = eqColumns(
-    manyStep.sourceColumns as any[],
-    manyStep.targetColumns as any[],
-  );
+  const correlationCondition = eqColumns(manyStep.sourceColumns, manyStep.targetColumns);
 
   for (let index = entry.firstManyIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
@@ -268,7 +291,7 @@ function buildExistsCondition(
 
     query = query.innerJoin(
       (schema as any)[step.targetTableName],
-      eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+      eqColumns(step.sourceColumns, step.targetColumns),
     );
   }
 
@@ -278,7 +301,7 @@ function buildExistsCondition(
 
 export function buildFieldRegistry<
   TDb extends { query: Record<string, { findMany: (args?: any) => Promise<any[]> }> },
-  TSchema extends Record<string, { _: { columns: Record<string, unknown> } }>,
+  TSchema extends QueryEngineSchema,
   TRelations extends Record<string, { relations?: Record<string, any> }>,
   TRoot extends QueryRootKey<TDb, TSchema>,
   TWith extends QueryRelationsConfig<TRelations, TRoot> | undefined,
@@ -355,8 +378,8 @@ export function buildFieldRegistry<
           relationType: relation.relationType,
           sourceTableName: currentRoot,
           targetTableName: targetRoot,
-          sourceColumns: relation.sourceColumns,
-          targetColumns: relation.targetColumns,
+          sourceColumns: resolveRelationColumns(relation.sourceColumns),
+          targetColumns: resolveRelationColumns(relation.targetColumns),
         } satisfies FieldRegistryRelationStep,
       ];
 
@@ -400,9 +423,15 @@ export function createQueryResourceUtils<
   TRow extends GenericObject,
 >(
   config: QueryEngineConfig<TDb, TSchema, TRelations>,
-  resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
+  {
+    resource,
+    db: database = config.db,
+  }: {
+    resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>;
+    db?: QueryEngineDb;
+  },
 ): QueryResourceUtils<TRow> {
-  const cached = utilsCache.get(resource);
+  const cached = database === config.db ? utilsCache.get(resource) : undefined;
   if (cached) return cached;
 
   const rootTable = (config.schema as any)[resource.key];
@@ -418,6 +447,8 @@ export function createQueryResourceUtils<
 
   function buildScalarCondition(column: any, condition: QueryFilterCondition): SQL {
     const text = isTextColumn(column);
+    const caseSensitiveFields: ReadonlySet<string> = resource.queryConfig.filters.caseSensitive;
+    const caseSensitive = caseSensitiveFields.has(condition.key);
     switch (condition.operator) {
       case "contains":
         return text
@@ -427,8 +458,9 @@ export function createQueryResourceUtils<
         const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
         if (typeof scalar === "boolean")
           return sql`${column} = ${scalar ? sql.raw("true") : sql.raw("false")}`;
+        if (scalar === null) return isNull(column as any);
         return typeof scalar === "string"
-          ? text
+          ? text && !caseSensitive
             ? eq(sql`lower(${column})`, normalizeString(scalar))
             : eq(column, scalar as any)
           : eq(column, scalar as any);
@@ -440,7 +472,7 @@ export function createQueryResourceUtils<
                 typeof value === "boolean"
                   ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
                   : typeof value === "string"
-                    ? text
+                    ? text && !caseSensitive
                       ? eq(sql`lower(${column})`, normalizeString(value))
                       : eq(column, value as any)
                     : eq(column, value as any),
@@ -449,19 +481,22 @@ export function createQueryResourceUtils<
           : typeof condition.value === "boolean"
             ? sql`${column} = ${condition.value ? sql.raw("true") : sql.raw("false")}`
             : typeof condition.value === "string"
-              ? text
+              ? text && !caseSensitive
                 ? eq(sql`lower(${column})`, normalizeString(condition.value))
                 : eq(column, condition.value as any)
               : eq(column, condition.value as any);
       case "isNot": {
         const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
+        if (scalar === null) return isNotNull(column as any);
         if (typeof scalar === "boolean")
           return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
-        return typeof scalar === "string"
-          ? text
-            ? not(eq(sql`lower(${column})`, normalizeString(scalar)))
-            : not(eq(column, scalar as any))
-          : not(eq(column, scalar as any));
+        const comparison =
+          typeof scalar === "string"
+            ? text && !caseSensitive
+              ? eq(sql`lower(${column})`, normalizeString(scalar))
+              : eq(column, scalar as any)
+            : eq(column, scalar as any);
+        return sql`not (${comparison})`;
       }
       case "gt":
       case "after":
@@ -498,7 +533,7 @@ export function createQueryResourceUtils<
   function compileCondition(condition: QueryFilterCondition): SQL {
     const entry = resolveField(condition.key);
     if (!entry) return sql`true`;
-    return buildExistsCondition(config.db, config.schema, entry, condition, buildScalarCondition);
+    return buildExistsCondition(database, config.schema, entry, condition, buildScalarCondition);
   }
 
   function compileFilterNode(node: QueryFilterNode): SQL {
@@ -558,7 +593,7 @@ export function createQueryResourceUtils<
     for (const step of joins) {
       query = query.innerJoin(
         (config.schema as any)[step.targetTableName],
-        eqColumns(step.sourceColumns as any[], step.targetColumns as any[]),
+        eqColumns(step.sourceColumns, step.targetColumns),
       );
     }
     return query;
@@ -567,7 +602,7 @@ export function createQueryResourceUtils<
   function buildMatchingIdsSelect(request: QueryRequest) {
     const whereClause = buildWhereClause(request);
 
-    let matchingIdsQuery: any = (config.db as any)
+    let matchingIdsQuery: any = (database as any)
       .selectDistinct({
         id: rootTable.id,
       })
@@ -580,13 +615,11 @@ export function createQueryResourceUtils<
   async function executeIdsQuery({ request }: { request: QueryRequest }) {
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const orderBy = compileOrderBy(request.sorting);
-    const matchingIds = (config.db as any)
-      .$with("matching_ids")
-      .as(buildMatchingIdsSelect(request));
+    const matchingIds = (database as any).$with("matching_ids").as(buildMatchingIdsSelect(request));
 
     let rowCount: number | null = null;
     if (request.pagination.count === "exact") {
-      const countQuery: any = (config.db as any)
+      const countQuery: any = (database as any)
         .with(matchingIds)
         .select({
           rowCount: sql<number>`count(*)`,
@@ -623,7 +656,7 @@ export function createQueryResourceUtils<
       request.sorting.map((rule, index) => [`__cursor_${index}`, resolveField(rule.key)?.column]),
     );
 
-    let idsQuery: any = (config.db as any)
+    let idsQuery: any = (database as any)
       .with(matchingIds)
       .select({ id: matchingIds.id, ...cursorSelection })
       .from(matchingIds)
@@ -718,7 +751,7 @@ export function createQueryResourceUtils<
     const orderedIds = dedupeIds(ids);
     if (orderedIds.length === 0) return [];
 
-    const rows = await (config.db.query as any)[resource.key].findMany({
+    const rows = await (database.query as any)[resource.key].findMany({
       where: {
         id: {
           in: orderedIds,
@@ -778,7 +811,7 @@ export function createQueryResourceUtils<
         const firstGroupEntry = group[0];
         if (!firstGroupEntry) return [];
 
-        const matchingIds = (config.db as any)
+        const matchingIds = (database as any)
           .$with(`facet_matching_ids_${groupIndex}`)
           .as(buildMatchingIdsSelect(firstGroupEntry.scopedRequest));
 
@@ -803,7 +836,7 @@ export function createQueryResourceUtils<
             }
 
             const valuePredicate = buildFacetValuePredicate(entry.column, facet.search);
-            const facetBuckets = (config.db as any)
+            const facetBuckets = (database as any)
               .$with(`facet_buckets_${groupIndex}_${facet.key.replaceAll(".", "_")}`)
               .as(() => {
                 let bucketsQuery: any;
@@ -814,7 +847,7 @@ export function createQueryResourceUtils<
                     throw new Error(`Invalid many relation path for facet "${facet.key}"`);
                   }
 
-                  bucketsQuery = (config.db as any)
+                  bucketsQuery = (database as any)
                     .with(matchingIds)
                     .select({
                       value: entry.column,
@@ -823,7 +856,7 @@ export function createQueryResourceUtils<
                     .from(matchingIds)
                     .innerJoin(
                       (config.schema as any)[manyStep.targetTableName],
-                      eqColumns([matchingIds.id], manyStep.targetColumns as any[]),
+                      eqColumns([matchingIds.id], manyStep.targetColumns),
                     );
 
                   bucketsQuery = joinRelationSteps(
@@ -832,7 +865,7 @@ export function createQueryResourceUtils<
                     entry.relationPath.slice(1),
                   );
                 } else {
-                  bucketsQuery = (config.db as any)
+                  bucketsQuery = (database as any)
                     .with(matchingIds)
                     .select({
                       value: entry.column,
@@ -851,7 +884,7 @@ export function createQueryResourceUtils<
                 return bucketsQuery.groupBy(entry.column as any);
               });
 
-            let facetQuery: any = (config.db as any)
+            let facetQuery: any = (database as any)
               .with(matchingIds, facetBuckets)
               .select({
                 value: facetBuckets.value,
@@ -912,7 +945,7 @@ export function createQueryResourceUtils<
     resolveField,
   } satisfies QueryResourceUtils<TRow>;
 
-  utilsCache.set(resource, utils);
+  if (database === config.db) utilsCache.set(resource, utils);
   return utils;
 }
 

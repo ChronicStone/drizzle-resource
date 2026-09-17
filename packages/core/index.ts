@@ -4,11 +4,13 @@ export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contr
 export type {
   DefineResourceOptions,
   DefineQueryResourceOptions,
+  GenericObject,
   FieldRegistryEntry,
   FieldRegistryRelationStep,
   QueryEngine,
   QueryEngineConfig,
   QueryEngineDb,
+  QueryEngineTable,
   QueryEngineRelations,
   QueryEngineSchema,
   QueryCountMode,
