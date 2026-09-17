@@ -526,6 +526,7 @@ export function createQueryEngine<
           resource as QueryResource<any, any, any, any, any, any, any>,
           normalizedRequest,
         );
+        assertKnownFacetFields(resource, normalizedRequest.facets ?? []);
 
         const scopedRequest = {
           ...normalizedRequest,

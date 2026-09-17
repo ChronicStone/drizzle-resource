@@ -720,6 +720,16 @@ describe("defineResource", () => {
         context: { email: "ada@example.com" },
         request: {
           ...baseRequest,
+          facets: [{ key: "email" }],
+        },
+      }),
+    ).rejects.toThrow('Unknown facet field "email" for resource "employees"');
+
+    await expect(
+      resource.query({
+        context: { email: "ada@example.com" },
+        request: {
+          ...baseRequest,
           pagination: { pageIndex: 1, pageSize: 10 },
           filters: [
             {
