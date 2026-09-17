@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.1.1
+
+### Patch Changes
+
+- [#20](https://github.com/ChronicStone/drizzle-resource/pull/20) [`a765860`](https://github.com/ChronicStone/drizzle-resource/commit/a76586057b1e7ce72ebbe8452879f1da11942cb8) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Avoid joining configured relation search fields when the search value is empty, preserving rows whose optional relations are not loaded.
+
 ## 2.1.0
 
 ### Minor Changes
