@@ -20,7 +20,7 @@
     "docs:build": "bun run --cwd docs build",
     "docs:check": "bun run --cwd docs check",
     "check": "vp run @drizzle-resource/core#check && vp run @drizzle-resource/zod#check && vp run @drizzle-resource/valibot#check && vp run @drizzle-resource/vine#check && vp run drizzle-resource#check",
-    "ci": "bun run check && bun run docs:build",
+    "ci": "bun run check && bun run test && bun run docs:build",
     "dev": "bun run --cwd docs dev",
     "changeset": "changeset",
     "release:status": "changeset status --verbose",
