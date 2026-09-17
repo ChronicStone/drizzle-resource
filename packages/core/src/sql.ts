@@ -145,7 +145,8 @@ function buildOuterJoins(
 ) {
   const requestedFields: string[] = [];
   collectConditionFieldsFromFilters(request.filters, requestedFields);
-  requestedFields.push(...request.search.fields, ...request.sorting.map((rule) => rule.key));
+  if (request.search.value.length > 0) requestedFields.push(...request.search.fields);
+  requestedFields.push(...request.sorting.map((rule) => rule.key));
 
   const relationSteps = new Map<string, FieldRegistryRelationStep>();
   for (const path of requestedFields) {
@@ -162,7 +163,8 @@ function buildOuterJoins(
 function getJoinPlanCacheKey(request: QueryRequest) {
   const requestedFields: string[] = [];
   collectConditionFieldsFromFilters(request.filters, requestedFields);
-  requestedFields.push(...request.search.fields, ...request.sorting.map((rule) => rule.key));
+  if (request.search.value.length > 0) requestedFields.push(...request.search.fields);
+  requestedFields.push(...request.sorting.map((rule) => rule.key));
   requestedFields.sort();
   return requestedFields.join("|");
 }

@@ -5,22 +5,46 @@ import { describe, expect, it } from "vite-plus/test";
 import { createQueryEngine } from "../index.js";
 import { decodeCursor } from "../src/cursor.js";
 
+const departments = pgTable("departments", {
+  id: uuid().primaryKey(),
+  name: varchar({ length: 255 }).notNull(),
+});
 const employees = pgTable("employees", {
   id: uuid().primaryKey(),
+  departmentId: uuid().references(() => departments.id),
   fullName: varchar({ length: 255 }).notNull(),
 });
-const schema = { employees };
-const relations = defineRelationsPart(schema, () => ({ employees: {} }));
+const schema = { departments, employees };
+const relations = defineRelationsPart(
+  schema,
+  ({ departments: departmentRelations, employees: employeeRelations, one }) => ({
+    departments: {},
+    employees: {
+      department: one.departments({
+        from: employeeRelations.departmentId,
+        to: departmentRelations.id,
+        optional: true,
+      }),
+    },
+  }),
+);
 
 interface QueryTrace {
   countQueries: number;
+  relationJoins: number;
   limits: number[];
   offsets: number[];
   cursorBoundaries: number;
 }
 
 function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount = 0) {
-  const trace: QueryTrace = { countQueries: 0, limits: [], offsets: [], cursorBoundaries: 0 };
+  const trace: QueryTrace = {
+    countQueries: 0,
+    relationJoins: 0,
+    limits: [],
+    offsets: [],
+    cursorBoundaries: 0,
+  };
 
   class QueryBuilder implements PromiseLike<any[]> {
     constructor(
@@ -32,7 +56,8 @@ function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount =
     from() {
       return this;
     }
-    innerJoin() {
+    innerJoin(table?: unknown) {
+      if (table === departments) trace.relationJoins += 1;
       return this;
     }
     where() {
@@ -60,6 +85,7 @@ function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount =
 
   const db = {
     query: {
+      departments: { findMany: async () => [] },
       employees: {
         findMany: async ({ where }: { where: { id: { in: string[] } } }) =>
           [...where.id.in].reverse().map((id) => ({
@@ -122,10 +148,53 @@ describe("built-in cursor pagination", () => {
     expect(second.pageInfo).toMatchObject({ mode: "cursor", nextCursor: null });
     expect(trace).toEqual({
       countQueries: 0,
+      relationJoins: 0,
       limits: [3, 3],
       offsets: [0, 0],
       cursorBoundaries: 1,
     });
+  });
+
+  it("does not join optional search relations when the search value is empty", async () => {
+    const { db, trace } = createDatabase([
+      [{ id: "emp_1", __cursor_0: "Ada", __cursor_1: "emp_1" }],
+    ]);
+    const resource = createQueryEngine({ db, schema, relations }).defineResource("employees", {
+      relations: { department: true },
+      query: {
+        pagination: { modes: ["cursor"] },
+        defaults: { pagination: { mode: "cursor" } },
+        search: { defaults: ["fullName", "department.name"] },
+      },
+    });
+
+    const page = await resource.query({ request: request() });
+
+    expect(page.rows.map(({ id }) => id)).toEqual(["emp_1"]);
+    expect(trace.relationJoins).toBe(0);
+  });
+
+  it("joins optional search relations when the search value uses them", async () => {
+    const { db, trace } = createDatabase([
+      [{ id: "emp_1", __cursor_0: "Ada", __cursor_1: "emp_1" }],
+    ]);
+    const resource = createQueryEngine({ db, schema, relations }).defineResource("employees", {
+      relations: { department: true },
+      query: {
+        pagination: { modes: ["cursor"] },
+        defaults: { pagination: { mode: "cursor" } },
+        search: { defaults: ["fullName", "department.name"] },
+      },
+    });
+
+    await resource.query({
+      request: {
+        ...request(),
+        search: { value: "Platform", fields: [] },
+      },
+    });
+
+    expect(trace.relationJoins).toBe(2);
   });
 
   it("adds the root ID as a cursor tie-breaker for duplicate sort values", async () => {
