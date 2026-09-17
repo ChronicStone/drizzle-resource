@@ -662,10 +662,13 @@ describe("defineResource", () => {
       db,
       schema,
       relations,
-    });
+    }).withContext<{ email: string }>();
+
+    let scopedFilters: QueryRequest["filters"] = [];
 
     const resource = engine.defineResource("employees", {
       query: {
+        scope: (filters, context) => filters.is("email", context.email),
         search: {
           allowed: ["fullName", "email"],
         },
@@ -680,10 +683,15 @@ describe("defineResource", () => {
         },
       },
       strategy: {
-        query: async () => ({
-          rows: [],
-          pageInfo: exactOffsetPageInfo(0),
-        }),
+        query: async ({ request, utils }) => {
+          scopedFilters = request.filters;
+          utils.compileFilterNode(request.filters[0]!);
+
+          return {
+            rows: [],
+            pageInfo: exactOffsetPageInfo(0),
+          };
+        },
       },
     });
 
@@ -694,6 +702,22 @@ describe("defineResource", () => {
 
     await expect(
       resource.query({
+        context: { email: "ada@example.com" },
+        request: baseRequest,
+      }),
+    ).resolves.toMatchObject({ rows: [] });
+    expect(scopedFilters).toEqual([
+      {
+        type: "condition",
+        key: "email",
+        operator: "is",
+        value: "ada@example.com",
+      },
+    ]);
+
+    await expect(
+      resource.query({
+        context: { email: "ada@example.com" },
         request: {
           ...baseRequest,
           pagination: { pageIndex: 1, pageSize: 10 },

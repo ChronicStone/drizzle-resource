@@ -288,11 +288,14 @@ export function createQueryEngine<
     ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>;
     function defineResource(root: any, options: any): any {
       const relationsClause = options.relations as any;
-      const fieldRegistry = buildFieldRegistry(config, root, relationsClause, {
-        hidden: options.query?.filters?.hidden,
+      const trustedFieldRegistry = buildFieldRegistry(config, root, relationsClause, {
         nonFilterable: options.query?.filters?.disabled,
         nonSortable: options.query?.sort?.disabled,
       });
+      const hiddenFields = new Set<string>(options.query?.filters?.hidden ?? []);
+      const fieldRegistry = new Map(
+        Array.from(trustedFieldRegistry).filter(([field]) => !hiddenFields.has(field)),
+      );
       const allFields = Array.from(fieldRegistry.keys()).sort();
       const allowedSearchFields = new Set(
         (options.query?.search?.allowed ?? allFields).filter((field: any) =>
@@ -311,14 +314,16 @@ export function createQueryEngine<
         (options.query?.sort?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
       ) as Set<any>;
       const hiddenFilterFields = new Set(
-        (options.query?.filters?.hidden ?? []).filter((field: any) => fieldRegistry.has(field)),
+        (options.query?.filters?.hidden ?? []).filter((field: any) =>
+          trustedFieldRegistry.has(field),
+        ),
       ) as Set<any>;
       const disabledFilterFields = new Set(
         (options.query?.filters?.disabled ?? []).filter((field: any) => fieldRegistry.has(field)),
       ) as Set<any>;
       const caseSensitiveFilterFields = new Set(
         (options.query?.filters?.caseSensitive ?? []).filter((field: any) =>
-          fieldRegistry.has(field),
+          trustedFieldRegistry.has(field),
         ),
       ) as Set<any>;
       const paginationModes = new Set<"offset" | "cursor">(
@@ -339,6 +344,7 @@ export function createQueryEngine<
 
       const filterBuilder = createQueryFilterBuilder<any>();
 
+      let trustedResource: QueryResource<any, any, any, any, any, any, any>;
       const resource: QueryResource<any, any, any, any, any, any, any> = {
         key: root,
         schema: config.schema,
@@ -394,7 +400,7 @@ export function createQueryEngine<
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(config, {
-            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            resource: trustedResource,
             db,
           });
           const customQueryStrategy = resolveQueryStrategy(options);
@@ -453,7 +459,7 @@ export function createQueryEngine<
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(config, {
-            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            resource: trustedResource,
             db,
           });
           return executeIds(normalizedRequest, context, utils);
@@ -471,7 +477,7 @@ export function createQueryEngine<
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(config, {
-            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            resource: trustedResource,
             db,
           });
           return executeRows(normalizedRequest, ids, context, utils);
@@ -489,7 +495,7 @@ export function createQueryEngine<
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
           const utils = createQueryResourceUtils(config, {
-            resource: resource as QueryResource<any, any, any, any, any, any, any>,
+            resource: trustedResource,
             db,
           });
           return executeFacetsForResource(
@@ -503,19 +509,16 @@ export function createQueryEngine<
         },
       };
 
+      trustedResource = {
+        ...resource,
+        fields: trustedFieldRegistry,
+      };
+
       function prepareRequest(request: QueryRequestInput, context: any) {
-        const scopedFilters = options.query?.scope?.(filterBuilder, context);
-        const normalizedRequest = normalizeRequest(
-          {
-            ...request,
-            filters: mergeScopeFilters(scopedFilters, request.filters),
-          },
-          defaultFields as readonly string[],
-          {
-            pagination: options.query?.defaults?.pagination,
-            sorting: options.query?.sort?.defaults,
-          },
-        );
+        const normalizedRequest = normalizeRequest(request, defaultFields as readonly string[], {
+          pagination: options.query?.defaults?.pagination,
+          sorting: options.query?.sort?.defaults,
+        });
 
         assertRequestLimits(normalizedRequest, resource.queryConfig.validation);
 
@@ -523,7 +526,18 @@ export function createQueryEngine<
           resource as QueryResource<any, any, any, any, any, any, any>,
           normalizedRequest,
         );
-        return normalizedRequest;
+
+        const scopedRequest = {
+          ...normalizedRequest,
+          filters: mergeScopeFilters(
+            options.query?.scope?.(filterBuilder, context),
+            normalizedRequest.filters,
+          ),
+        };
+
+        assertRequestLimits(scopedRequest, resource.queryConfig.validation);
+        assertKnownFields(trustedResource, scopedRequest);
+        return scopedRequest;
       }
 
       async function executeIds(
