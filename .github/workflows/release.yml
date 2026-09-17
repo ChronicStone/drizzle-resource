@@ -42,8 +42,8 @@ jobs:
         with:
           version: bun run release:version
           publish: bun run release:publish
-          commit: "chore: release packages"
-          title: "chore: release packages"
+          commit: "chore(release): release packages"
+          title: "chore(release): release packages"
           createGithubReleases: true
         env:
           GITHUB_TOKEN: ${{ secrets.RELEASE_GITHUB_TOKEN || secrets.GITHUB_TOKEN }}
