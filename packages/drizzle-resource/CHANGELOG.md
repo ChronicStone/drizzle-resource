@@ -1,5 +1,17 @@
 # drizzle-resource
 
+## 2.1.0
+
+### Minor Changes
+
+- [#18](https://github.com/ChronicStone/drizzle-resource/pull/18) [`530ba08`](https://github.com/ChronicStone/drizzle-resource/commit/530ba0868cdfd0a008b4e8d9ac1d242cda94dcc9) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add VineJS request schemas, per-query database overrides, and case-sensitive filter configuration.
+
+### Patch Changes
+
+- [#18](https://github.com/ChronicStone/drizzle-resource/pull/18) [`530ba08`](https://github.com/ChronicStone/drizzle-resource/commit/530ba0868cdfd0a008b4e8d9ac1d242cda94dcc9) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Fix Drizzle RC5 relation columns, numeric HTTP query inputs, and deterministic cursor pagination for duplicate sort values.
+
+- [#18](https://github.com/ChronicStone/drizzle-resource/pull/18) [`530ba08`](https://github.com/ChronicStone/drizzle-resource/commit/530ba0868cdfd0a008b4e8d9ac1d242cda94dcc9) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Allow trusted resource scopes to filter on fields hidden from public query contracts.
+
 ## 2.0.0
 
 ### Major Changes
