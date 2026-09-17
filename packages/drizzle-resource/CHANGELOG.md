@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.2.0
+
+### Minor Changes
+
+- [#22](https://github.com/ChronicStone/drizzle-resource/pull/22) [`cf740ea`](https://github.com/ChronicStone/drizzle-resource/commit/cf740eacc1379e69d53f76e6a1dfab7d443e272e) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add `resource.findById(...)` for scoped, relation-complete single-record lookups without constructing a paginated collection request.
+
 ## 2.1.1
 
 ### Patch Changes
