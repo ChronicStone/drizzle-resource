@@ -1024,6 +1024,12 @@ export interface QueryResource<
     context?: TContextOverride;
     db?: QueryEngineDb;
   }) => Promise<QueryResponse<TRow>>;
+  /** Resolve one scoped, hydrated row by its root id. */
+  findById: <TContextOverride extends TContext = TContext>(args: {
+    id: TRow extends { id: infer TId } ? TId : unknown;
+    context?: TContextOverride;
+    db?: QueryEngineDb;
+  }) => Promise<TRow | null>;
   /** Resolve ordered IDs with pagination metadata without row hydration. */
   queryIds: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;

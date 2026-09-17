@@ -263,6 +263,71 @@ describe("defineResource", () => {
     });
   });
 
+  it("finds one scoped row by id without a collection request", async () => {
+    const requests: QueryRequest[] = [];
+    const engine = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).withContext<{ country: string }>();
+    const resource = engine.defineResource("employees", {
+      relations: {
+        department: { with: { company: true } },
+      },
+      query: {
+        scope: (filters, context) => filters.is("department.company.country", context.country),
+        pagination: { modes: ["cursor"] },
+        defaults: { pagination: { mode: "cursor" } },
+      },
+      strategy: {
+        query: async ({ request }) => {
+          requests.push(request);
+          const id = request.filters.find(
+            (filter) => filter.type === "condition" && filter.key === "id",
+          );
+
+          return {
+            rows:
+              id?.type === "condition" && id.value === "emp_1"
+                ? [{ id: "emp_1", fullName: "Ada" }]
+                : [],
+            pageInfo: {
+              mode: "cursor",
+              pageSize: 1,
+              hasNextPage: false,
+              count: "none",
+              nextCursor: null,
+            },
+          };
+        },
+      },
+    });
+
+    await expect(
+      resource.findById({ id: "emp_1", context: { country: "France" } }),
+    ).resolves.toEqual({ id: "emp_1", fullName: "Ada" });
+    await expect(
+      resource.findById({ id: "missing", context: { country: "France" } }),
+    ).resolves.toBeNull();
+
+    expect(requests[0]?.pagination).toEqual({
+      mode: "cursor",
+      cursor: null,
+      pageSize: 1,
+      count: "none",
+    });
+    expect(requests[0]?.sorting).toEqual([{ key: "id", dir: "asc" }]);
+    expect(requests[0]?.filters).toEqual([
+      {
+        type: "condition",
+        key: "department.company.country",
+        operator: "is",
+        value: "France",
+      },
+      { type: "condition", key: "id", operator: "is", value: "emp_1" },
+    ]);
+  });
+
   it("returns requested facets from query while keeping queryFacets available", async () => {
     const db = {
       query: {

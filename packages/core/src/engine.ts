@@ -397,56 +397,32 @@ export function createQueryEngine<
           request: QueryRequestInput;
           context?: any;
           db?: QueryEngineDb;
+        }): Promise<any> => executeQuery({ request, context, db }),
+        findById: async ({
+          id,
+          context,
+          db,
+        }: {
+          id: unknown;
+          context?: any;
+          db?: QueryEngineDb;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context);
-          const utils = createQueryResourceUtils(config, {
-            resource: trustedResource,
-            db,
-          });
-          const customQueryStrategy = resolveQueryStrategy(options);
-          let response: QueryResponse<any>;
-
-          if (customQueryStrategy) {
-            response = await customQueryStrategy({
-              request: normalizedRequest,
-              context,
-              resource,
-              utils,
-            });
-          } else {
-            const idsResponse = await executeIds(normalizedRequest, context, utils);
-            const rows =
-              idsResponse.ids.length > 0
-                ? await executeRows(normalizedRequest, idsResponse.ids, context, utils)
-                : [];
-
-            response = {
-              rows,
-              pageInfo: idsResponse.pageInfo,
-            };
-          }
-
-          if (
-            !normalizedRequest.facets ||
-            normalizedRequest.facets.length === 0 ||
-            response.facets !== undefined
-          ) {
-            return response;
-          }
-
-          const facetsResponse = await executeFacetsForResource(
-            options,
-            resource as QueryResource<any, any, any, any, any, any, any>,
-            utils,
-            normalizedRequest,
-            normalizedRequest.facets,
+          const pagination = paginationModes.has("offset")
+            ? { mode: "offset" as const, pageIndex: 1, pageSize: 1, count: "none" as const }
+            : { mode: "cursor" as const, cursor: null, pageSize: 1, count: "none" as const };
+          const response = await executeQuery({
+            request: {
+              pagination,
+              sorting: [{ key: "id", dir: "asc" }],
+              filters: [{ type: "condition", key: "id", operator: "is", value: id }],
+              search: { value: "", fields: [] },
+            },
             context,
-          );
+            db,
+            trustedInput: true,
+          });
 
-          return {
-            ...response,
-            facets: facetsResponse.facets,
-          };
+          return response.rows[0] ?? null;
         },
         queryIds: async ({
           request,
@@ -514,7 +490,69 @@ export function createQueryEngine<
         fields: trustedFieldRegistry,
       };
 
-      function prepareRequest(request: QueryRequestInput, context: any) {
+      async function executeQuery({
+        request,
+        context,
+        db,
+        trustedInput = false,
+      }: {
+        request: QueryRequestInput;
+        context?: any;
+        db?: QueryEngineDb;
+        trustedInput?: boolean;
+      }) {
+        const normalizedRequest = prepareRequest(request, context, trustedInput);
+        const utils = createQueryResourceUtils(config, {
+          resource: trustedResource,
+          db,
+        });
+        const customQueryStrategy = resolveQueryStrategy(options);
+        let response: QueryResponse<any>;
+
+        if (customQueryStrategy) {
+          response = await customQueryStrategy({
+            request: normalizedRequest,
+            context,
+            resource,
+            utils,
+          });
+        } else {
+          const idsResponse = await executeIds(normalizedRequest, context, utils);
+          const rows =
+            idsResponse.ids.length > 0
+              ? await executeRows(normalizedRequest, idsResponse.ids, context, utils)
+              : [];
+
+          response = {
+            rows,
+            pageInfo: idsResponse.pageInfo,
+          };
+        }
+
+        if (
+          !normalizedRequest.facets ||
+          normalizedRequest.facets.length === 0 ||
+          response.facets !== undefined
+        ) {
+          return response;
+        }
+
+        const facetsResponse = await executeFacetsForResource(
+          options,
+          resource as QueryResource<any, any, any, any, any, any, any>,
+          utils,
+          normalizedRequest,
+          normalizedRequest.facets,
+          context,
+        );
+
+        return {
+          ...response,
+          facets: facetsResponse.facets,
+        };
+      }
+
+      function prepareRequest(request: QueryRequestInput, context: any, trustedInput = false) {
         const normalizedRequest = normalizeRequest(request, defaultFields as readonly string[], {
           pagination: options.query?.defaults?.pagination,
           sorting: options.query?.sort?.defaults,
@@ -522,11 +560,10 @@ export function createQueryEngine<
 
         assertRequestLimits(normalizedRequest, resource.queryConfig.validation);
 
-        assertKnownFields(
-          resource as QueryResource<any, any, any, any, any, any, any>,
-          normalizedRequest,
-        );
-        assertKnownFacetFields(resource, normalizedRequest.facets ?? []);
+        const inputResource = trustedInput ? trustedResource : resource;
+
+        assertKnownFields(inputResource, normalizedRequest);
+        assertKnownFacetFields(inputResource, normalizedRequest.facets ?? []);
 
         const scopedRequest = {
           ...normalizedRequest,

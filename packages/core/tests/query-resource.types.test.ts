@@ -239,6 +239,13 @@ describe("defineResource typing", () => {
     expectTypeOf(resource.queryRows).returns.resolves.toEqualTypeOf<
       Array<{ id: string; fullName: string }>
     >();
+    expectTypeOf(resource.findById)
+      .parameter(0)
+      .toEqualTypeOf<{ id: string; context?: { orgId: string }; db?: typeof db }>();
+    expectTypeOf(resource.findById).returns.resolves.toEqualTypeOf<{
+      id: string;
+      fullName: string;
+    } | null>();
   });
 
   it("defaults query row types from the drizzle findMany shape", () => {
