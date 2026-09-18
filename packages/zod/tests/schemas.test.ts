@@ -37,6 +37,13 @@ const resource = createQueryEngine({
   relations,
 }).defineResource("orders", {
   relations: { customer: true },
+  hydration: {
+    profiles: {
+      list: {},
+      detail: { customer: true },
+    },
+    defaults: { query: "list", findById: "detail" },
+  },
   query: {
     search: { allowed: ["reference"] },
     filters: { disabled: ["customerId"] },
@@ -102,13 +109,16 @@ describe("Zod schemas", () => {
 
   it("infers override inputs and carries their output through selected relations", () => {
     const responseContract = responseSchema(resource, {
-      columns: {
-        reference: (columnSchema) => columnSchema.transform((value) => value.length),
-      },
-      relations: {
-        customer: {
-          columns: {
-            name: (columnSchema) => columnSchema.transform((value) => value.length),
+      load: "detail",
+      override: {
+        columns: {
+          reference: (columnSchema) => columnSchema.transform((value) => value.length),
+        },
+        relations: {
+          customer: {
+            columns: {
+              name: (columnSchema) => columnSchema.transform((value) => value.length),
+            },
           },
         },
       },
@@ -140,5 +150,33 @@ describe("Zod schemas", () => {
     expect(response.rows[0]?.reference).toBe(5);
     expect(response.rows[0]?.customer.name).toBe(3);
     expect(responseContract.safeParse({ rows: [{ id: "bad" }] }).success).toBe(false);
+  });
+
+  it("derives response rows from the default and selected hydration profiles", () => {
+    const listResponse = responseSchema(resource);
+    const detailResponse = responseSchema(resource, { load: "detail" });
+    type ListRow = z.infer<typeof listResponse>["rows"][number];
+    type DetailRow = z.infer<typeof detailResponse>["rows"][number];
+
+    expectTypeOf<ListRow>().not.toHaveProperty("customer");
+    expectTypeOf<DetailRow>().toHaveProperty("customer");
+
+    const pageInfo = {
+      mode: "offset" as const,
+      pageIndex: 1,
+      pageSize: 25,
+      hasNextPage: false,
+      count: "exact" as const,
+      rowCount: 1,
+    };
+    const row = {
+      id: "018f2d22-2580-7c0b-8a9b-2195a619d8d4",
+      customerId: "018f2d22-2580-7c0b-8a9b-2195a619d8d5",
+      reference: "ord-1",
+      customer: { id: "018f2d22-2580-7c0b-8a9b-2195a619d8d5", name: "Ada" },
+    };
+
+    expect(listResponse.parse({ rows: [row], pageInfo }).rows[0]).not.toHaveProperty("customer");
+    expect(detailResponse.parse({ rows: [row], pageInfo }).rows[0]).toHaveProperty("customer");
   });
 });

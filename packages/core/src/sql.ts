@@ -30,6 +30,7 @@ import type {
   QueryFilterInput,
   QueryFilterNode,
   QueryRelationsConfig,
+  QueryRelationsSubset,
   QueryRequest,
   QueryPageInfo,
   QueryResource,
@@ -39,7 +40,7 @@ import type {
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
 
-const utilsCache = new WeakMap<object, QueryResourceUtils<any>>();
+const utilsCache = new WeakMap<object, unknown>();
 
 function normalizeString(value: unknown) {
   return String(value ?? "").toLowerCase();
@@ -432,9 +433,9 @@ export function createQueryResourceUtils<
     resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>;
     db?: QueryEngineDb;
   },
-): QueryResourceUtils<TRow> {
+): QueryResourceUtils<TRow, TWith> {
   const cached = database === config.db ? utilsCache.get(resource) : undefined;
-  if (cached) return cached;
+  if (cached) return cached as QueryResourceUtils<TRow, TWith>;
 
   const rootTable = (config.schema as any)[resource.key];
   const joinPlanCache = new Map<string, FieldRegistryRelationStep[]>();
@@ -749,7 +750,14 @@ export function createQueryResourceUtils<
     };
   }
 
-  async function executeRowsQuery({ ids }: { ids: unknown[]; request?: QueryRequest }) {
+  async function executeRowsQuery({
+    ids,
+    relations = resource.relations as QueryRelationsSubset<TWith> | undefined,
+  }: {
+    ids: unknown[];
+    request?: QueryRequest;
+    relations?: QueryRelationsSubset<TWith>;
+  }) {
     const orderedIds = dedupeIds(ids);
     if (orderedIds.length === 0) return [];
 
@@ -759,7 +767,7 @@ export function createQueryResourceUtils<
           in: orderedIds,
         },
       },
-      with: resource.relations,
+      with: relations,
     });
 
     const orderIndex = new Map(orderedIds.map((id: unknown, index: number) => [id, index]));
@@ -771,13 +779,19 @@ export function createQueryResourceUtils<
     return rows;
   }
 
-  async function executeHydratedPage({ request }: { request: QueryRequest }) {
+  async function executeHydratedPage({
+    request,
+    relations,
+  }: {
+    request: QueryRequest;
+    relations?: QueryRelationsSubset<TWith>;
+  }) {
     const { ids, pageInfo } = await executeIdsQuery({ request });
     if (ids.length === 0) {
       return { rows: [], pageInfo };
     }
 
-    const rows = await executeRowsQuery({ ids, request });
+    const rows = await executeRowsQuery({ ids, request, relations });
     return { rows, pageInfo };
   }
 
@@ -945,9 +959,11 @@ export function createQueryResourceUtils<
     executeHydratedPage,
     resolveFacets,
     resolveField,
-  } satisfies QueryResourceUtils<TRow>;
+  } satisfies QueryResourceUtils<TRow, TWith>;
 
-  if (database === config.db) utilsCache.set(resource, utils);
+  if (database === config.db) {
+    utilsCache.set(resource, utils);
+  }
   return utils;
 }
 

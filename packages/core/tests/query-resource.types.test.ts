@@ -324,6 +324,55 @@ describe("defineResource typing", () => {
     >();
   });
 
+  it("infers rows from hydration defaults, profiles, and inline overrides", () => {
+    const resource = engine.defineResource("employees", {
+      relations: employeeWith,
+      hydration: {
+        profiles: {
+          list: { department: true },
+          detail: employeeWith,
+          root: {},
+        },
+        defaults: {
+          query: "list",
+          findById: "detail",
+        },
+      },
+    });
+
+    type ListRow = Awaited<ReturnType<typeof resource.query>>["rows"][number];
+    type DetailRow = NonNullable<Awaited<ReturnType<typeof resource.findById>>>;
+
+    expectTypeOf<ListRow>().toHaveProperty("department");
+    expectTypeOf<ListRow>().not.toHaveProperty("employeeSkills");
+    expectTypeOf<DetailRow>().toHaveProperty("department");
+    expectTypeOf<DetailRow>().toHaveProperty("employeeSkills");
+
+    const queryRoot = () => resource.query({ request: baseRequest, load: "root" });
+    type RootRow = Awaited<ReturnType<typeof queryRoot>>["rows"][number];
+    expectTypeOf<RootRow>().not.toHaveProperty("department");
+    expectTypeOf<RootRow>().not.toHaveProperty("employeeSkills");
+
+    const findWithSkills = () =>
+      resource.findById({
+        id: "9de7c01b-bf45-4c52-a8a8-cce73c66b947",
+        load: { employeeSkills: { with: { skill: true } } },
+      });
+    type InlineRow = NonNullable<Awaited<ReturnType<typeof findWithSkills>>>;
+    expectTypeOf<InlineRow>().not.toHaveProperty("department");
+    expectTypeOf<InlineRow>().toHaveProperty("employeeSkills");
+
+    // @ts-expect-error unknown hydration profiles are rejected
+    void (() => resource.query({ request: baseRequest, load: "unknown" }));
+
+    void (() =>
+      resource.findById({
+        id: "9de7c01b-bf45-4c52-a8a8-cce73c66b947",
+        // @ts-expect-error inline hydration cannot exceed the resource relation graph
+        load: { department: { with: { employees: true } } },
+      }));
+  });
+
   it("keeps defineQueryResource typed as an alias of defineResource", () => {
     const resource = engine.defineQueryResource("employees", {
       relations: employeeWith,

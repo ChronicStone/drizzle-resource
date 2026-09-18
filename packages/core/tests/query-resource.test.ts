@@ -328,6 +328,133 @@ describe("defineResource", () => {
     ]);
   });
 
+  it("hydrates query and id results with their configured relation profiles", async () => {
+    const hydratedRelations: unknown[] = [];
+    const db = {
+      query: {
+        employees: {
+          findMany: async ({ with: relationsToLoad }: { with?: unknown }) => {
+            hydratedRelations.push(relationsToLoad);
+            return [{ id: "emp_1", fullName: "Ada" }];
+          },
+        },
+      },
+    };
+    const engine = createQueryEngine({ db, schema, relations });
+    const resource = engine.defineResource("employees", {
+      relations: {
+        department: { with: { company: true } },
+        employeeSkills: { with: { skill: true } },
+      },
+      hydration: {
+        profiles: {
+          list: { department: true },
+          detail: {
+            department: { with: { company: true } },
+            employeeSkills: { with: { skill: true } },
+          },
+        },
+        defaults: {
+          query: "list",
+          findById: "detail",
+        },
+      },
+      strategy: {
+        ids: async () => ({ ids: ["emp_1"], pageInfo: exactOffsetPageInfo(1) }),
+      },
+    });
+
+    await resource.query({ request: baseRequest });
+    await resource.findById({ id: "emp_1" });
+    await resource.findById({ id: "emp_1", load: "list" });
+    await resource.query({
+      request: baseRequest,
+      load: { employeeSkills: { with: { skill: true } } },
+    });
+    await resource.queryRows({
+      request: baseRequest,
+      ids: ["emp_1"],
+      load: "detail",
+    });
+
+    expect(hydratedRelations).toEqual([
+      { department: true },
+      {
+        department: { with: { company: true } },
+        employeeSkills: { with: { skill: true } },
+      },
+      { department: true },
+      { employeeSkills: { with: { skill: true } } },
+      {
+        department: { with: { company: true } },
+        employeeSkills: { with: { skill: true } },
+      },
+    ]);
+  });
+
+  it("passes resolved hydration relations through custom query strategies", async () => {
+    const selectedRelations: unknown[] = [];
+    const engine = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    });
+    const resource = engine.defineResource("employees", {
+      relations: { department: { with: { company: true } } },
+      hydration: {
+        profiles: {
+          list: { department: true },
+          detail: { department: { with: { company: true } } },
+        },
+        defaults: { query: "list" },
+      },
+      strategy: {
+        query: async ({ relations: relationsToLoad }) => {
+          selectedRelations.push(relationsToLoad);
+          return { rows: [], pageInfo: exactOffsetPageInfo(0) };
+        },
+      },
+    });
+
+    await resource.query({ request: baseRequest });
+    await resource.query({ request: baseRequest, load: "detail" });
+
+    expect(selectedRelations).toEqual([
+      { department: true },
+      { department: { with: { company: true } } },
+    ]);
+  });
+
+  it("rejects hydration outside the declared resource relation graph", async () => {
+    const engine = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    });
+
+    expect(() =>
+      engine.defineResource("employees", {
+        relations: { department: true },
+        hydration: {
+          profiles: {
+            invalid: { employeeSkills: true },
+          },
+        },
+      } as any),
+    ).toThrow('Unknown hydration relation "invalid.employeeSkills"');
+
+    const resource = engine.defineResource("employees", {
+      relations: { department: true },
+      strategy: {
+        query: async () => ({ rows: [], pageInfo: exactOffsetPageInfo(0) }),
+      },
+    });
+
+    await expect(
+      resource.query({ request: baseRequest, load: "unknown" as never }),
+    ).rejects.toThrow('Unknown hydration profile "unknown" for resource "employees"');
+  });
+
   it("returns requested facets from query while keeping queryFacets available", async () => {
     const db = {
       query: {

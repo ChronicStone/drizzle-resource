@@ -459,6 +459,68 @@ export type QueryRelationsConfig<
             };
       };
 
+export type QueryRelationsSubset<TAvailable> = TAvailable extends object
+  ? {
+      [TKey in keyof TAvailable]?:
+        | true
+        | (TAvailable[TKey] extends { with?: infer TNested }
+            ? { with?: QueryRelationsSubset<NonNullable<TNested>> }
+            : never);
+    }
+  : never;
+
+export type ResourceHydrationProfiles<TAvailable> = Record<
+  string,
+  QueryRelationsSubset<TAvailable>
+>;
+
+export interface ResourceHydrationConfig<
+  TAvailable,
+  TProfiles extends ResourceHydrationProfiles<TAvailable>,
+> {
+  profiles: TProfiles;
+  defaults?: {
+    query?: Extract<keyof TProfiles, string>;
+    findById?: Extract<keyof TProfiles, string>;
+  };
+}
+
+type HydrationProfiles<THydration> = THydration extends { profiles: infer TProfiles }
+  ? TProfiles
+  : never;
+
+export type ResourceLoad<TAvailable, THydration> =
+  | QueryRelationsSubset<TAvailable>
+  | Extract<keyof HydrationProfiles<THydration>, string>;
+
+type DefaultHydrationRelations<
+  TAvailable,
+  THydration,
+  TOperation extends "query" | "findById",
+> = THydration extends {
+  profiles: infer TProfiles;
+  defaults?: infer TDefaults;
+}
+  ? TDefaults extends Record<TOperation, infer TProfile>
+    ? TProfile extends keyof TProfiles
+      ? TProfiles[TProfile]
+      : TAvailable
+    : TAvailable
+  : TAvailable;
+
+export type ResolveResourceLoad<
+  TAvailable,
+  THydration,
+  TOperation extends "query" | "findById",
+  TLoad,
+> = [TLoad] extends [undefined]
+  ? DefaultHydrationRelations<TAvailable, THydration, TOperation>
+  : TLoad extends keyof HydrationProfiles<THydration>
+    ? HydrationProfiles<THydration>[TLoad]
+    : TLoad extends QueryRelationsSubset<TAvailable>
+      ? TLoad
+      : never;
+
 type PrefixPath<TPrefix extends string, TPath extends string> = `${TPrefix}.${TPath}`;
 
 type ExtractNestedWith<TConfig> = TConfig extends { with?: infer TNested }
@@ -610,7 +672,10 @@ export interface QueryFilterBuilder<TField extends string> {
 /**
  * Low-level helpers exposed to custom strategies.
  */
-export interface QueryResourceUtils<TRow extends GenericObject = GenericObject> {
+export interface QueryResourceUtils<
+  TRow extends GenericObject = GenericObject,
+  TWith extends object | undefined = Record<string, any>,
+> {
   /**
    * Lowercase-normalize arbitrary input for case-insensitive matching.
    */
@@ -655,11 +720,15 @@ export interface QueryResourceUtils<TRow extends GenericObject = GenericObject> 
   executeRowsQuery: (args: {
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     request?: QueryRequest;
+    relations?: QueryRelationsSubset<TWith>;
   }) => Promise<TRow[]>;
   /**
    * Execute the built-in IDs query followed by row hydration.
    */
-  executeHydratedPage: (args: { request: QueryRequest }) => Promise<QueryResponse<TRow>>;
+  executeHydratedPage: (args: {
+    request: QueryRequest;
+    relations?: QueryRelationsSubset<TWith>;
+  }) => Promise<QueryResponse<TRow>>;
   /**
    * Resolve requested facets using the built-in facet engine.
    */
@@ -832,7 +901,20 @@ export interface ResourceQueryStrategyIdsArgs<
   /**
    * Built-in SQL and execution helpers you can compose inside custom strategies.
    */
-  utils: QueryResourceUtils<TRow>;
+  utils: QueryResourceUtils<TRow, TWith>;
+}
+
+export interface ResourceQueryStrategyQueryArgs<
+  TDb extends QueryEngineDb,
+  TSchema extends QueryEngineSchema,
+  TRelations extends QueryEngineRelations,
+  TRoot extends QueryRootKey<TDb, TSchema>,
+  TWith extends object | undefined,
+  TContext extends GenericObject,
+  TRow extends GenericObject,
+> extends ResourceQueryStrategyIdsArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow> {
+  /** Resolved relation tree for the current hydration profile or inline override. */
+  relations: QueryRelationsSubset<TWith> | undefined;
 }
 
 export interface ResourceQueryStrategyRowsArgs<
@@ -843,7 +925,7 @@ export interface ResourceQueryStrategyRowsArgs<
   TWith extends object | undefined,
   TContext extends GenericObject,
   TRow extends GenericObject,
-> extends ResourceQueryStrategyIdsArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow> {
+> extends ResourceQueryStrategyQueryArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow> {
   /**
    * Ordered page IDs selected by a prior IDs step.
    */
@@ -884,7 +966,7 @@ export interface ResourceQueryStrategyConfig<
    * If provided, the package skips the built-in `ids -> rows` pipeline.
    */
   query?: (
-    args: ResourceQueryStrategyIdsArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
+    args: ResourceQueryStrategyQueryArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
   ) => Promise<QueryResponse<TRow>>;
   /**
    * IDs-stage override.
@@ -989,6 +1071,26 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   validation: Required<ResourceQueryValidationConfig>;
 }
 
+type TypesEqual<TLeft, TRight> =
+  (<T>() => T extends TLeft ? 1 : 2) extends <T>() => T extends TRight ? 1 : 2
+    ? (<T>() => T extends TRight ? 1 : 2) extends <T>() => T extends TLeft ? 1 : 2
+      ? true
+      : false
+    : false;
+
+export type ResourceRowForLoad<
+  TDb extends QueryEngineDb,
+  TSchema extends QueryEngineSchema,
+  TRelations extends QueryEngineRelations,
+  TRoot extends QueryRootKey<TDb, TSchema>,
+  TAvailable extends object | undefined,
+  TRow extends GenericObject,
+  TLoad,
+> =
+  TypesEqual<TRow, QueryResultRowShape<TDb, TSchema, TRelations, TRoot, TAvailable>> extends true
+    ? QueryResultRowShape<TDb, TSchema, TRelations, TRoot, Extract<TLoad, object | undefined>>
+    : TRow;
+
 export interface QueryResource<
   TDb extends QueryEngineDb = QueryEngineDb,
   TSchema extends QueryEngineSchema = QueryEngineSchema,
@@ -997,7 +1099,41 @@ export interface QueryResource<
   TWith extends object | undefined = QueryWith<TDb, TSchema, TRoot> | undefined,
   TContext extends GenericObject = GenericObject,
   TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, TWith>,
+  THydration extends ResourceHydrationConfig<TWith, ResourceHydrationProfiles<TWith>> | undefined =
+    undefined,
 > {
+  /** Type-only row inference for operation defaults and named hydration profiles. */
+  readonly $infer: {
+    query: ResourceRowForLoad<
+      TDb,
+      TSchema,
+      TRelations,
+      TRoot,
+      TWith,
+      TRow,
+      ResolveResourceLoad<TWith, THydration, "query", undefined>
+    >;
+    findById: ResourceRowForLoad<
+      TDb,
+      TSchema,
+      TRelations,
+      TRoot,
+      TWith,
+      TRow,
+      ResolveResourceLoad<TWith, THydration, "findById", undefined>
+    >;
+    profiles: {
+      [TProfile in keyof HydrationProfiles<THydration>]: ResourceRowForLoad<
+        TDb,
+        TSchema,
+        TRelations,
+        TRoot,
+        TWith,
+        TRow,
+        HydrationProfiles<THydration>[TProfile]
+      >;
+    };
+  };
   /**
    * Root table key registered for this resource.
    */
@@ -1006,10 +1142,10 @@ export interface QueryResource<
   schema: TSchema;
   /** Drizzle relation graph used to derive selected nested row shapes. */
   relationGraph: TRelations;
-  /**
-   * Drizzle relational `with` tree used for default row hydration.
-   */
+  /** Complete relation capability graph used for field paths and hydration selections. */
   relations?: TWith;
+  /** Named relation-hydration profiles and operation defaults. */
+  hydration?: THydration;
   /**
    * Resolved field registry for root and relation paths.
    */
@@ -1019,17 +1155,45 @@ export interface QueryResource<
    */
   queryConfig: ResourceRuntimeQueryConfig<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>;
   /** Resolve a page of rows with pagination metadata and optional facets. */
-  query: <TContextOverride extends TContext = TContext>(args: {
+  query: <
+    const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
+    TContextOverride extends TContext = TContext,
+  >(args: {
     request: QueryRequestInput;
     context?: TContextOverride;
     db?: QueryEngineDb;
-  }) => Promise<QueryResponse<TRow>>;
+    load?: TLoad;
+  }) => Promise<
+    QueryResponse<
+      ResourceRowForLoad<
+        TDb,
+        TSchema,
+        TRelations,
+        TRoot,
+        TWith,
+        TRow,
+        ResolveResourceLoad<TWith, THydration, "query", TLoad>
+      >
+    >
+  >;
   /** Resolve one scoped, hydrated row by its root id. */
-  findById: <TContextOverride extends TContext = TContext>(args: {
+  findById: <
+    const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
+    TContextOverride extends TContext = TContext,
+  >(args: {
     id: TRow extends { id: infer TId } ? TId : unknown;
     context?: TContextOverride;
     db?: QueryEngineDb;
-  }) => Promise<TRow | null>;
+    load?: TLoad;
+  }) => Promise<ResourceRowForLoad<
+    TDb,
+    TSchema,
+    TRelations,
+    TRoot,
+    TWith,
+    TRow,
+    ResolveResourceLoad<TWith, THydration, "findById", TLoad>
+  > | null>;
   /** Resolve ordered IDs with pagination metadata without row hydration. */
   queryIds: <TContextOverride extends TContext = TContext>(args: {
     request: QueryRequestInput;
@@ -1039,12 +1203,28 @@ export interface QueryResource<
   /**
    * Hydrate rows for a known ordered ID list.
    */
-  queryRows: <TContextOverride extends TContext = TContext>(args: {
+  queryRows: <
+    const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
+    TContextOverride extends TContext = TContext,
+  >(args: {
     request: QueryRequestInput;
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     context?: TContextOverride;
     db?: QueryEngineDb;
-  }) => Promise<TRow[]>;
+    load?: TLoad;
+  }) => Promise<
+    Array<
+      ResourceRowForLoad<
+        TDb,
+        TSchema,
+        TRelations,
+        TRoot,
+        TWith,
+        TRow,
+        ResolveResourceLoad<TWith, THydration, "query", TLoad>
+      >
+    >
+  >;
   /**
    * Resolve facets independently of the main query pipeline.
    */
@@ -1071,11 +1251,13 @@ export interface DefineResourceOptions<
   TEngineContext extends GenericObject,
   TContext extends TEngineContext,
   TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, TWith>,
+  THydration extends ResourceHydrationConfig<TWith, ResourceHydrationProfiles<TWith>> | undefined =
+    undefined,
 > {
-  /**
-   * Drizzle relational `with` tree used for typing and default row hydration.
-   */
+  /** Complete relation capability graph used for typing, field paths, and hydration selections. */
   relations?: TWith;
+  /** Optional named hydration profiles with operation-specific defaults. */
+  hydration?: THydration;
   /**
    * Declarative query behavior.
    */
@@ -1095,7 +1277,19 @@ export type DefineQueryResourceOptions<
   TEngineContext extends GenericObject,
   TContext extends TEngineContext,
   TRow extends GenericObject = QueryResultRowShape<TDb, TSchema, TRelations, TRoot, TWith>,
-> = DefineResourceOptions<TDb, TSchema, TRelations, TRoot, TWith, TEngineContext, TContext, TRow>;
+  THydration extends ResourceHydrationConfig<TWith, ResourceHydrationProfiles<TWith>> | undefined =
+    undefined,
+> = DefineResourceOptions<
+  TDb,
+  TSchema,
+  TRelations,
+  TRoot,
+  TWith,
+  TEngineContext,
+  TContext,
+  TRow,
+  THydration
+>;
 
 export type QueryScopeHandler<TField extends string, TContext extends GenericObject> = (
   filters: QueryFilterBuilder<TField>,
@@ -1202,6 +1396,9 @@ export interface QueryEngine<
       TRoot,
       TRelationsConfig
     >,
+    const THydration extends
+      | ResourceHydrationConfig<TRelationsConfig, ResourceHydrationProfiles<TRelationsConfig>>
+      | undefined = undefined,
   >(
     root: TRoot,
     options: DefineResourceOptions<
@@ -1212,11 +1409,12 @@ export interface QueryEngine<
       TRelationsConfig,
       TEngineContext,
       TContext,
-      TRow
+      TRow,
+      THydration
     > & {
       relations: TRelationsConfig;
     },
-  ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>;
+  ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow, THydration>;
 
   /**
    * Backwards-compatible alias of {@link defineResource}.

@@ -9,6 +9,19 @@ export const ordersResource = engine.defineResource("orders", {
       },
     },
   },
+  hydration: {
+    profiles: {
+      list: { customer: true },
+      detail: {
+        customer: true,
+        orderLines: { with: { product: true } },
+      },
+    },
+    defaults: {
+      query: "list",
+      findById: "detail",
+    },
+  },
   query: {
     defaults: {
       pagination: { mode: "cursor", pageSize: 25 },

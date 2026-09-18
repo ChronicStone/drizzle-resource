@@ -14,6 +14,8 @@ import type {
   QueryResponse,
   QueryResource,
   QueryRootKey,
+  ResourceHydrationConfig,
+  ResourceHydrationProfiles,
   ResourceQueryDefaultsConfig,
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
@@ -163,6 +165,43 @@ function resolveQueryStrategy(
   return options.strategy?.query;
 }
 
+function assertHydrationRelations(
+  available: Record<string, unknown> | undefined,
+  selected: Record<string, unknown>,
+  location: string,
+) {
+  for (const [relation, selection] of Object.entries(selected)) {
+    const availableSelection = available?.[relation];
+
+    if (availableSelection === undefined) {
+      throw new Error(`Unknown hydration relation "${location}${relation}"`);
+    }
+
+    if (selection === true) continue;
+
+    if (!selection || typeof selection !== "object" || Array.isArray(selection)) {
+      throw new Error(`Invalid hydration relation "${location}${relation}"`);
+    }
+
+    const nested = "with" in selection ? (selection as { with?: unknown }).with : undefined;
+    if (nested === undefined) continue;
+    if (!nested || typeof nested !== "object" || Array.isArray(nested)) {
+      throw new Error(`Invalid hydration relation "${location}${relation}.with"`);
+    }
+
+    const availableNested =
+      availableSelection && typeof availableSelection === "object" && "with" in availableSelection
+        ? ((availableSelection as { with?: Record<string, unknown> }).with ?? undefined)
+        : undefined;
+
+    assertHydrationRelations(
+      availableNested,
+      nested as Record<string, unknown>,
+      `${location}${relation}.`,
+    );
+  }
+}
+
 function assertKnownFacetFields(
   resource: QueryResource<any, any, any, any, any, any, any>,
   facets: QueryFacetRequest[],
@@ -271,6 +310,9 @@ export function createQueryEngine<
         TRoot,
         TRelationsConfig
       >,
+      const THydration extends
+        | ResourceHydrationConfig<TRelationsConfig, ResourceHydrationProfiles<TRelationsConfig>>
+        | undefined = undefined,
     >(
       root: TRoot,
       options: DefineResourceOptions<
@@ -281,13 +323,54 @@ export function createQueryEngine<
         TRelationsConfig,
         TEngineContext,
         TContext,
-        TRow
+        TRow,
+        THydration
       > & {
         relations: TRelationsConfig;
       },
-    ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow>;
+    ): QueryResource<TDb, TSchema, TRelations, TRoot, TRelationsConfig, TContext, TRow, THydration>;
     function defineResource(root: any, options: any): any {
       const relationsClause = options.relations as any;
+      const hydrationClause = options.hydration as
+        | {
+            profiles: Record<string, Record<string, unknown>>;
+            defaults?: { query?: string; findById?: string };
+          }
+        | undefined;
+
+      for (const [profile, profileRelations] of Object.entries(hydrationClause?.profiles ?? {})) {
+        assertHydrationRelations(relationsClause, profileRelations, `${profile}.`);
+      }
+      for (const operation of ["query", "findById"] as const) {
+        const profile = hydrationClause?.defaults?.[operation];
+        if (profile && !(profile in hydrationClause!.profiles)) {
+          throw new Error(
+            `Unknown default hydration profile "${profile}" for resource "${String(root)}"`,
+          );
+        }
+      }
+
+      function resolveHydrationRelations(
+        operation: "query" | "findById",
+        load?: string | Record<string, unknown>,
+      ) {
+        if (typeof load === "string") {
+          const profileRelations = hydrationClause?.profiles[load];
+          if (!profileRelations) {
+            throw new Error(`Unknown hydration profile "${load}" for resource "${String(root)}"`);
+          }
+          return profileRelations;
+        }
+
+        if (load) {
+          assertHydrationRelations(relationsClause, load, "");
+          return load;
+        }
+
+        const defaultProfile = hydrationClause?.defaults?.[operation];
+        return defaultProfile ? hydrationClause!.profiles[defaultProfile] : relationsClause;
+      }
+
       const trustedFieldRegistry = buildFieldRegistry(config, root, relationsClause, {
         nonFilterable: options.query?.filters?.disabled,
         nonSortable: options.query?.sort?.disabled,
@@ -344,12 +427,14 @@ export function createQueryEngine<
 
       const filterBuilder = createQueryFilterBuilder<any>();
 
-      let trustedResource: QueryResource<any, any, any, any, any, any, any>;
-      const resource: QueryResource<any, any, any, any, any, any, any> = {
+      let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
+      const resource: QueryResource<any, any, any, any, any, any, any, any> = {
+        $infer: undefined as never,
         key: root,
         schema: config.schema,
         relationGraph: config.relations,
         relations: relationsClause,
+        hydration: hydrationClause,
         fields: fieldRegistry,
         queryConfig: {
           search: {
@@ -393,19 +478,23 @@ export function createQueryEngine<
           request,
           context,
           db,
+          load,
         }: {
           request: QueryRequestInput;
           context?: any;
           db?: QueryEngineDb;
-        }): Promise<any> => executeQuery({ request, context, db }),
+          load?: string | Record<string, unknown>;
+        }): Promise<any> => executeQuery({ request, context, db, load }),
         findById: async ({
           id,
           context,
           db,
+          load,
         }: {
           id: unknown;
           context?: any;
           db?: QueryEngineDb;
+          load?: string | Record<string, unknown>;
         }): Promise<any> => {
           const pagination = paginationModes.has("offset")
             ? { mode: "offset" as const, pageIndex: 1, pageSize: 1, count: "none" as const }
@@ -419,6 +508,8 @@ export function createQueryEngine<
             },
             context,
             db,
+            load,
+            operation: "findById",
             trustedInput: true,
           });
 
@@ -445,18 +536,21 @@ export function createQueryEngine<
           ids,
           context,
           db,
+          load,
         }: {
           request: QueryRequestInput;
           ids: unknown[];
           context?: any;
           db?: QueryEngineDb;
+          load?: string | Record<string, unknown>;
         }): Promise<any> => {
           const normalizedRequest = prepareRequest(request, context);
+          const hydrationRelations = resolveHydrationRelations("query", load);
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
             db,
           });
-          return executeRows(normalizedRequest, ids, context, utils);
+          return executeRows(normalizedRequest, ids, context, utils, hydrationRelations);
         },
         queryFacets: async ({
           request,
@@ -494,14 +588,19 @@ export function createQueryEngine<
         request,
         context,
         db,
+        load,
+        operation = "query",
         trustedInput = false,
       }: {
         request: QueryRequestInput;
         context?: any;
         db?: QueryEngineDb;
+        load?: string | Record<string, unknown>;
+        operation?: "query" | "findById";
         trustedInput?: boolean;
       }) {
         const normalizedRequest = prepareRequest(request, context, trustedInput);
+        const hydrationRelations = resolveHydrationRelations(operation, load);
         const utils = createQueryResourceUtils(config, {
           resource: trustedResource,
           db,
@@ -515,12 +614,19 @@ export function createQueryEngine<
             context,
             resource,
             utils,
+            relations: hydrationRelations,
           });
         } else {
           const idsResponse = await executeIds(normalizedRequest, context, utils);
           const rows =
             idsResponse.ids.length > 0
-              ? await executeRows(normalizedRequest, idsResponse.ids, context, utils)
+              ? await executeRows(
+                  normalizedRequest,
+                  idsResponse.ids,
+                  context,
+                  utils,
+                  hydrationRelations,
+                )
               : [];
 
           response = {
@@ -600,6 +706,7 @@ export function createQueryEngine<
         ids: unknown[],
         context: any,
         utils: ReturnType<typeof createQueryResourceUtils>,
+        hydrationRelations: Record<string, unknown> | undefined,
       ) {
         if (options.strategy?.rows) {
           return options.strategy.rows({
@@ -608,10 +715,11 @@ export function createQueryEngine<
             context,
             resource,
             utils,
+            relations: hydrationRelations,
           });
         }
 
-        return utils.executeRowsQuery({ ids, request });
+        return utils.executeRowsQuery({ ids, request, relations: hydrationRelations });
       }
 
       return resource;
