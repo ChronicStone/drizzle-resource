@@ -5,10 +5,22 @@ export type QueryZodIntegrationConfig = { readonly package: "zod" };
 
 export const queryZodIntegration: QueryZodIntegrationConfig = { package: "zod" };
 
-type ResourceRow<TResource> = TResource extends {
-  query: (...args: never[]) => Promise<{ rows: Array<infer TRow> }>;
-}
+type ResourceRow<TResource> = TResource extends { $infer: { query: infer TRow } }
   ? Extract<TRow, Record<string, unknown>>
+  : never;
+
+type ResourceProfileKey<TResource> = TResource extends {
+  $infer: { profiles: infer TProfiles };
+}
+  ? Extract<keyof TProfiles, string>
+  : never;
+
+type ResourceProfileRow<TResource, TProfile extends PropertyKey> = TResource extends {
+  $infer: { profiles: infer TProfiles };
+}
+  ? TProfile extends keyof TProfiles
+    ? Extract<TProfiles[TProfile], Record<string, unknown>>
+    : never
   : never;
 
 interface QuerySchemaResponse<TRow> {
@@ -243,6 +255,19 @@ function responseRowSchema(
   return z.object(shape);
 }
 
+function responseRelations(resource: any, load?: string) {
+  if (load) {
+    const profile = resource.hydration?.profiles?.[load];
+    if (!profile) {
+      throw new Error(`Unknown hydration profile "${load}" for resource "${String(resource.key)}"`);
+    }
+    return profile;
+  }
+
+  const defaultProfile = resource.hydration?.defaults?.query;
+  return defaultProfile ? resource.hydration.profiles[defaultProfile] : resource.relations;
+}
+
 /** Build a strict transport schema from a resource's request contract. */
 export function requestSchema(resource: any, override?: QueryRequestSchemaOverride): any {
   const contract = resolveQueryRequestContract(resource, override);
@@ -357,17 +382,63 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
 
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
 export function responseSchema<
-  TResource extends { key: string; relations?: Record<string, unknown> },
+  TResource extends {
+    key: string;
+    relations?: Record<string, unknown>;
+    $infer: { query: Record<string, unknown>; profiles: Record<string, Record<string, unknown>> };
+  },
+  const TProfile extends ResourceProfileKey<TResource>,
+  const TOverride extends QueryResponseSchemaOverride<ResourceProfileRow<TResource, TProfile>>,
+>(
+  resource: TResource,
+  options: {
+    load: TProfile;
+    override: QueryResponseSchemaOverride<ResourceProfileRow<TResource, TProfile>> & TOverride;
+  },
+): z.ZodType<QuerySchemaResponse<OverrideRow<ResourceProfileRow<TResource, TProfile>, TOverride>>>;
+export function responseSchema<
+  TResource extends {
+    key: string;
+    relations?: Record<string, unknown>;
+    $infer: { query: Record<string, unknown>; profiles: Record<string, Record<string, unknown>> };
+  },
+  const TProfile extends ResourceProfileKey<TResource>,
+>(
+  resource: TResource,
+  options: { load: TProfile },
+): z.ZodType<QuerySchemaResponse<ResourceProfileRow<TResource, TProfile>>>;
+export function responseSchema<
+  TResource extends {
+    key: string;
+    relations?: Record<string, unknown>;
+    $infer: { query: Record<string, unknown> };
+  },
   const TOverride extends QueryResponseSchemaOverride<ResourceRow<TResource>>,
 >(
   resource: TResource,
   override: QueryResponseSchemaOverride<ResourceRow<TResource>> & TOverride,
 ): z.ZodType<QuerySchemaResponse<OverrideRow<ResourceRow<TResource>, TOverride>>>;
 export function responseSchema<
-  TResource extends { key: string; relations?: Record<string, unknown> },
+  TResource extends {
+    key: string;
+    relations?: Record<string, unknown>;
+    $infer: { query: Record<string, unknown> };
+  },
 >(resource: TResource): z.ZodType<QuerySchemaResponse<ResourceRow<TResource>>>;
-export function responseSchema(resource: any, override?: QueryResponseSchemaOverride): any {
-  const row = responseRowSchema(resource, String(resource.key), resource.relations, override);
+export function responseSchema(
+  resource: any,
+  options?: QueryResponseSchemaOverride | { load: string; override?: QueryResponseSchemaOverride },
+): any {
+  const hydrationOptions = options && "load" in options ? options : undefined;
+  const override = hydrationOptions
+    ? hydrationOptions.override
+    : (options as QueryResponseSchemaOverride | undefined);
+  const row = responseRowSchema(
+    resource,
+    String(resource.key),
+    responseRelations(resource, hydrationOptions?.load),
+    override,
+  );
   return z.strictObject({
     rows: z.array(row),
     pageInfo: z.union([
