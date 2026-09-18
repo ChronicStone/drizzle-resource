@@ -14,7 +14,7 @@ This repository is organized as a workspace monorepo:
 
 Consumers install just `drizzle-resource` and use subpath exports:
 
-```ts
+```ts twoslash
 import { createQueryEngine } from "drizzle-resource";
 import { queryZodIntegration } from "drizzle-resource/zod";
 import { queryValibotIntegration } from "drizzle-resource/valibot";
