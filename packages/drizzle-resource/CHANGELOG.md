@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.3.0
+
+### Minor Changes
+
+- [#24](https://github.com/ChronicStone/drizzle-resource/pull/24) [`2227bff`](https://github.com/ChronicStone/drizzle-resource/commit/2227bffa40cc83f1a3d350dd2b235a2febc3ed21) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add typed hydration profiles with per-operation defaults, inferred row shapes, inline overrides, strategy propagation, and profile-aware Zod and Valibot response schemas.
+
 ## 2.2.0
 
 ### Minor Changes
