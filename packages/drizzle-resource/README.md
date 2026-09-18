@@ -30,6 +30,7 @@ import { queryValibotIntegration } from "drizzle-resource/valibot";
 - **🗂️ Facets** — bucket counts for filter sidebars, traveling in the same request as the main query
 - **🛡️ Scope enforcement** — tenant constraints and auth filters that merge into every request and cannot be bypassed
 - **🎯 Scoped record lookup** — resolve one relation-complete row by id through `resource.findById(...)`
+- **🧩 Hydration profiles** — keep one relation capability graph while list, detail, and custom reads load only what they need
 - **⚙️ Staged pipeline** — ids → rows → facets, each stage replaceable independently via `strategy.*`
 - **🚀 Performance tuning** — built-in SQL helpers for custom `strategy.ids` when you need a hand-tuned query
 
@@ -55,6 +56,16 @@ export const ordersResource = engine.defineResource("orders", {
   relations: {
     customer: true,
     orderLines: { with: { product: true } },
+  },
+  hydration: {
+    profiles: {
+      list: { customer: true },
+      detail: {
+        customer: true,
+        orderLines: { with: { product: true } },
+      },
+    },
+    defaults: { query: "list", findById: "detail" },
   },
   query: {
     scope: (f, ctx) => f.is("customer.orgId", ctx.orgId),
