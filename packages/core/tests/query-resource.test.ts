@@ -1020,6 +1020,51 @@ describe("defineResource", () => {
     ).rejects.toThrow("Facet limit cannot exceed 5");
   });
 
+  it("allows trusted server executions to raise the page-size limit", async () => {
+    const requests: QueryRequest[] = [];
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {
+      query: {
+        validation: { maxPageSize: 10 },
+      },
+      strategy: {
+        ids: async ({ request }) => {
+          requests.push(request);
+          return { ids: [], pageInfo: exactOffsetPageInfo(0, 1, request.pagination.pageSize) };
+        },
+      },
+    });
+    const request = {
+      ...baseRequest,
+      pagination: { pageIndex: 1, pageSize: 50 },
+    };
+
+    await expect(resource.queryIds({ request })).rejects.toThrow("Page size cannot exceed 10");
+
+    await resource.queryIds({
+      request,
+      execution: { maxPageSize: 50 },
+    });
+
+    expect(requests[0]?.pagination.pageSize).toBe(50);
+    expect(resource.queryConfig.validation.maxPageSize).toBe(10);
+  });
+
+  it("rejects invalid trusted execution page-size limits", async () => {
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {});
+
+    await expect(
+      resource.queryIds({ request: baseRequest, execution: { maxPageSize: 0 } }),
+    ).rejects.toThrow("Execution max page size must be a positive safe integer");
+  });
+
   it("skips the facet strategy when the main query strategy already returns facets", async () => {
     const db = {
       query: {

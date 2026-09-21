@@ -248,6 +248,17 @@ export interface QueryIdsResponse<TId = unknown> {
 }
 
 /**
+ * Trusted server-side limits for one resource execution.
+ *
+ * These values are not part of the transport request or generated request schemas. Keep them
+ * application-owned and never derive them from client input.
+ */
+export interface ResourceQueryExecutionOptions {
+  /** Maximum page size accepted for this execution. */
+  maxPageSize?: number;
+}
+
+/**
  * A single facet request.
  */
 export interface QueryFacetRequest<TField extends string = string> {
@@ -1162,6 +1173,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
     load?: TLoad;
   }) => Promise<
     QueryResponse<
@@ -1199,6 +1211,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   /**
    * Hydrate rows for a known ordered ID list.
@@ -1211,6 +1224,7 @@ export interface QueryResource<
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
     load?: TLoad;
   }) => Promise<
     Array<
@@ -1236,6 +1250,7 @@ export interface QueryResource<
     facets: QueryFacetRequest<TFacetKey>[];
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
   }) => Promise<QueryFacetsResponse<TFacetKey>>;
 }
 
