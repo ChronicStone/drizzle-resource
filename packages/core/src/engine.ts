@@ -653,6 +653,11 @@ export function createQueryEngine<
             utils,
             relations: hydrationRelations,
           });
+        } else if (!options.strategy?.ids && !options.strategy?.rows && !options.strategy?.facets) {
+          response = await utils.executeHydratedPage({
+            request: normalizedRequest,
+            relations: hydrationRelations,
+          });
         } else {
           const idsResponse = await executeIds(normalizedRequest, context, utils);
           const rows =

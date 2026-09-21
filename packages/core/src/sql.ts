@@ -588,6 +588,34 @@ export function createQueryResourceUtils<
     return joinRelationSteps(query, config.schema, joins);
   }
 
+  function buildAggregatePlan(request: QueryRequest, extra: FieldRegistryRelationStep[] = []) {
+    const required = new Map(
+      [...buildOuterJoins(resource, { ...request, sorting: [] }), ...extra].map((step) => [
+        step.path,
+        step,
+      ]),
+    );
+    const membership = buildOuterJoins(resource, request).filter(
+      (step) => !required.has(step.path),
+    );
+    const first = membership[0];
+    const membershipPredicate = first
+      ? exists(
+          joinRelationSteps(
+            (database as any)
+              .select({ one: sql<number>`1` })
+              .from(config.schema[first.targetTableName]),
+            config.schema,
+            membership.slice(1),
+          ).where(eqColumns(first.sourceColumns, first.targetColumns)),
+        )
+      : undefined;
+    return {
+      joins: [...required.values()],
+      where: and(buildWhereClause(request), membershipPredicate),
+    };
+  }
+
   function preservesRootCardinality(joins: FieldRegistryRelationStep[]) {
     return (
       uniqueRootId &&
@@ -610,7 +638,13 @@ export function createQueryResourceUtils<
     return matchingIdsQuery;
   }
 
-  async function executeIdsQuery({ request }: { request: QueryRequest }) {
+  async function executeIdsQuery({
+    request,
+    rowCount: knownRowCount,
+  }: {
+    request: QueryRequest;
+    rowCount?: number;
+  }) {
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const orderBy = compileOrderBy(request.sorting);
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
@@ -618,16 +652,28 @@ export function createQueryResourceUtils<
 
     let rowCount: number | null = null;
     if (request.pagination.count === "exact") {
-      const countQuery = direct
-        ? applyOuterJoins(
+      const countPlan = buildAggregatePlan(request);
+      const countQuery = preservesRootCardinality(countPlan.joins)
+        ? joinRelationSteps(
             (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
-            request,
-          ).where(whereClause)
-        : (database as any)
-            .select({ rowCount: sql<number>`count(*)` })
-            .from(buildMatchingIdsSelect(request).as("count_matching_ids"));
-      const [countResult] = await countQuery;
-      rowCount = Number(countResult?.rowCount ?? 0);
+            config.schema,
+            countPlan.joins,
+          ).where(countPlan.where)
+        : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
+            joinRelationSteps(
+              (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+              config.schema,
+              countPlan.joins,
+            )
+              .where(countPlan.where)
+              .as("count_matching_ids"),
+          );
+      if (knownRowCount === undefined) {
+        const [countResult] = await countQuery;
+        rowCount = Number(countResult?.rowCount ?? 0);
+      } else {
+        rowCount = knownRowCount;
+      }
 
       if (rowCount === 0) {
         return {
@@ -794,22 +840,28 @@ export function createQueryResourceUtils<
     request: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
   }) {
-    const { ids, pageInfo } = await executeIdsQuery({ request });
-    if (ids.length === 0) {
-      return { rows: [], pageInfo };
-    }
-
-    const rows = await executeRowsQuery({ ids, request, relations });
-    return { rows, pageInfo };
+    const aggregates = request.facets?.length
+      ? await resolveAggregates({
+          request,
+          facets: request.facets,
+          includeCount: request.pagination.count === "exact",
+        })
+      : undefined;
+    const { ids, pageInfo } = await executeIdsQuery({ request, rowCount: aggregates?.rowCount });
+    const rows = ids.length === 0 ? [] : await executeRowsQuery({ ids, request, relations });
+    return { rows, pageInfo, ...(aggregates ? { facets: aggregates.facets } : {}) };
   }
 
-  async function resolveFacets({
+  async function resolveAggregates({
     request,
     facets,
+    includeCount = false,
   }: {
     request: QueryRequest;
     facets: QueryFacetRequest[];
-  }): Promise<QueryFacetsResponse> {
+    includeCount?: boolean;
+  }): Promise<QueryFacetsResponse & { rowCount?: number }> {
+    let rowCount: number | undefined;
     const results: QueryFacetsResponse["facets"] = [];
     const plans = facets.flatMap((facet, index) => {
       const scopedRequest = applyFacetMode(request, {
@@ -832,13 +884,7 @@ export function createQueryResourceUtils<
         return [];
       }
 
-      const joins = new Map<string, FieldRegistryRelationStep>();
-      for (const step of [...buildOuterJoins(resource, scopedRequest), ...entry.relationPath]) {
-        joins.set(step.path, step);
-      }
-
-      const steps = Array.from(joins.values());
-      const where = buildWhereClause(scopedRequest);
+      const { joins: steps, where } = buildAggregatePlan(scopedRequest, entry.relationPath);
       const unique = preservesRootCardinality(steps);
       return [
         {
@@ -914,7 +960,7 @@ export function createQueryResourceUtils<
       results[index] = formatResult(plan, await facetQuery);
     }
 
-    async function resolveGroupingSets(group: typeof plans) {
+    async function resolveGroupingSets(group: typeof plans, count = false) {
       const first = group[0]!;
       const columns = group.map(({ entry }) => entry.column as PgColumn);
       const selections = Object.fromEntries(
@@ -937,7 +983,7 @@ export function createQueryResourceUtils<
         .where(first.where)
         .groupBy(
           sql`grouping sets (${sql.join(
-            columns.map((column) => sql`(${column})`),
+            [...columns.map((column) => sql`(${column})`), ...(count ? [sql`() `] : [])],
             sql`, `,
           )})`,
         );
@@ -972,6 +1018,7 @@ export function createQueryResourceUtils<
         .from(ranked)
         .where(
           or(
+            count ? eq(ranked.mask, 2 ** group.length - 1) : undefined,
             ...group.map((plan, index) =>
               and(
                 eq(ranked.mask, masks[index]),
@@ -986,6 +1033,11 @@ export function createQueryResourceUtils<
           ),
         )
         .orderBy(asc(ranked.mask), asc(ranked.position));
+      if (count) {
+        rowCount = Number(
+          rows.find((row: any) => Number(row.mask) === 2 ** group.length - 1)?.count ?? 0,
+        );
+      }
       for (const [index, plan] of group.entries()) {
         results[plan.index] = formatResult(
           plan,
@@ -1023,15 +1075,42 @@ export function createQueryResourceUtils<
       if (group) group.push(plan);
       else groups.push([plan]);
     }
+    const countPlan = includeCount ? buildAggregatePlan(request) : undefined;
+    const countPredicate = countPlan
+      ? postgresDialect.sqlToQuery(countPlan.where ?? sql`true`)
+      : undefined;
+    const countGroup =
+      countPredicate &&
+      groups.find(
+        ([first]) =>
+          first?.predicate &&
+          first.predicate.sql === countPredicate.sql &&
+          first.predicate.params.length === countPredicate.params.length &&
+          first.predicate.params.every((value, index) =>
+            Object.is(value, countPredicate.params[index]),
+          ) &&
+          first.joins.length === countPlan!.joins.length &&
+          first.joins.every((step) => countPlan!.joins.some((other) => step.path === other.path)),
+      );
     await Promise.all(
       groups.map((group) =>
-        group.length === 1 ? resolveSingle(group[0]!) : resolveGroupingSets(group),
+        group === countGroup
+          ? resolveGroupingSets(group, true)
+          : group.length === 1
+            ? resolveSingle(group[0]!)
+            : resolveGroupingSets(group),
       ),
     );
 
     return {
       facets: results,
+      rowCount,
     };
+  }
+
+  async function resolveFacets(args: { request: QueryRequest; facets: QueryFacetRequest[] }) {
+    const { facets } = await resolveAggregates(args);
+    return { facets };
   }
 
   const utils = {

@@ -356,6 +356,76 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     expect(result.rows[1]?.tags).toHaveLength(1);
   });
 
+  it("keeps sort-only relation membership without joining it into aggregate rows", async () => {
+    const sorted = { ...request, sorting: [{ key: "category.name", dir: "asc" as const }] };
+    const start = statements.length;
+    const result = await resource.queryIds({ request: sorted });
+    expect(result.ids).toEqual([1, 2]);
+    expect(result.pageInfo).toMatchObject({ rowCount: 4 });
+    const facets = await resource.queryFacets({ request: sorted, facets: [{ key: "active" }] });
+    expect(facets.facets[0]?.options).toEqual([
+      { value: true, count: 3 },
+      { value: false, count: 1 },
+    ]);
+    const aggregateQueries = statements.slice(start).filter((query) => query.includes("count("));
+    expect(aggregateQueries).toHaveLength(2);
+    for (const query of aggregateQueries) {
+      expect(query).toContain("exists");
+      expect(query).not.toContain("inner join");
+    }
+  });
+
+  it("shares exact totals with compatible facets, including empty and out-of-range pages", async () => {
+    for (const pageIndex of [1, 99]) {
+      const start = statements.length;
+      const result = await resource.query({
+        request: {
+          ...request,
+          pagination: { ...request.pagination, mode: "offset", pageIndex },
+          facets: [{ key: "active" }, { key: "tenant" }],
+        },
+      });
+      expect(result.pageInfo).toMatchObject({ rowCount: 5 });
+      expect(result.facets?.[1]?.options).toEqual([{ value: "a", count: 5 }]);
+      const aggregates = statements.slice(start).filter((query) => query.includes("count("));
+      expect(aggregates).toHaveLength(1);
+      expect(aggregates[0]).toContain("grouping sets");
+    }
+    const empty = await resource.query({
+      request: {
+        ...request,
+        filters: [{ type: "condition", key: "id", operator: "is", value: -1 }],
+        facets: [{ key: "active" }],
+      },
+    });
+    expect(empty.rows).toEqual([]);
+    expect(empty.pageInfo).toMatchObject({ rowCount: 0 });
+    expect(empty.facets?.[0]?.options).toEqual([]);
+  });
+
+  it("does not reuse exclude-self totals or relation-facet membership for page counts", async () => {
+    const filtered = await resource.query({
+      request: {
+        ...request,
+        filters: [{ type: "condition", key: "active", operator: "is", value: true }],
+        facets: [{ key: "active" }],
+      },
+    });
+    expect(filtered.pageInfo).toMatchObject({ rowCount: 3 });
+    expect(filtered.facets?.[0]?.options).toEqual([
+      { value: true, count: 3 },
+      { value: false, count: 2 },
+    ]);
+    const related = await resource.query({
+      request: { ...request, facets: [{ key: "category.name" }] },
+    });
+    expect(related.pageInfo).toMatchObject({ rowCount: 5 });
+    expect(related.facets?.[0]?.options).toEqual([
+      { value: "Alpha", count: 2 },
+      { value: "Beta", count: 2 },
+    ]);
+  });
+
   it("keeps optimized queries inside the per-call transaction", async () => {
     await expect(
       db.transaction(async (tx) => {
