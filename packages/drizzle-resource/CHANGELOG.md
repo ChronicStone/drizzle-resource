@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.4.1
+
+### Patch Changes
+
+- [#27](https://github.com/ChronicStone/drizzle-resource/pull/27) [`8cab0f5`](https://github.com/ChronicStone/drizzle-resource/commit/8cab0f573bcf1ce81c9a574c8ddeb3b324146610) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Keep offset-paginated results deterministic by appending the root ID as a stable sorting tiebreaker.
+
 ## 2.4.0
 
 ### Minor Changes
