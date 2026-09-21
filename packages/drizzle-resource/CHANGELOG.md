@@ -1,5 +1,15 @@
 # drizzle-resource
 
+## 2.4.0
+
+### Minor Changes
+
+- [`771610c`](https://github.com/ChronicStone/drizzle-resource/commit/771610c9c992623fd2a0b413746067a57127e3b2) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Allow trusted server-side resource executions to raise the page-size limit without widening the public transport contract.
+
+### Patch Changes
+
+- [`3327018`](https://github.com/ChronicStone/drizzle-resource/commit/3327018398852f53b3af97d51372176a570c226a) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Infer hydrated result rows structurally so relation profiles remain typed when applications and linked packages resolve separate Drizzle installations.
+
 ## 2.3.0
 
 ### Minor Changes
