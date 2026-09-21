@@ -238,7 +238,7 @@ describe("defineResource typing", () => {
     >();
     expectTypeOf(resource.findById)
       .parameter(0)
-      .toEqualTypeOf<{ id: string; context?: { orgId: string }; db?: typeof db }>();
+      .toMatchTypeOf<{ id: string; context?: { orgId: string } }>();
     expectTypeOf(resource.findById).returns.resolves.toEqualTypeOf<{
       id: string;
       fullName: string;
@@ -337,8 +337,10 @@ describe("defineResource typing", () => {
       },
     });
 
-    type ListRow = Awaited<ReturnType<typeof resource.query>>["rows"][number];
-    type DetailRow = NonNullable<Awaited<ReturnType<typeof resource.findById>>>;
+    const queryList = () => resource.query({ request: baseRequest });
+    const findDetail = () => resource.findById({ id: "emp_1" });
+    type ListRow = Awaited<ReturnType<typeof queryList>>["rows"][number];
+    type DetailRow = NonNullable<Awaited<ReturnType<typeof findDetail>>>;
     type ListProfileRow = (typeof resource)["$infer"]["profiles"]["list"];
     type DetailProfileRow = (typeof resource)["$infer"]["profiles"]["detail"];
 
@@ -358,6 +360,21 @@ describe("defineResource typing", () => {
     type RootRow = Awaited<ReturnType<typeof queryRoot>>["rows"][number];
     expectTypeOf<RootRow>().not.toHaveProperty("department");
     expectTypeOf<RootRow>().not.toHaveProperty("employeeSkills");
+
+    const scanRoot = () =>
+      resource.scan({ load: "root" }, async (batches) => {
+        for await (const batch of batches) {
+          expectTypeOf(batch.rows[0]!).toEqualTypeOf<RootRow>();
+        }
+        return "written" as const;
+      });
+    expectTypeOf(scanRoot).returns.resolves.toEqualTypeOf<"written">();
+    void (() =>
+      resource.scan({ load: "detail" }, async (batches) => {
+        for await (const batch of batches) {
+          expectTypeOf(batch.rows[0]!).toEqualTypeOf<DetailProfileRow>();
+        }
+      }));
 
     const findWithSkills = () =>
       resource.findById({

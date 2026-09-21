@@ -306,8 +306,19 @@ describe("defineResource", () => {
 
   it("finds one scoped row by id without a collection request", async () => {
     const requests: QueryRequest[] = [];
+    const selected = {
+      id: "emp_1",
+      fullName: "Ada",
+      department: { company: { country: "France" } },
+    };
     const engine = createQueryEngine({
-      db: { query: { employees: { findMany: async () => [] } } },
+      db: {
+        query: {
+          employees: { findMany: async () => [selected] },
+          departments: { findMany: async () => [selected.department] },
+          companies: { findMany: async () => [selected.department.company] },
+        },
+      },
       schema,
       relations,
     }).withContext<{ country: string }>();
@@ -328,15 +339,12 @@ describe("defineResource", () => {
           );
 
           return {
-            rows:
-              id?.type === "condition" && id.value === "emp_1"
-                ? [{ id: "emp_1", fullName: "Ada" }]
-                : [],
+            rows: id?.type === "condition" && id.value === "emp_1" ? [selected] : [],
             pageInfo: {
               mode: "cursor",
               pageSize: 1,
-              hasNextPage: false,
               count: "none",
+              rowCount: null,
               nextCursor: null,
             },
           };
@@ -346,7 +354,7 @@ describe("defineResource", () => {
 
     await expect(
       resource.findById({ id: "emp_1", context: { country: "France" } }),
-    ).resolves.toEqual({ id: "emp_1", fullName: "Ada" });
+    ).resolves.toEqual(selected);
     await expect(
       resource.findById({ id: "missing", context: { country: "France" } }),
     ).resolves.toBeNull();

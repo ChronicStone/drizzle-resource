@@ -18,10 +18,14 @@ import type {
   ResourceHydrationConfig,
   ResourceHydrationProfiles,
   ResourceQueryDefaultsConfig,
+  QueryScanRequest,
+  QueryScanBatch,
+  QueryCountMode,
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
 import { createQueryFilterBuilder } from "./filters.js";
 import { defaultQueryValidation } from "./contracts.js";
+import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
 
 function normalizeRequest(
   request: QueryRequestInput,
@@ -511,6 +515,7 @@ export function createQueryEngine<
           execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
         }): Promise<any> => executeQuery({ request, context, db, execution, load }),
+        scan: executeScan,
         findById: async ({
           id,
           context,
@@ -618,6 +623,144 @@ export function createQueryEngine<
         fields: trustedFieldRegistry,
       };
 
+      async function executeScan<TResult>(
+        args: {
+          request?: QueryScanRequest;
+          context?: any;
+          db?: QueryEngineDb;
+          batchSize?: number;
+          count?: QueryCountMode;
+          signal?: AbortSignal;
+          load?: string | Record<string, unknown>;
+        },
+        consume: (batches: AsyncIterable<QueryScanBatch<GenericObject>>) => Promise<TResult>,
+      ): Promise<TResult> {
+        const batchSize = args.batchSize ?? 1000;
+        if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
+          throw new Error("Scan batch size must be a positive safe integer");
+        }
+        args.signal?.throwIfAborted();
+        const count = args.count ?? "none";
+        const request = prepareRequest(
+          {
+            filters: args.request?.filters ?? [],
+            sorting: args.request?.sorting ?? [],
+            search: args.request?.search ?? { value: "", fields: [] },
+            pagination: paginationModes.has("cursor")
+              ? { mode: "cursor", cursor: null, pageSize: batchSize, count }
+              : { mode: "offset", pageIndex: 1, pageSize: batchSize, count },
+          },
+          args.context,
+          { execution: { maxPageSize: batchSize } },
+        );
+        const hydrationRelations = resolveHydrationRelations("query", args.load);
+        return withScanDatabase(args.db ?? config.db, async (database) => {
+          const utils = createQueryResourceUtils(config, {
+            resource: trustedResource,
+            db: database,
+          });
+          if (isPostgresDatabase(database) && !options.strategy?.query && !options.strategy?.ids) {
+            return utils.scanIds(
+              { request, count, batchSize, signal: args.signal },
+              async (batches) => {
+                async function* hydrate() {
+                  for await (const batch of batches) {
+                    args.signal?.throwIfAborted();
+                    const rows = await executeRows(
+                      request,
+                      batch.ids,
+                      args.context,
+                      utils,
+                      hydrationRelations,
+                    );
+                    args.signal?.throwIfAborted();
+                    yield {
+                      rows,
+                      ...(batch.totalRows === undefined ? {} : { totalRows: batch.totalRows }),
+                    };
+                  }
+                }
+                const pages = hydrate();
+                try {
+                  const result = await consume(pages);
+                  args.signal?.throwIfAborted();
+                  return result;
+                } finally {
+                  await pages.return();
+                }
+              },
+            );
+          }
+          async function* paginate() {
+            let current = request;
+            let totalRows: number | undefined;
+            while (true) {
+              args.signal?.throwIfAborted();
+              let response: QueryResponse<any>;
+              if (options.strategy?.query) {
+                response = await options.strategy.query({
+                  request: current,
+                  context: args.context,
+                  resource,
+                  utils,
+                  relations: hydrationRelations,
+                });
+              } else {
+                const { ids, pageInfo } = await executeIds(current, args.context, utils);
+                response = {
+                  rows: ids.length
+                    ? await executeRows(current, ids, args.context, utils, hydrationRelations)
+                    : [],
+                  pageInfo,
+                };
+              }
+              args.signal?.throwIfAborted();
+              if (response.pageInfo.rowCount !== null) totalRows = response.pageInfo.rowCount;
+              if (!response.rows.length) return;
+              yield { rows: response.rows, ...(totalRows === undefined ? {} : { totalRows }) };
+              const info = response.pageInfo;
+              if (info.mode === "cursor") {
+                if (!info.nextCursor) return;
+                if (
+                  current.pagination.mode === "cursor" &&
+                  info.nextCursor === current.pagination.cursor
+                ) {
+                  throw new Error("Scan pagination did not advance");
+                }
+                current = {
+                  ...current,
+                  pagination: {
+                    mode: "cursor",
+                    cursor: info.nextCursor,
+                    pageSize: batchSize,
+                    count: "none",
+                  },
+                };
+              } else {
+                if (!info.hasNextPage) return;
+                current = {
+                  ...current,
+                  pagination: {
+                    mode: "offset",
+                    pageIndex: info.pageIndex + 1,
+                    pageSize: batchSize,
+                    count: "none",
+                  },
+                };
+              }
+            }
+          }
+          const pages = paginate();
+          try {
+            const result = await consume(pages);
+            args.signal?.throwIfAborted();
+            return result;
+          } finally {
+            await pages.return();
+          }
+        });
+      }
+
       async function executeQuery({
         request,
         context,
@@ -651,6 +794,11 @@ export function createQueryEngine<
             context,
             resource,
             utils,
+            relations: hydrationRelations,
+          });
+        } else if (!options.strategy?.ids && !options.strategy?.rows && !options.strategy?.facets) {
+          response = await utils.executeHydratedPage({
+            request: normalizedRequest,
             relations: hydrationRelations,
           });
         } else {

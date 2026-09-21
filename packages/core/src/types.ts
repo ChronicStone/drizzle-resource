@@ -253,6 +253,13 @@ export interface ResourceQueryExecutionOptions {
   maxPageSize?: number;
 }
 
+export type QueryScanRequest = Partial<Pick<QueryRequestInput, "filters" | "sorting" | "search">>;
+
+export interface QueryScanBatch<TRow> {
+  rows: TRow[];
+  totalRows?: number;
+}
+
 /**
  * A single facet request.
  */
@@ -770,6 +777,10 @@ export interface QueryResourceUtils<
   executeIdsQuery: (args: {
     request: QueryRequest;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
+  scanIds: <TResult>(
+    args: { request: QueryRequest; batchSize: number; count: QueryCountMode; signal?: AbortSignal },
+    consume: (batches: AsyncIterable<{ ids: unknown[]; totalRows?: number }>) => Promise<TResult>,
+  ) => Promise<TResult>;
   /**
    * Hydrate rows by ID using Drizzle relational queries.
    */
@@ -1233,6 +1244,36 @@ export interface QueryResource<
       >
     >
   >;
+  scan: <
+    TResult,
+    const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
+    TContextOverride extends TContext = TContext,
+  >(
+    args: {
+      request?: QueryScanRequest;
+      context?: TContextOverride;
+      db?: QueryEngineDb;
+      batchSize?: number;
+      count?: QueryCountMode;
+      signal?: AbortSignal;
+      load?: TLoad;
+    },
+    consume: (
+      batches: AsyncIterable<
+        QueryScanBatch<
+          ResourceRowForLoad<
+            TDb,
+            TSchema,
+            TRelations,
+            TRoot,
+            TWith,
+            TRow,
+            ResolveResourceLoad<TWith, THydration, "query", TLoad>
+          >
+        >
+      >,
+    ) => Promise<TResult>,
+  ) => Promise<TResult>;
   /** Resolve one scoped, hydrated row by its root id. */
   findById: <
     const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,

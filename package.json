@@ -14,6 +14,7 @@
     "lint": "vp lint",
     "typecheck": "vp run @drizzle-resource/core#typecheck && vp run @drizzle-resource/zod#typecheck && vp run @drizzle-resource/valibot#typecheck && vp run @drizzle-resource/vine#typecheck && vp run drizzle-resource#typecheck",
     "test": "vp run @drizzle-resource/core#test && vp run @drizzle-resource/zod#test && vp run @drizzle-resource/valibot#test && vp run @drizzle-resource/vine#test",
+    "benchmark:postgres": "bun tools/benchmark-postgres.ts",
     "build": "vp run @drizzle-resource/core#build && vp run @drizzle-resource/zod#build && vp run @drizzle-resource/valibot#build && vp run @drizzle-resource/vine#build && vp run drizzle-resource#build",
     "prepare": "vp config",
     "pack:check": "vp run drizzle-resource#pack:check",

@@ -1,0 +1,428 @@
+{
+  "timestamp": "2026-09-21T15:13:55.852Z",
+  "baseline": "ab04689 (previous PostgreSQL optimization pass)",
+  "rows": 200000,
+  "iterations": 10,
+  "environment": {
+    "version": "PostgreSQL 18.4 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "work_mem": "4MB"
+  },
+  "measurements": [
+    {
+      "scenario": "page-and-shared-count-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 31.745958000000087,
+          "maxMs": 41.276208,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 28.077999999999975,
+          "maxMs": 35.99258299999997,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "relation-sorted-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 24.824334000000135,
+          "maxMs": 36.51974999999993,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 24.767708000000084,
+          "maxMs": 26.148292000000083,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-Ref-199999",
+      "variants": {
+        "baseline": {
+          "medianMs": 85.13824999999997,
+          "maxMs": 89.69195799999989,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 6.31512500000008,
+          "maxMs": 7.291874999999891,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 87.04241599999978,
+          "maxMs": 92.89879199999996,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 4.137832999999773,
+          "maxMs": 4.956791000000067,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account",
+      "variants": {
+        "baseline": {
+          "medianMs": 37.119792000000416,
+          "maxMs": 42.152374999999665,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 36.39325000000008,
+          "maxMs": 43.216958999999406,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 21.516249999999673,
+          "maxMs": 24.76800000000003,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 22.81525000000056,
+          "maxMs": 25.411208000000443,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 31.883584000000155,
+          "maxMs": 36.14129099999991,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 2.2327919999997903,
+          "maxMs": 2.491874999999709,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 0.793083999999908,
+          "maxMs": 1.198167000000467,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 1.767917000000125,
+          "maxMs": 2.6317919999992228,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "page-without-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 0.4541250000002037,
+          "maxMs": 0.623000000000502,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 0.4589589999995951,
+          "maxMs": 0.528082999999242,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "page-exact-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 4.672291999999288,
+          "maxMs": 5.395708999999442,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 4.349750000000313,
+          "maxMs": 6.688833000000159,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "relation-search-page",
+      "variants": {
+        "baseline": {
+          "medianMs": 11.142958000000363,
+          "maxMs": 41.58916599999975,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 11.445666999999958,
+          "maxMs": 23.1118749999996,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "three-root-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 24.55487499999981,
+          "maxMs": 29.16491700000006,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 24.008334000000104,
+          "maxMs": 24.509124999999585,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "five-mixed-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 57.743249999999534,
+          "maxMs": 62.38404200000059,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 56.11458399999992,
+          "maxMs": 61.13691600000038,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "filtered-exclude-self-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 34.76075000000128,
+          "maxMs": 36.89037499999904,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 35.2338749999999,
+          "maxMs": 36.4197920000006,
+          "statementsPerRequest": 3
+        }
+      }
+    }
+  ],
+  "scans": [
+    {
+      "sorting": [
+        {
+          "key": "year",
+          "dir": "desc"
+        },
+        {
+          "key": "month",
+          "dir": "desc"
+        }
+      ],
+      "results": [
+        {
+          "iteration": 0,
+          "variant": "baseline-pages",
+          "durationMs": 1840.952625,
+          "clientCpuMs": 1068.044,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 0,
+          "variant": "optimized-pages",
+          "durationMs": 1788.5915000000005,
+          "clientCpuMs": 822.023,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 0,
+          "variant": "scan",
+          "durationMs": 1043.0142080000005,
+          "clientCpuMs": 733.746,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "scan",
+          "durationMs": 957.5477499999997,
+          "clientCpuMs": 609.571,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "optimized-pages",
+          "durationMs": 1713.0673750000005,
+          "clientCpuMs": 749.998,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "baseline-pages",
+          "durationMs": 1673.8215840000012,
+          "clientCpuMs": 705.818,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "baseline-pages",
+          "durationMs": 1667.0993750000016,
+          "clientCpuMs": 735.646,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "optimized-pages",
+          "durationMs": 1840.615082999997,
+          "clientCpuMs": 786.382,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "scan",
+          "durationMs": 1361.6756249999999,
+          "clientCpuMs": 817.166,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        }
+      ]
+    },
+    {
+      "sorting": [
+        {
+          "key": "account.name",
+          "dir": "asc"
+        }
+      ],
+      "results": [
+        {
+          "iteration": 0,
+          "variant": "baseline-pages",
+          "durationMs": 4035.631874999999,
+          "clientCpuMs": 1158.934,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 0,
+          "variant": "optimized-pages",
+          "durationMs": 4356.585124999998,
+          "clientCpuMs": 1176.67,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 0,
+          "variant": "scan",
+          "durationMs": 1184.241667000002,
+          "clientCpuMs": 720.132,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "scan",
+          "durationMs": 1169.997999999996,
+          "clientCpuMs": 707.886,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "optimized-pages",
+          "durationMs": 4052.842499999999,
+          "clientCpuMs": 1134.755,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "baseline-pages",
+          "durationMs": 3795.5302910000028,
+          "clientCpuMs": 1270.633,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "baseline-pages",
+          "durationMs": 4098.638874999997,
+          "clientCpuMs": 1158.985,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "optimized-pages",
+          "durationMs": 4238.257707999997,
+          "clientCpuMs": 1066.215,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "scan",
+          "durationMs": 1458.5236249999944,
+          "clientCpuMs": 840.988,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        }
+      ]
+    }
+  ]
+}
