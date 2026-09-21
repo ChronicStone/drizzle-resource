@@ -41,6 +41,7 @@ import type {
 import { decodeCursor, encodeCursor } from "./cursor.js";
 
 const utilsCache = new WeakMap<object, unknown>();
+const scopeFilterNodes = new WeakSet<QueryFilterNode>();
 
 function normalizeString(value: unknown) {
   return String(value ?? "").toLowerCase();
@@ -93,7 +94,9 @@ function mergeScopeFilters<TField extends string>(
   const requestChildren = [...normalizeFilters(requestFilters).children];
   const normalizedScope = normalizeScopeInput(scopeFilters);
   if (!normalizedScope) return requestChildren;
-  return [normalizedScope, ...requestChildren];
+  const scope = { ...normalizedScope };
+  scopeFilterNodes.add(scope);
+  return [scope, ...requestChildren];
 }
 
 function resolveRelationColumn(value: unknown): SQLWrapper {
@@ -184,6 +187,7 @@ function stripFacetKeyFromNode(
   node: QueryFilterNode,
   facetKey: string,
 ): QueryFilterNode | undefined {
+  if (scopeFilterNodes.has(node)) return node;
   if (node.type === "condition") {
     return node.key === facetKey ? undefined : node;
   }

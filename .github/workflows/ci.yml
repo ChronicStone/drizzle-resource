@@ -12,6 +12,22 @@ permissions:
 jobs:
   checks:
     runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_USER: resource
+          POSTGRES_PASSWORD: resource
+          POSTGRES_DB: resource_test
+        ports:
+          - 5432:5432
+        options: >-
+          --health-cmd pg_isready
+          --health-interval 5s
+          --health-timeout 5s
+          --health-retries 10
+    env:
+      TEST_DATABASE_URL: postgresql://resource:resource@localhost:5432/resource_test
 
     steps:
       - name: Checkout
