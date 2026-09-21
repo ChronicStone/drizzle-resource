@@ -52,10 +52,9 @@ function normalizeRequest(
         };
   const requestedSorting =
     request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
-  const sorting =
-    pagination.mode === "cursor" && !requestedSorting.some(({ key }) => key === "id")
-      ? [...requestedSorting, { key: "id", dir: requestedSorting.at(-1)?.dir ?? ("asc" as const) }]
-      : requestedSorting;
+  const sorting = !requestedSorting.some(({ key }) => key === "id")
+    ? [...requestedSorting, { key: "id", dir: requestedSorting.at(-1)?.dir ?? ("asc" as const) }]
+    : requestedSorting;
 
   return {
     ...request,
