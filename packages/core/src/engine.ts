@@ -14,6 +14,7 @@ import type {
   QueryResponse,
   QueryResource,
   QueryRootKey,
+  ResourceQueryExecutionOptions,
   ResourceHydrationConfig,
   ResourceHydrationProfiles,
   ResourceQueryDefaultsConfig,
@@ -63,6 +64,7 @@ function normalizeRequest(
     sorting,
     search: {
       ...request.search,
+      value: typeof request.search.value === "string" ? request.search.value : "",
       fields: [...searchFields],
     },
   };
@@ -113,6 +115,28 @@ function assertRequestLimits(
       throw new Error(`Facet limit cannot exceed ${limits.maxFacetLimit}`);
     }
   }
+}
+
+function resolveExecutionLimits(
+  resourceLimits: Required<ResourceQueryExecutionOptions> & {
+    maxCursorLength: number;
+    maxFilterDepth: number;
+    maxFilterNodes: number;
+    maxFacetCount: number;
+    maxFacetLimit: number;
+  },
+  execution?: ResourceQueryExecutionOptions,
+) {
+  if (execution?.maxPageSize === undefined) return resourceLimits;
+
+  if (!Number.isSafeInteger(execution.maxPageSize) || execution.maxPageSize < 1) {
+    throw new Error("Execution max page size must be a positive safe integer");
+  }
+
+  return {
+    ...resourceLimits,
+    maxPageSize: execution.maxPageSize,
+  };
 }
 
 function assertKnownFields(
@@ -219,9 +243,10 @@ async function executeFacetsForResource(
   utils: ReturnType<typeof createQueryResourceUtils>,
   request: QueryRequest,
   facets: QueryFacetRequest[],
+  limits: Parameters<typeof assertRequestLimits>[1],
   context?: unknown,
 ): Promise<QueryFacetsResponse> {
-  assertRequestLimits(request, resource.queryConfig.validation);
+  assertRequestLimits(request, limits);
   assertKnownFacetFields(resource, facets);
 
   if (options.strategy?.facets) {
@@ -478,13 +503,15 @@ export function createQueryEngine<
           request,
           context,
           db,
+          execution,
           load,
         }: {
           request: QueryRequestInput;
           context?: any;
           db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
-        }): Promise<any> => executeQuery({ request, context, db, load }),
+        }): Promise<any> => executeQuery({ request, context, db, execution, load }),
         findById: async ({
           id,
           context,
@@ -519,12 +546,14 @@ export function createQueryEngine<
           request,
           context,
           db,
+          execution,
         }: {
           request: QueryRequestInput;
           context?: any;
           db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context);
+          const normalizedRequest = prepareRequest(request, context, { execution });
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
             db,
@@ -536,15 +565,17 @@ export function createQueryEngine<
           ids,
           context,
           db,
+          execution,
           load,
         }: {
           request: QueryRequestInput;
           ids: unknown[];
           context?: any;
           db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context);
+          const normalizedRequest = prepareRequest(request, context, { execution });
           const hydrationRelations = resolveHydrationRelations("query", load);
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
@@ -557,13 +588,16 @@ export function createQueryEngine<
           facets,
           context,
           db,
+          execution,
         }: {
           request: QueryRequestInput;
           facets: QueryFacetRequest[];
           context?: any;
           db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
         }): Promise<any> => {
-          const normalizedRequest = prepareRequest(request, context);
+          const normalizedRequest = prepareRequest(request, context, { execution });
+          const limits = resolveExecutionLimits(resource.queryConfig.validation, execution);
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
             db,
@@ -574,6 +608,7 @@ export function createQueryEngine<
             utils,
             normalizedRequest,
             facets,
+            limits,
             context,
           );
         },
@@ -588,6 +623,7 @@ export function createQueryEngine<
         request,
         context,
         db,
+        execution,
         load,
         operation = "query",
         trustedInput = false,
@@ -595,11 +631,13 @@ export function createQueryEngine<
         request: QueryRequestInput;
         context?: any;
         db?: QueryEngineDb;
+        execution?: ResourceQueryExecutionOptions;
         load?: string | Record<string, unknown>;
         operation?: "query" | "findById";
         trustedInput?: boolean;
       }) {
-        const normalizedRequest = prepareRequest(request, context, trustedInput);
+        const normalizedRequest = prepareRequest(request, context, { execution, trustedInput });
+        const limits = resolveExecutionLimits(resource.queryConfig.validation, execution);
         const hydrationRelations = resolveHydrationRelations(operation, load);
         const utils = createQueryResourceUtils(config, {
           resource: trustedResource,
@@ -649,6 +687,7 @@ export function createQueryEngine<
           utils,
           normalizedRequest,
           normalizedRequest.facets,
+          limits,
           context,
         );
 
@@ -658,15 +697,27 @@ export function createQueryEngine<
         };
       }
 
-      function prepareRequest(request: QueryRequestInput, context: any, trustedInput = false) {
+      function prepareRequest(
+        request: QueryRequestInput,
+        context: any,
+        executionOptions: {
+          execution?: ResourceQueryExecutionOptions;
+          trustedInput?: boolean;
+        } = {},
+      ) {
         const normalizedRequest = normalizeRequest(request, defaultFields as readonly string[], {
           pagination: options.query?.defaults?.pagination,
           sorting: options.query?.sort?.defaults,
         });
 
-        assertRequestLimits(normalizedRequest, resource.queryConfig.validation);
+        const limits = resolveExecutionLimits(
+          resource.queryConfig.validation,
+          executionOptions.execution,
+        );
 
-        const inputResource = trustedInput ? trustedResource : resource;
+        assertRequestLimits(normalizedRequest, limits);
+
+        const inputResource = executionOptions.trustedInput ? trustedResource : resource;
 
         assertKnownFields(inputResource, normalizedRequest);
         assertKnownFacetFields(inputResource, normalizedRequest.facets ?? []);
@@ -679,7 +730,7 @@ export function createQueryEngine<
           ),
         };
 
-        assertRequestLimits(scopedRequest, resource.queryConfig.validation);
+        assertRequestLimits(scopedRequest, limits);
         assertKnownFields(trustedResource, scopedRequest);
         return scopedRequest;
       }

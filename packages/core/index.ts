@@ -44,6 +44,7 @@ export type {
   ResourceHydrationConfig,
   ResourceHydrationProfiles,
   ResourceLoad,
+  ResourceQueryExecutionOptions,
   ResourceQueryConfig,
   ResourceQueryDefaultsConfig,
   ResourceQueryFacetsConfig,

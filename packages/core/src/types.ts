@@ -1,10 +1,5 @@
 import type { PgColumn } from "drizzle-orm/pg-core";
-import type {
-  BuildQueryResult,
-  SQL,
-  TableRelationalConfig,
-  TablesRelationalConfig,
-} from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 
 export type GenericObject = Record<string, unknown>;
 
@@ -248,6 +243,17 @@ export interface QueryIdsResponse<TId = unknown> {
 }
 
 /**
+ * Trusted server-side limits for one resource execution.
+ *
+ * These values are not part of the transport request or generated request schemas. Keep them
+ * application-owned and never derive them from client input.
+ */
+export interface ResourceQueryExecutionOptions {
+  /** Maximum page size accepted for this execution. */
+  maxPageSize?: number;
+}
+
+/**
  * A single facet request.
  */
 export interface QueryFacetRequest<TField extends string = string> {
@@ -339,6 +345,7 @@ export type QueryEngineRelations = Record<
       {
         targetTableName: string;
         relationType: "one" | "many";
+        optional?: boolean;
         sourceColumns: unknown[];
         targetColumns: unknown[];
       }
@@ -375,11 +382,64 @@ export type QueryRowShape<
     ? Extract<TRow, GenericObject>
     : GenericObject;
 
-type QuerySelectionShape<TWith> = [TWith] extends [undefined]
-  ? true
-  : {
-      with: NonNullable<TWith>;
-    };
+type RelationSelection<TSelection> = TSelection extends { with?: infer TNested }
+  ? [Extract<TNested, object>] extends [never]
+    ? undefined
+    : Extract<TNested, object>
+  : undefined;
+
+type RelationResultRowShape<
+  TDb extends QueryEngineDb,
+  TSchema extends QueryEngineSchema,
+  TRelations extends QueryEngineRelations,
+  TRoot extends QueryRootKey<TDb, TSchema>,
+  TRelation extends RelationKey<TRelations, TRoot>,
+  TSelection,
+> =
+  Extract<
+    RelationTargetTableName<TRelations, TRoot, TRelation>,
+    QueryRootKey<TDb, TSchema>
+  > extends infer TTarget extends QueryRootKey<TDb, TSchema>
+    ? QueryResultRowShape<TDb, TSchema, TRelations, TTarget, RelationSelection<TSelection>>
+    : never;
+
+type QueryRelationResultShape<
+  TDb extends QueryEngineDb,
+  TSchema extends QueryEngineSchema,
+  TRelations extends QueryEngineRelations,
+  TRoot extends QueryRootKey<TDb, TSchema>,
+  TRelation extends RelationKey<TRelations, TRoot>,
+  TSelection,
+> = RootRelations<TRelations, TRoot>[TRelation] extends infer TRelationConfig
+  ? TRelationConfig extends { relationType: "many" }
+    ? RelationResultRowShape<TDb, TSchema, TRelations, TRoot, TRelation, TSelection>[]
+    : TRelationConfig extends { relationType: "one" }
+      ?
+          | RelationResultRowShape<TDb, TSchema, TRelations, TRoot, TRelation, TSelection>
+          | (true extends (
+              TRelationConfig extends { optional?: infer TOptional } ? TOptional : false
+            )
+              ? null
+              : never)
+      : never
+  : never;
+
+type QueryRelationsRowShape<
+  TDb extends QueryEngineDb,
+  TSchema extends QueryEngineSchema,
+  TRelations extends QueryEngineRelations,
+  TRoot extends QueryRootKey<TDb, TSchema>,
+  TWith extends object,
+> = {
+  [TRelation in Extract<keyof TWith, RelationKey<TRelations, TRoot>>]: QueryRelationResultShape<
+    TDb,
+    TSchema,
+    TRelations,
+    TRoot,
+    TRelation,
+    TWith[TRelation]
+  >;
+};
 
 export type QueryResultRowShape<
   TDb extends QueryEngineDb,
@@ -387,13 +447,9 @@ export type QueryResultRowShape<
   TRelations extends QueryEngineRelations,
   TRoot extends QueryRootKey<TDb, TSchema>,
   TWith extends object | undefined,
-> = TRelations extends TablesRelationalConfig
-  ? TRelations[TRoot] extends TableRelationalConfig
-    ? Extract<
-        BuildQueryResult<TRelations, TRelations[TRoot], QuerySelectionShape<TWith>>,
-        GenericObject
-      >
-    : QueryRowShape<TDb, TSchema, TRoot>
+> = TWith extends object
+  ? QueryRowShape<TDb, TSchema, TRoot> &
+      QueryRelationsRowShape<TDb, TSchema, TRelations, TRoot, TWith>
   : QueryRowShape<TDb, TSchema, TRoot>;
 
 type RootColumnKey<
@@ -1162,6 +1218,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
     load?: TLoad;
   }) => Promise<
     QueryResponse<
@@ -1199,6 +1256,7 @@ export interface QueryResource<
     request: QueryRequestInput;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   /**
    * Hydrate rows for a known ordered ID list.
@@ -1211,6 +1269,7 @@ export interface QueryResource<
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
     load?: TLoad;
   }) => Promise<
     Array<
@@ -1236,6 +1295,7 @@ export interface QueryResource<
     facets: QueryFacetRequest<TFacetKey>[];
     context?: TContextOverride;
     db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
   }) => Promise<QueryFacetsResponse<TFacetKey>>;
 }
 

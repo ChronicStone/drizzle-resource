@@ -1,5 +1,11 @@
 # @drizzle-resource/core
 
+## 1.1.0
+
+### Minor Changes
+
+- [`771610c`](https://github.com/ChronicStone/drizzle-resource/commit/771610c9c992623fd2a0b413746067a57127e3b2) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Allow trusted server-side resource executions to raise the page-size limit without widening the public transport contract.
+
 ## 1.0.1
 
 ### Patch Changes
