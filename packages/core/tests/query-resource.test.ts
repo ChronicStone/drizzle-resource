@@ -263,6 +263,47 @@ describe("defineResource", () => {
     });
   });
 
+  it("normalizes a search value omitted by a transport boundary", async () => {
+    let capturedRequest: QueryRequest | undefined;
+
+    const engine = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    });
+    const resource = engine.defineResource("employees", {
+      query: {
+        search: {
+          defaults: ["fullName"],
+        },
+      },
+      strategy: {
+        query: async ({ request }) => {
+          capturedRequest = request;
+          return {
+            rows: [],
+            pageInfo: exactOffsetPageInfo(0),
+          };
+        },
+      },
+    });
+
+    await resource.query({
+      request: {
+        ...baseRequest,
+        search: {
+          fields: ["fullName"],
+        },
+      } as QueryRequest,
+      context: {},
+    });
+
+    expect(capturedRequest?.search).toEqual({
+      fields: ["fullName"],
+      value: "",
+    });
+  });
+
   it("finds one scoped row by id without a collection request", async () => {
     const requests: QueryRequest[] = [];
     const engine = createQueryEngine({

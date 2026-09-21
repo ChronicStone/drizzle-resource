@@ -63,6 +63,7 @@ function normalizeRequest(
     sorting,
     search: {
       ...request.search,
+      value: typeof request.search.value === "string" ? request.search.value : "",
       fields: [...searchFields],
     },
   };
