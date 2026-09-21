@@ -504,15 +504,36 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     );
     const start = statements.length;
     for (const [index, value] of inputs.entries()) {
+      const before = statements.length;
       const result = await indexed.queryIds({
         request: { ...request, search: { value, fields: ["name", "category.name"] } },
       });
       expect(result).toEqual(expected[index]);
+      expect(statements.slice(before).filter((query) => query.startsWith("explain"))).toHaveLength(
+        /[\p{L}\p{N}]{3}/u.test(value) ? 2 : 0,
+      );
     }
     const queries = statements.slice(start);
     expect(queries.filter((query) => query.includes("pg_catalog.pg_index"))).toHaveLength(2);
-    expect(queries.some((query) => query.includes('"items"."id" in (select'))).toBe(true);
-    expect(queries.some((query) => query.includes('"categories"."id" in (select'))).toBe(true);
+    expect(queries.filter((query) => query.includes(" union "))).not.toHaveLength(0);
+    expect(queries.some((query) => query.includes('"categories"."id" in (select'))).toBe(false);
+    for (const value of ["One", "Alpha", "Beta"]) {
+      const filtered = {
+        ...request,
+        filters: [
+          {
+            type: "condition" as const,
+            key: "category.name",
+            operator: "is" as const,
+            value: "Beta",
+          },
+        ],
+        search: { value, fields: ["name", "category.name"] },
+      };
+      expect(await indexed.queryIds({ request: filtered })).toEqual(
+        await resource.queryIds({ request: filtered }),
+      );
+    }
   });
 
   it("keeps scan membership and hydrated values consistent during concurrent updates", async () => {

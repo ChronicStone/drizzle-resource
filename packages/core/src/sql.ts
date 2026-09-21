@@ -42,7 +42,7 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
-import { probePostgresSearch, scanPostgresCursor } from "./postgres.js";
+import { estimatePostgresQuery, probePostgresSearch, scanPostgresCursor } from "./postgres.js";
 
 const utilsCache = new WeakMap<object, unknown>();
 const scopeFilterNodes = new WeakSet<QueryFilterNode>();
@@ -447,6 +447,8 @@ export function createQueryResourceUtils<
   const rootTable = (config.schema as any)[resource.key];
   const uniqueRootId = columnsAreUnique(rootTable, [rootTable.id]) && rootTable.id.notNull;
   const indexedSearchColumns = new Set<PgColumn>();
+  const searchPlans = new WeakMap<QueryRequest, Promise<void>>();
+  const indexedSearchRequests = new WeakSet<QueryRequest>();
 
   function resolveField(path: string) {
     return resource.fields.get(path);
@@ -553,8 +555,17 @@ export function createQueryResourceUtils<
       : (or(...children) ?? sql`false`);
   }
 
-  async function prepareSearch(search: QueryRequest["search"]) {
-    if (!/[\p{L}\p{N}]{3}/u.test(search.value)) return;
+  async function prepareSearch(request: QueryRequest) {
+    if (!/[\p{L}\p{N}]{3}/u.test(request.search.value)) return;
+    const prepared = searchPlans.get(request);
+    if (prepared) return prepared;
+    const pending = planSearch(request);
+    searchPlans.set(request, pending);
+    return pending;
+  }
+
+  async function planSearch(request: QueryRequest) {
+    const { search } = request;
     const entries = search.fields.flatMap((field) => {
       const entry = resolveField(field);
       return entry && !entry.isManyPath && is(entry.column, PgColumn) && isTextColumn(entry.column)
@@ -575,45 +586,94 @@ export function createQueryResourceUtils<
         }
       }),
     );
+    const indexed = compileIndexedSearch(request);
+    if (!indexed) return;
+    const filter = compileFilterNode(normalizeFilters(request.filters));
+    const queries = [compileSearch(search), indexed].map((predicate) => {
+      const where = and(filter, predicate);
+      const matching = applyOuterJoins(
+        (database as any).select({ id: rootTable.id }).from(rootTable),
+        request,
+      ).where(where);
+      const page = matching
+        .orderBy(...compileOrderBy(request.sorting))
+        .limit(request.pagination.pageSize)
+        .offset(
+          request.pagination.mode === "offset"
+            ? (request.pagination.pageIndex - 1) * request.pagination.pageSize
+            : 0,
+        );
+      if (request.pagination.count === "none") return page.getSQL();
+      const count = applyOuterJoins(
+        (database as any).select({ count: sql`count(*)` }).from(rootTable),
+        request,
+      ).where(where);
+      return sql`select (${count}) as total, array(select id from (${page}) as page) as ids`;
+    });
+    const [ordinaryCost, indexedCost] = await Promise.all(
+      queries.map((query) => estimatePostgresQuery(database, query)),
+    );
+    if (ordinaryCost !== undefined && indexedCost !== undefined && indexedCost < ordinaryCost) {
+      indexedSearchRequests.add(request);
+    }
   }
 
-  function compileSearch(search: QueryRequest["search"]) {
+  function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
     if (search.value.length === 0) return undefined;
-    const acrossTables =
-      new Set(search.fields.map((field) => resolveField(field)?.tableName)).size > 1;
-    const predicates = search.fields.map((field) => {
-      const condition: QueryFilterCondition = {
+    if (request && indexedSearchRequests.has(request)) return compileIndexedSearch(request);
+    const predicates = search.fields.map((field) =>
+      compileCondition({
         type: "condition",
         key: field,
         operator: "contains",
         value: search.value,
-      };
-      const entry = resolveField(field);
-      if (
-        acrossTables &&
-        /[\p{L}\p{N}]{3}/u.test(search.value) &&
-        entry &&
-        !entry.isManyPath &&
-        is(entry.column, PgColumn) &&
-        indexedSearchColumns.has(entry.column)
-      ) {
-        const table = config.schema[entry.tableName];
-        if (!is(table, PgTable)) return compileCondition(condition);
-        const id = getColumns(table).id;
-        if (id?.notNull && columnsAreUnique(table, [id])) {
-          return inArray(
-            id,
-            (database as any)
-              .select({ id })
-              .from(table)
-              .where(buildScalarCondition(entry.column, condition)),
-          );
-        }
-      }
-      return compileCondition(condition);
-    });
-
+      }),
+    );
     return predicates.length > 0 ? (or(...predicates) ?? undefined) : undefined;
+  }
+
+  function compileIndexedSearch(request: QueryRequest) {
+    const { search } = request;
+    const entries = search.fields.map(resolveField);
+    const indexed =
+      uniqueRootId &&
+      /[\p{L}\p{N}]{3}/u.test(search.value) &&
+      new Set(entries.map((entry) => entry?.tableName)).size > 1 &&
+      entries.some((entry) => entry?.tableName === resource.key) &&
+      entries.every(
+        (entry) =>
+          entry &&
+          !entry.isManyPath &&
+          is(entry.column, PgColumn) &&
+          indexedSearchColumns.has(entry.column) &&
+          preservesRootCardinality(entry.outerJoinSteps),
+      );
+    if (!indexed) return undefined;
+    const filter = compileFilterNode(normalizeFilters(request.filters));
+    const branches = entries.map((entry) => {
+      const joins = buildOuterJoins(resource, {
+        ...request,
+        sorting: [],
+        search: { ...search, fields: [entry!.path] },
+      });
+      const query = joinRelationSteps(
+        (database as any).select({ id: rootTable.id }).from(rootTable),
+        config.schema,
+        joins,
+      ).where(
+        and(
+          filter,
+          compileCondition({
+            type: "condition",
+            key: entry!.path,
+            operator: "contains",
+            value: search.value,
+          }),
+        ),
+      );
+      return sql`(${query})`;
+    });
+    return inArray(rootTable.id, sql`(${sql.join(branches, sql` union `)})`);
   }
 
   function compileOrderBy(
@@ -628,7 +688,7 @@ export function createQueryResourceUtils<
   }
 
   function buildWhereClause(request: QueryRequest) {
-    const searchPredicate = compileSearch(request.search);
+    const searchPredicate = compileSearch(request.search, request);
     const filterPredicate = compileFilterNode(normalizeFilters(request.filters));
     return and(searchPredicate, filterPredicate);
   }
@@ -696,7 +756,7 @@ export function createQueryResourceUtils<
     request: QueryRequest;
     rowCount?: number;
   }) {
-    await prepareSearch(request.search);
+    await prepareSearch(request);
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const orderBy = compileOrderBy(request.sorting);
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
@@ -895,7 +955,7 @@ export function createQueryResourceUtils<
     consume: (batches: AsyncIterable<{ ids: unknown[]; totalRows?: number }>) => Promise<TResult>,
   ) {
     const { request } = options;
-    await prepareSearch(request.search);
+    await prepareSearch(request);
     if (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1) {
       throw new Error("Scan batch size must be a positive safe integer");
     }
@@ -986,7 +1046,7 @@ export function createQueryResourceUtils<
     facets: QueryFacetRequest[];
     includeCount?: boolean;
   }): Promise<QueryFacetsResponse & { rowCount?: number }> {
-    await prepareSearch(request.search);
+    await prepareSearch(request);
     let rowCount: number | undefined;
     const results: QueryFacetsResponse["facets"] = [];
     const plans = facets.flatMap((facet, index) => {
