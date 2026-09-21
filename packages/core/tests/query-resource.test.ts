@@ -722,6 +722,34 @@ describe("defineResource", () => {
     });
   });
 
+  it("adds the root ID as a stable offset pagination tiebreaker", async () => {
+    let capturedRequest: QueryRequest | undefined;
+    const resource = createQueryEngine({
+      db: { query: { employees: { findMany: async () => [] } } },
+      schema,
+      relations,
+    }).defineResource("employees", {
+      strategy: {
+        ids: async ({ request }) => {
+          capturedRequest = request;
+          return { ids: [], pageInfo: exactOffsetPageInfo(0) };
+        },
+      },
+    });
+
+    await resource.query({
+      request: {
+        ...baseRequest,
+        sorting: [{ key: "fullName", dir: "desc" }],
+      },
+    });
+
+    expect(capturedRequest?.sorting).toEqual([
+      { key: "fullName", dir: "desc" },
+      { key: "id", dir: "desc" },
+    ]);
+  });
+
   it("normalizes cursor pagination with a stable id tiebreaker and optional exact count", async () => {
     const capturedRequests: QueryRequest[] = [];
     const resource = createQueryEngine({
