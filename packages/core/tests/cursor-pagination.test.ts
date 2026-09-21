@@ -1,5 +1,6 @@
 import { defineRelationsPart } from "drizzle-orm";
-import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
+import type { SQL } from "drizzle-orm";
+import { PgDialect, pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
@@ -60,8 +61,13 @@ function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount =
       if (table === departments) trace.relationJoins += 1;
       return this;
     }
-    where() {
-      if (this.tracksCursorWhere) trace.cursorBoundaries += 1;
+    where(condition?: SQL) {
+      if (
+        this.tracksCursorWhere &&
+        condition &&
+        new PgDialect().sqlToQuery(condition).sql.includes(" > ")
+      )
+        trace.cursorBoundaries += 1;
       return this;
     }
     orderBy() {
@@ -83,7 +89,16 @@ function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount =
     }
   }
 
+  function select(selection: Record<string, unknown>) {
+    if ("rowCount" in selection) {
+      trace.countQueries += 1;
+      return new QueryBuilder(selection, [{ rowCount }]);
+    }
+    return new QueryBuilder(selection, pages.shift() ?? [], true);
+  }
+
   const db = {
+    select,
     query: {
       departments: { findMany: async () => [] },
       employees: {
@@ -98,15 +113,7 @@ function createDatabase(pages: Array<Array<Record<string, unknown>>>, rowCount =
     $with: () => ({
       as: () => ({ id: employees.id }),
     }),
-    with: () => ({
-      select: (selection: Record<string, unknown>) => {
-        if ("rowCount" in selection) {
-          trace.countQueries += 1;
-          return new QueryBuilder(selection, [{ rowCount }]);
-        }
-        return new QueryBuilder(selection, pages.shift() ?? [], true);
-      },
-    }),
+    with: () => ({ select }),
   };
 
   return { db, trace };
@@ -194,7 +201,7 @@ describe("built-in cursor pagination", () => {
       },
     });
 
-    expect(trace.relationJoins).toBe(2);
+    expect(trace.relationJoins).toBe(1);
   });
 
   it("adds the root ID as a cursor tie-breaker for duplicate sort values", async () => {

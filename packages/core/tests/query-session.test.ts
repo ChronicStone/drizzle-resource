@@ -1,4 +1,5 @@
 import { defineRelationsPart } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
 import { PgDialect, pgTable, text } from "drizzle-orm/pg-core";
 import { describe, expect, it } from "vite-plus/test";
 import type { SQL } from "drizzle-orm";
@@ -12,7 +13,7 @@ const items = pgTable("items", {
 });
 
 const schema = { items };
-const relations = { items: {} };
+const relations = defineRelationsPart(schema, () => ({ items: {} }));
 
 const relationParents = pgTable("relation_parent", {
   id: text().primaryKey(),
@@ -287,5 +288,44 @@ describe("native relation SQL", () => {
     expect(relationIsNotQuery.sql).toContain('not ("relation_child"."parent_id" = $1)');
     expect(relationIsNotQuery.sql).not.toContain("lower(");
     expect(relationIsNotQuery.params).toEqual(["Acct_1"]);
+  });
+});
+
+describe("facet SQL", () => {
+  it("aggregates the filtered root query without materializing matching ids", async () => {
+    const statements: string[] = [];
+    const database = drizzle({
+      client: {
+        query: async (query: { text: string }) => {
+          statements.push(query.text);
+          return { rows: [["Ada", 2, 1]] };
+        },
+      } as never,
+      schema,
+      relations,
+    });
+    const resource = createQueryEngine({ db: database, schema, relations }).defineResource(
+      "items",
+      {
+        query: { facets: { allowed: ["name"] } },
+      },
+    );
+
+    const result = await resource.queryFacets({
+      request: baseRequest,
+      facets: [{ key: "name", mode: "exclude-self", limit: 10 }],
+    });
+
+    expect(result.facets).toEqual([
+      {
+        key: "name",
+        options: [{ value: "Ada", count: 2 }],
+        nextCursor: null,
+        total: 1,
+      },
+    ]);
+    expect(statements).toHaveLength(1);
+    expect(statements[0]).not.toContain("facet_matching_ids");
+    expect(statements[0]).toContain("count(*)");
   });
 });

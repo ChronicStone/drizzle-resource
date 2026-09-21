@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
 import { defineRelations, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { boolean, integer, pgSchema, text } from "drizzle-orm/pg-core";
+import { boolean, integer, pgSchema, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -27,11 +27,45 @@ const tags = namespace.table("tags", {
   itemId: integer().notNull(),
   label: text().notNull(),
 });
-const schema = { items, categories, tags };
+const keys = namespace.table(
+  "keys",
+  {
+    id: integer().primaryKey(),
+    code: text().notNull(),
+    region: text().notNull(),
+    stable: text().notNull().unique(),
+    indexed: text().notNull(),
+    active: boolean().notNull(),
+  },
+  (table) => [
+    unique().on(table.code, table.region),
+    uniqueIndex().on(table.indexed),
+    uniqueIndex()
+      .on(table.code)
+      .where(sql`${table.active}`),
+  ],
+);
+const lookups = namespace.table("lookups", {
+  id: integer().primaryKey(),
+  code: text().notNull(),
+  region: text().notNull(),
+  stable: text().notNull(),
+  indexed: text().notNull(),
+});
+const schema = { items, categories, tags, keys, lookups };
 const relations = defineRelations(schema, (r) => ({
   items: {
     category: r.one.categories({ from: r.items.categoryId, to: r.categories.id }),
     tags: r.many.tags({ from: r.items.id, to: r.tags.itemId }),
+  },
+  lookups: {
+    composite: r.one.keys({
+      from: [r.lookups.code, r.lookups.region],
+      to: [r.keys.code, r.keys.region],
+    }),
+    byStable: r.one.keys({ from: r.lookups.stable, to: r.keys.stable }),
+    byIndex: r.one.keys({ from: r.lookups.indexed, to: r.keys.indexed }),
+    partial: r.one.keys({ from: r.lookups.code, to: r.keys.code }),
   },
 }));
 const client = new Pool({ connectionString, max: 4 });
@@ -72,6 +106,25 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     await db.execute(sql`create table ${tags} (
       id integer primary key, "itemId" integer not null, label text not null
     )`);
+    await db.execute(sql`create table ${keys} (
+      id integer primary key, code text not null, region text not null,
+      stable text not null unique, indexed text not null, active boolean not null,
+      unique (code, region)
+    )`);
+    await db.execute(sql`create unique index on ${keys} (indexed)`);
+    await db.execute(sql`create unique index on ${keys} (code) where active`);
+    await db.execute(sql`create table ${lookups} (
+      id integer primary key, code text not null, region text not null,
+      stable text not null, indexed text not null
+    )`);
+    await db.insert(keys).values([
+      { id: 1, code: "same", region: "a", stable: "one", indexed: "one", active: true },
+      { id: 2, code: "same", region: "b", stable: "two", indexed: "two", active: false },
+    ]);
+    await db.insert(lookups).values([
+      { id: 1, code: "same", region: "a", stable: "one", indexed: "one" },
+      { id: 2, code: "same", region: "b", stable: "two", indexed: "two" },
+    ]);
     await db.insert(categories).values([
       { id: 1, name: "Alpha" },
       { id: 2, name: "Beta" },
@@ -190,5 +243,137 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
       { value: "red", count: 2 },
       { value: "blue", count: 1 },
     ]);
+  });
+  it("batches compatible facets without changing types, ordering, totals or cursors", async () => {
+    const requests: QueryRequestInput[] = [
+      request,
+      { ...request, filters: [{ type: "condition", key: "rank", operator: "is", value: 1 }] },
+      {
+        ...request,
+        filters: [
+          {
+            type: "group",
+            combinator: "or",
+            children: [
+              { type: "condition", key: "rank", operator: "is", value: 1 },
+              { type: "condition", key: "active", operator: "is", value: false },
+            ],
+          },
+        ],
+      },
+      { ...request, search: { value: "o", fields: ["name"] } },
+      { ...request, search: { value: "a", fields: ["category.name"] } },
+      { ...request, filters: [{ type: "condition", key: "id", operator: "is", value: -1 }] },
+    ];
+    for (const current of requests) {
+      for (const mode of ["include-self", "exclude-self"] as const) {
+        for (const cursor of [undefined, "1", "99"]) {
+          const facets = (["rank", "active", "tenant", "category.name", "tags.label"] as const).map(
+            (key) => ({ key, mode, limit: 1, cursor }),
+          );
+          const expected = await Promise.all(
+            facets.map(
+              async (facet) =>
+                (await resource.queryFacets({ request: current, facets: [facet] })).facets[0],
+            ),
+          );
+          const result = await resource.queryFacets({ request: current, facets });
+          expect(result.facets).toEqual(expected);
+        }
+      }
+    }
+    expect(statements.some((query) => query.includes("grouping sets"))).toBe(true);
+  });
+
+  it("keeps duplicate facets and facet searches independent", async () => {
+    const facets = [
+      { key: "rank" as const, limit: 1 },
+      { key: "active" as const, limit: 1 },
+      { key: "rank" as const, limit: 1, cursor: "1" },
+      { key: "rank" as const, search: "2" },
+    ];
+    const expected = await Promise.all(
+      facets.map(
+        async (facet) => (await resource.queryFacets({ request, facets: [facet] })).facets[0],
+      ),
+    );
+    expect((await resource.queryFacets({ request, facets })).facets).toEqual(expected);
+  });
+
+  it("pages directly through unique-key joins without materializing matching IDs", async () => {
+    const start = statements.length;
+    const result = await resource.queryIds({
+      request: {
+        ...request,
+        search: { value: "alpha", fields: ["category.name"] },
+      },
+    });
+    expect(result.ids).toEqual([1, 2]);
+    expect(result.pageInfo).toMatchObject({ rowCount: 2, hasNextPage: false });
+    expect(statements.slice(start).join("\n")).not.toContain("matching_ids");
+    expect(statements.slice(start).join("\n")).not.toContain("distinct");
+  });
+
+  it.each(["composite", "byStable", "byIndex"] as const)(
+    "derives safe cardinality from the %s key",
+    async (relation) => {
+      const lookup = engine.defineResource("lookups", {
+        relations: { composite: true, byStable: true, byIndex: true },
+      });
+      const start = statements.length;
+      const result = await lookup.queryIds({
+        request: {
+          ...request,
+          sorting: [],
+          search: { value: "same", fields: [`${relation}.code`] },
+        },
+      });
+      expect(result.ids).toEqual([1, 2]);
+      expect(result.pageInfo).toMatchObject({ rowCount: 2 });
+      expect(statements.slice(start).join("\n")).not.toContain("matching_ids");
+    },
+  );
+
+  it("does not treat a partial unique index or a declared one relation as a uniqueness proof", async () => {
+    const lookup = engine.defineResource("lookups", { relations: { partial: true } });
+    const start = statements.length;
+    const result = await lookup.queryIds({
+      request: {
+        ...request,
+        sorting: [],
+        search: { value: "same", fields: ["partial.code"] },
+      },
+    });
+    expect(result.pageInfo).toMatchObject({ rowCount: 2 });
+    expect(statements.slice(start).join("\n")).toContain("matching_ids");
+  });
+
+  it("hydrates only the selected roots in their stable page order", async () => {
+    const result = await resource.query({ request });
+    expect(result.rows.map(({ id }) => id)).toEqual([1, 2]);
+    expect(result.rows[0]?.category?.name).toBe("Alpha");
+    expect(result.rows[0]?.tags).toHaveLength(3);
+    expect(result.rows[1]?.tags).toHaveLength(1);
+  });
+
+  it("keeps optimized queries inside the per-call transaction", async () => {
+    await expect(
+      db.transaction(async (tx) => {
+        await tx
+          .insert(items)
+          .values({ id: 7, tenant: "a", name: "Uncommitted", rank: 4, active: true });
+        const result = await resource.queryIds({ request, db: tx });
+        expect(result.pageInfo).toMatchObject({ rowCount: 6 });
+        const facets = await resource.queryFacets({
+          request,
+          db: tx,
+          facets: [{ key: "active" }, { key: "tenant" }],
+        });
+        expect(facets.facets[1]?.options).toEqual([{ value: "a", count: 6 }]);
+        expect((await resource.queryIds({ request })).pageInfo).toMatchObject({ rowCount: 5 });
+        tx.rollback();
+      }),
+    ).rejects.toThrow("Rollback");
+    expect((await resource.queryIds({ request })).pageInfo).toMatchObject({ rowCount: 5 });
   });
 });
