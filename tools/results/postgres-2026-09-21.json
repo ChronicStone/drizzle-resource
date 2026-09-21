@@ -1,0 +1,101 @@
+{
+  "timestamp": "2026-09-21T13:48:10.236Z",
+  "rows": 200000,
+  "iterations": 10,
+  "environment": {
+    "version": "PostgreSQL 18.4 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "work_mem": "4MB"
+  },
+  "measurements": [
+    {
+      "scenario": "page-without-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 38.587042,
+          "maxMs": 47.10820899999999,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 0.6682080000000497,
+          "maxMs": 0.9340829999999869,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "page-exact-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 48.482749999999896,
+          "maxMs": 89.99187499999994,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 5.015584000000217,
+          "maxMs": 8.586084000000028,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "relation-search-page",
+      "variants": {
+        "baseline": {
+          "medianMs": 167.3510000000001,
+          "maxMs": 183.39412500000026,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 43.376250000000255,
+          "maxMs": 51.58058299999993,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "three-root-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 84.84820799999943,
+          "maxMs": 92.64129099999991,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 24.571584000000257,
+          "maxMs": 26.11791700000049,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "five-mixed-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 194.66116599999987,
+          "maxMs": 225.68795800000044,
+          "statementsPerRequest": 5
+        },
+        "optimized": {
+          "medianMs": 56.53204100000039,
+          "maxMs": 58.27529200000026,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "filtered-exclude-self-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 127.51108299999942,
+          "maxMs": 151.9494169999998,
+          "statementsPerRequest": 5
+        },
+        "optimized": {
+          "medianMs": 35.124416999999085,
+          "maxMs": 37.010834000000614,
+          "statementsPerRequest": 3
+        }
+      }
+    }
+  ]
+}
