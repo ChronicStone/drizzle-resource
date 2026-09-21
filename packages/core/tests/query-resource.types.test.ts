@@ -135,12 +135,9 @@ const db = {
       }): Promise<
         Array<{
           id: string;
+          departmentId: string;
           fullName: string;
-          department?: {
-            company?: {
-              name: string;
-            };
-          };
+          email: string;
         }>
       > => [],
     },
@@ -342,11 +339,20 @@ describe("defineResource typing", () => {
 
     type ListRow = Awaited<ReturnType<typeof resource.query>>["rows"][number];
     type DetailRow = NonNullable<Awaited<ReturnType<typeof resource.findById>>>;
+    type ListProfileRow = (typeof resource)["$infer"]["profiles"]["list"];
+    type DetailProfileRow = (typeof resource)["$infer"]["profiles"]["detail"];
 
     expectTypeOf<ListRow>().toHaveProperty("department");
     expectTypeOf<ListRow>().not.toHaveProperty("employeeSkills");
     expectTypeOf<DetailRow>().toHaveProperty("department");
     expectTypeOf<DetailRow>().toHaveProperty("employeeSkills");
+    expectTypeOf<ListProfileRow>().toHaveProperty("department");
+    expectTypeOf<ListProfileRow>().not.toHaveProperty("employeeSkills");
+    expectTypeOf<DetailProfileRow>().toHaveProperty("department");
+    expectTypeOf<DetailProfileRow>().toHaveProperty("employeeSkills");
+    expectTypeOf<ListProfileRow["department"]>().toHaveProperty("companyId");
+    expectTypeOf<DetailProfileRow["department"]>().toHaveProperty("company");
+    expectTypeOf<DetailProfileRow["employeeSkills"]>().items.toHaveProperty("skill");
 
     const queryRoot = () => resource.query({ request: baseRequest, load: "root" });
     type RootRow = Awaited<ReturnType<typeof queryRoot>>["rows"][number];
