@@ -301,7 +301,6 @@ describe("facet SQL", () => {
           return { rows: [["Ada", 2, 1]] };
         },
       } as never,
-      schema,
       relations,
     });
     const resource = createQueryEngine({ db: database, schema, relations }).defineResource(

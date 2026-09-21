@@ -1,7 +1,7 @@
 import { randomUUID } from "node:crypto";
-import { defineRelations, sql } from "drizzle-orm";
+import { defineRelations, eq, sql } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/node-postgres";
-import { boolean, integer, pgSchema, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
+import { bigint, boolean, integer, pgSchema, text, unique, uniqueIndex } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
@@ -52,7 +52,10 @@ const lookups = namespace.table("lookups", {
   stable: text().notNull(),
   indexed: text().notNull(),
 });
-const schema = { items, categories, tags, keys, lookups };
+const tokens = namespace.table("tokens", {
+  id: bigint("token_id", { mode: "bigint" }).primaryKey(),
+});
+const schema = { items, categories, tags, keys, lookups, tokens };
 const relations = defineRelations(schema, (r) => ({
   items: {
     category: r.one.categories({ from: r.items.categoryId, to: r.categories.id }),
@@ -106,6 +109,8 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     await db.execute(sql`create table ${tags} (
       id integer primary key, "itemId" integer not null, label text not null
     )`);
+    await db.execute(sql`create table ${tokens} (token_id bigint primary key)`);
+    await db.insert(tokens).values([{ id: 9007199254740993n }, { id: 9007199254740995n }]);
     await db.execute(sql`create table ${keys} (
       id integer primary key, code text not null, region text not null,
       stable text not null unique, indexed text not null, active boolean not null,
@@ -196,7 +201,7 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
       const ids: unknown[] = [];
       let cursor: string | null = null;
       for (let page = 0; page < 5; page += 1) {
-        const result = await resource.queryIds({
+        const result: Awaited<ReturnType<typeof resource.queryIds>> = await resource.queryIds({
           request: {
             ...request,
             sorting: [{ key: "rank", dir }],
@@ -424,6 +429,178 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
       { value: "Alpha", count: 2 },
       { value: "Beta", count: 2 },
     ]);
+  });
+
+  it("scans a scoped ordered selection once with bounded hydration and one exact total", async () => {
+    let scopeCalls = 0;
+    const scanned = engine.defineResource("items", {
+      relations: { category: true },
+      query: {
+        validation: { maxPageSize: 1 },
+        scope: (filters) => {
+          scopeCalls += 1;
+          return filters.is("tenant", "a");
+        },
+      },
+    });
+    const start = statements.length;
+    const ids = await scanned.scan({ request, batchSize: 2, count: "exact" }, async (batches) => {
+      const result: number[] = [];
+      for await (const batch of batches) {
+        expect(batch.rows.length).toBeLessThanOrEqual(2);
+        expect(batch.totalRows).toBe(5);
+        result.push(...batch.rows.map(({ id }) => id));
+      }
+      return result;
+    });
+    expect(ids).toEqual([1, 2, 3, 4, 5]);
+    expect(scopeCalls).toBe(1);
+    const queries = statements.slice(start);
+    expect(queries.filter((query) => query.startsWith("declare "))).toHaveLength(1);
+    expect(queries.filter((query) => query.startsWith("fetch "))).toHaveLength(3);
+    expect(queries.filter((query) => query.includes("count("))).toHaveLength(1);
+    expect(queries.filter((query) => query.startsWith("close "))).toHaveLength(1);
+    await expect(scanned.queryIds({ request })).rejects.toThrow("Page size cannot exceed 1");
+  });
+
+  it("decodes nonstandard ID columns without losing bigint precision", async () => {
+    const tokenResource = engine.defineResource("tokens", {});
+    const ids = await tokenResource.scan({ batchSize: 1 }, async (batches) => {
+      const selected: bigint[] = [];
+      for await (const batch of batches) selected.push(...batch.rows.map(({ id }) => id));
+      return selected;
+    });
+    expect(ids).toEqual([9007199254740993n, 9007199254740995n]);
+  });
+
+  it("probes trigram indexes once and preserves cross-table substring results", async () => {
+    const inputs = ["One", "AlPhA", "Three", "private", "not here", "%", "_", "a"];
+    const expected = [];
+    for (const value of inputs) {
+      expected.push(
+        await resource.queryIds({
+          request: { ...request, search: { value, fields: ["name", "category.name"] } },
+        }),
+      );
+    }
+    await db.execute(sql`create extension if not exists pg_trgm`);
+    await db.execute(sql`create index on ${items} using gin (lower(name) gin_trgm_ops)`);
+    await db.execute(sql`create index on ${categories} using gin (lower(name) gin_trgm_ops)`);
+    const indexedDb = drizzle({
+      client,
+      relations,
+      logger: {
+        logQuery(query) {
+          statements.push(query);
+        },
+      },
+    });
+    const indexed = createQueryEngine({ db: indexedDb, schema, relations }).defineResource(
+      "items",
+      {
+        relations: { category: true, tags: true },
+        query: { scope: (filters) => filters.is("tenant", "a") },
+      },
+    );
+    const start = statements.length;
+    for (const [index, value] of inputs.entries()) {
+      const result = await indexed.queryIds({
+        request: { ...request, search: { value, fields: ["name", "category.name"] } },
+      });
+      expect(result).toEqual(expected[index]);
+    }
+    const queries = statements.slice(start);
+    expect(queries.filter((query) => query.includes("pg_catalog.pg_index"))).toHaveLength(2);
+    expect(queries.some((query) => query.includes('"items"."id" in (select'))).toBe(true);
+    expect(queries.some((query) => query.includes('"categories"."id" in (select'))).toBe(true);
+  });
+
+  it("keeps scan membership and hydrated values consistent during concurrent updates", async () => {
+    try {
+      const names = await resource.scan({ request, batchSize: 2 }, async (batches) => {
+        const result: string[] = [];
+        for await (const batch of batches) {
+          if (!result.length)
+            await db.update(items).set({ name: "Changed", rank: 0 }).where(eq(items.id, 3));
+          result.push(...batch.rows.map(({ name }) => name));
+          expect(batch.totalRows).toBeUndefined();
+        }
+        return result;
+      });
+      expect(names).toEqual(["One", "Two", "Three", "Four", "Five"]);
+    } finally {
+      await db.update(items).set({ name: "Three", rank: 2 }).where(eq(items.id, 3));
+    }
+  });
+
+  it("releases scans on early exit, consumer failure, abort and unused iterators", async () => {
+    for (const mode of ["break", "throw", "abort", "unused"] as const) {
+      const controller = new AbortController();
+      const start = statements.length;
+      const run = resource.scan(
+        { request, batchSize: 1, signal: controller.signal },
+        async (batches) => {
+          if (mode === "unused") return;
+          for await (const batch of batches) {
+            expect(batch.rows).toHaveLength(1);
+            if (mode === "break") break;
+            if (mode === "throw") throw new Error("Writer failed");
+            controller.abort(new Error("Export cancelled"));
+          }
+        },
+      );
+      const outcome = await run.then(
+        () => null,
+        (error: Error) => error.message,
+      );
+      expect(outcome).toBe(
+        { break: null, throw: "Writer failed", abort: "Export cancelled", unused: null }[mode],
+      );
+      expect(statements.slice(start).filter((query) => query.startsWith("close "))).toHaveLength(1);
+      expect(client.waitingCount).toBe(0);
+      expect(client.idleCount).toBe(client.totalCount);
+    }
+  });
+
+  it("accepts an existing snapshot transaction and does not escape its lifetime", async () => {
+    await db.transaction(
+      async (tx) => {
+        const ids = await resource.scan({ request, db: tx, batchSize: 3 }, async (batches) => {
+          const result: number[] = [];
+          for await (const batch of batches) result.push(...batch.rows.map(({ id }) => id));
+          return result;
+        });
+        expect(ids).toEqual([1, 2, 3, 4, 5]);
+        expect(await tx.execute(sql`select 1 as alive`, "objects")).toEqual([{ alive: 1 }]);
+      },
+      { isolationLevel: "repeatable read" },
+    );
+    await db.transaction(async (tx) => {
+      await expect(resource.scan({ db: tx }, async () => undefined)).rejects.toThrow(
+        "repeatable-read",
+      );
+    });
+  });
+
+  it("scans empty selections and deduplicates unproven filter joins", async () => {
+    let calls = 0;
+    await resource.scan(
+      { request: { filters: [{ type: "condition", key: "id", operator: "is", value: -1 }] } },
+      async (batches) => {
+        for await (const batch of batches) calls += batch.rows.length;
+      },
+    );
+    expect(calls).toBe(0);
+    const lookup = engine.defineResource("lookups", { relations: { partial: true } });
+    const ids = await lookup.scan(
+      { request: { search: { value: "same", fields: ["partial.code"] } }, batchSize: 1 },
+      async (batches) => {
+        const result: number[] = [];
+        for await (const batch of batches) result.push(...batch.rows.map(({ id }) => id));
+        return result;
+      },
+    );
+    expect(ids).toEqual([1, 2]);
   });
 
   it("keeps optimized queries inside the per-call transaction", async () => {

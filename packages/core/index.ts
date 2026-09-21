@@ -32,6 +32,8 @@ export type {
   QueryRequest,
   QueryRequestContract,
   QueryRequestInput,
+  QueryScanRequest,
+  QueryScanBatch,
   QueryOffsetPageInfo,
   QueryOffsetPagination,
   QueryPageInfo,

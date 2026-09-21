@@ -13,6 +13,7 @@ import {
   sql,
   isSQLWrapper,
   is,
+  inArray,
 } from "drizzle-orm";
 import { getColumns } from "drizzle-orm";
 import { getTableConfig, IndexedColumn, PgColumn, PgDialect, PgTable } from "drizzle-orm/pg-core";
@@ -41,6 +42,7 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { probePostgresSearch, scanPostgresCursor } from "./postgres.js";
 
 const utilsCache = new WeakMap<object, unknown>();
 const scopeFilterNodes = new WeakSet<QueryFilterNode>();
@@ -444,6 +446,7 @@ export function createQueryResourceUtils<
 
   const rootTable = (config.schema as any)[resource.key];
   const uniqueRootId = columnsAreUnique(rootTable, [rootTable.id]) && rootTable.id.notNull;
+  const indexedSearchColumns = new Set<PgColumn>();
 
   function resolveField(path: string) {
     return resource.fields.get(path);
@@ -550,17 +553,65 @@ export function createQueryResourceUtils<
       : (or(...children) ?? sql`false`);
   }
 
+  async function prepareSearch(search: QueryRequest["search"]) {
+    if (!/[\p{L}\p{N}]{3}/u.test(search.value)) return;
+    const entries = search.fields.flatMap((field) => {
+      const entry = resolveField(field);
+      return entry && !entry.isManyPath && is(entry.column, PgColumn) && isTextColumn(entry.column)
+        ? [entry]
+        : [];
+    });
+    if (new Set(search.fields.map((field) => resolveField(field)?.tableName)).size < 2) return;
+    const tables = new Set(
+      entries.map((entry) => config.schema[entry.tableName]).filter((table) => is(table, PgTable)),
+    );
+    await Promise.all(
+      [...tables].map(async (table) => {
+        const indexed = await probePostgresSearch(database, table);
+        for (const entry of entries) {
+          const column = entry.column as PgColumn;
+          if (config.schema[entry.tableName] === table && indexed.has(column.name))
+            indexedSearchColumns.add(column);
+        }
+      }),
+    );
+  }
+
   function compileSearch(search: QueryRequest["search"]) {
     if (search.value.length === 0) return undefined;
-
-    const predicates = search.fields.map((field) =>
-      compileCondition({
+    const acrossTables =
+      new Set(search.fields.map((field) => resolveField(field)?.tableName)).size > 1;
+    const predicates = search.fields.map((field) => {
+      const condition: QueryFilterCondition = {
         type: "condition",
         key: field,
         operator: "contains",
         value: search.value,
-      }),
-    );
+      };
+      const entry = resolveField(field);
+      if (
+        acrossTables &&
+        /[\p{L}\p{N}]{3}/u.test(search.value) &&
+        entry &&
+        !entry.isManyPath &&
+        is(entry.column, PgColumn) &&
+        indexedSearchColumns.has(entry.column)
+      ) {
+        const table = config.schema[entry.tableName];
+        if (!is(table, PgTable)) return compileCondition(condition);
+        const id = getColumns(table).id;
+        if (id?.notNull && columnsAreUnique(table, [id])) {
+          return inArray(
+            id,
+            (database as any)
+              .select({ id })
+              .from(table)
+              .where(buildScalarCondition(entry.column, condition)),
+          );
+        }
+      }
+      return compileCondition(condition);
+    });
 
     return predicates.length > 0 ? (or(...predicates) ?? undefined) : undefined;
   }
@@ -645,6 +696,7 @@ export function createQueryResourceUtils<
     request: QueryRequest;
     rowCount?: number;
   }) {
+    await prepareSearch(request.search);
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const orderBy = compileOrderBy(request.sorting);
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
@@ -652,27 +704,27 @@ export function createQueryResourceUtils<
 
     let rowCount: number | null = null;
     if (request.pagination.count === "exact") {
-      const countPlan = buildAggregatePlan(request);
-      const countQuery = preservesRootCardinality(countPlan.joins)
-        ? joinRelationSteps(
-            (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
-            config.schema,
-            countPlan.joins,
-          ).where(countPlan.where)
-        : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
-            joinRelationSteps(
-              (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+      if (knownRowCount !== undefined) {
+        rowCount = knownRowCount;
+      } else {
+        const countPlan = buildAggregatePlan(request);
+        const countQuery = preservesRootCardinality(countPlan.joins)
+          ? joinRelationSteps(
+              (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
               config.schema,
               countPlan.joins,
-            )
-              .where(countPlan.where)
-              .as("count_matching_ids"),
-          );
-      if (knownRowCount === undefined) {
+            ).where(countPlan.where)
+          : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
+              joinRelationSteps(
+                (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+                config.schema,
+                countPlan.joins,
+              )
+                .where(countPlan.where)
+                .as("count_matching_ids"),
+            );
         const [countResult] = await countQuery;
         rowCount = Number(countResult?.rowCount ?? 0);
-      } else {
-        rowCount = knownRowCount;
       }
 
       if (rowCount === 0) {
@@ -833,6 +885,79 @@ export function createQueryResourceUtils<
     return rows;
   }
 
+  async function scanIds<TResult>(
+    options: {
+      request: QueryRequest;
+      batchSize: number;
+      count: "exact" | "none";
+      signal?: AbortSignal;
+    },
+    consume: (batches: AsyncIterable<{ ids: unknown[]; totalRows?: number }>) => Promise<TResult>,
+  ) {
+    const { request } = options;
+    await prepareSearch(request.search);
+    if (!Number.isSafeInteger(options.batchSize) || options.batchSize < 1) {
+      throw new Error("Scan batch size must be a positive safe integer");
+    }
+    const sortJoins = buildOuterJoins(resource, {
+      ...request,
+      filters: [],
+      search: { value: "", fields: [] },
+    });
+    if (!preservesRootCardinality(sortJoins)) {
+      throw new Error(
+        "A PostgreSQL scan requires a unique root ID and unique sorting relation keys",
+      );
+    }
+    const selection = {
+      id: sql`${rootTable.id}`.as("resourceId"),
+      ...(options.count === "exact" ? { totalRows: sql`count(*) over ()`.as("totalRows") } : {}),
+    };
+    const direct = preservesRootCardinality(buildOuterJoins(resource, request));
+    const matching = (database as any)
+      .$with("scan_matching_ids")
+      .as(buildMatchingIdsSelect(request));
+    const query = (
+      direct
+        ? applyOuterJoins((database as any).select(selection).from(rootTable), request).where(
+            buildWhereClause(request),
+          )
+        : joinRelationSteps(
+            (database as any)
+              .with(matching)
+              .select(selection)
+              .from(matching)
+              .innerJoin(rootTable, eq(rootTable.id, matching.id)),
+            config.schema,
+            sortJoins,
+          )
+    ).orderBy(...compileOrderBy(request.sorting));
+    return scanPostgresCursor(
+      {
+        db: database,
+        query: query.getSQL(),
+        batchSize: options.batchSize,
+        signal: options.signal,
+      },
+      async (batches) => {
+        async function* decode() {
+          for await (const rows of batches) {
+            yield {
+              ids: rows.map((row) => rootTable.id.mapFromDriverValue(row.resourceId)),
+              ...(options.count === "exact" ? { totalRows: Number(rows[0]?.totalRows ?? 0) } : {}),
+            };
+          }
+        }
+        const decoded = decode();
+        try {
+          return await consume(decoded);
+        } finally {
+          await decoded.return();
+        }
+      },
+    );
+  }
+
   async function executeHydratedPage({
     request,
     relations,
@@ -861,6 +986,7 @@ export function createQueryResourceUtils<
     facets: QueryFacetRequest[];
     includeCount?: boolean;
   }): Promise<QueryFacetsResponse & { rowCount?: number }> {
+    await prepareSearch(request.search);
     let rowCount: number | undefined;
     const results: QueryFacetsResponse["facets"] = [];
     const plans = facets.flatMap((facet, index) => {
@@ -1122,6 +1248,7 @@ export function createQueryResourceUtils<
     compileOrderBy,
     buildWhereClause,
     executeIdsQuery,
+    scanIds,
     executeRowsQuery,
     executeHydratedPage,
     resolveFacets,
