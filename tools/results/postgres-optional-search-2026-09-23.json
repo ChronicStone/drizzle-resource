@@ -1,0 +1,253 @@
+{
+  "timestamp": "2026-09-23T18:36:52.485Z",
+  "baseline": "published-2.5.0",
+  "rows": 200000,
+  "iterations": 5,
+  "environment": {
+    "version": "PostgreSQL 18.4 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "work_mem": "4MB"
+  },
+  "measurements": [
+    {
+      "scenario": "cross-table-search-Ref-199999",
+      "variants": {
+        "baseline": {
+          "medianMs": 10.942166999999927,
+          "maxMs": 11.951334000000088,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 11.009625000000142,
+          "maxMs": 12.10695899999996,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 6.251915999999937,
+          "maxMs": 6.386625000000095,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 6.751582999999982,
+          "maxMs": 7.789332999999942,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account",
+      "variants": {
+        "baseline": {
+          "medianMs": 293.0981249999995,
+          "maxMs": 409.8073339999996,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 276.9157089999999,
+          "maxMs": 328.46508300000005,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 238.87362500000017,
+          "maxMs": 252.36220799999955,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 239.74695900000006,
+          "maxMs": 261.0236249999998,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 3.2260839999999007,
+          "maxMs": 4.942541999999776,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 2.8950839999997697,
+          "maxMs": 3.016082999999526,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 2.0174159999996846,
+          "maxMs": 2.845291999999972,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 1.6815420000002632,
+          "maxMs": 1.8688750000001164,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 272.1834170000002,
+          "maxMs": 279.80312500000036,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 275.00966700000026,
+          "maxMs": 283.0746249999993,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 687.1452499999978,
+          "maxMs": 691.1180839999979,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 679.0232080000023,
+          "maxMs": 709.1856249999983,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 780.0499999999993,
+          "maxMs": 800.5480829999979,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 779.9328750000022,
+          "maxMs": 802.5388330000023,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 12.848290999998426,
+          "maxMs": 14.528249999999389,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 12.32170799999949,
+          "maxMs": 13.86304200000086,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 396.46224999999686,
+          "maxMs": 402.3869169999998,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 395.5400419999969,
+          "maxMs": 399.18404100000043,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 620.1587919999947,
+          "maxMs": 627.4078749999971,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 626.0421249999999,
+          "maxMs": 630.396041,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 247.75291600000492,
+          "maxMs": 255.93804100000125,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 248.2146670000002,
+          "maxMs": 256.43341599999985,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 371.77029200000106,
+          "maxMs": 425.1917919999978,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 367.49775000000227,
+          "maxMs": 382.3344580000048,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 477.1754590000055,
+          "maxMs": 479.5204169999997,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 477.98029099999985,
+          "maxMs": 486.74204199999804,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "relation-search-page",
+      "variants": {
+        "baseline": {
+          "medianMs": 25.08400000000256,
+          "maxMs": 26.266624999996566,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 25.390291999996407,
+          "maxMs": 27.230250000000524,
+          "statementsPerRequest": 2
+        }
+      }
+    }
+  ],
+  "scans": []
+}

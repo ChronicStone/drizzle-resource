@@ -181,7 +181,7 @@ describe("built-in cursor pagination", () => {
     expect(trace.relationJoins).toBe(0);
   });
 
-  it("joins optional search relations when the search value uses them", async () => {
+  it("searches optional relations without joining them into the root page", async () => {
     const { db, trace } = createDatabase([
       [{ id: "emp_1", __cursor_0: "Ada", __cursor_1: "emp_1" }],
     ]);
@@ -201,7 +201,7 @@ describe("built-in cursor pagination", () => {
       },
     });
 
-    expect(trace.relationJoins).toBe(1);
+    expect(trace.relationJoins).toBe(0);
   });
 
   it("adds the root ID as a cursor tie-breaker for duplicate sort values", async () => {
