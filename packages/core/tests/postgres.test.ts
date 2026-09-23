@@ -319,6 +319,18 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     expect(statements.slice(start).join("\n")).not.toContain("distinct");
   });
 
+  it("keeps root matches when a searched optional relation is absent", async () => {
+    const result = await resource.query({
+      request: {
+        ...request,
+        search: { value: "Four", fields: ["name", "category.name"] },
+      },
+    });
+
+    expect(result.rows.map(({ id }) => id)).toEqual([4]);
+    expect(result.pageInfo).toMatchObject({ rowCount: 1 });
+  });
+
   it.each(["composite", "byStable", "byIndex"] as const)(
     "derives safe cardinality from the %s key",
     async (relation) => {
@@ -339,7 +351,7 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     },
   );
 
-  it("does not treat a partial unique index or a declared one relation as a uniqueness proof", async () => {
+  it("searches a non-unique one relation without multiplying root rows", async () => {
     const lookup = engine.defineResource("lookups", { relations: { partial: true } });
     const start = statements.length;
     const result = await lookup.queryIds({
@@ -349,8 +361,9 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
         search: { value: "same", fields: ["partial.code"] },
       },
     });
+    expect(result.ids).toEqual([1, 2]);
     expect(result.pageInfo).toMatchObject({ rowCount: 2 });
-    expect(statements.slice(start).join("\n")).toContain("matching_ids");
+    expect(statements.slice(start).join("\n")).not.toContain("matching_ids");
   });
 
   it("hydrates only the selected roots in their stable page order", async () => {

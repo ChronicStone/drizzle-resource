@@ -186,7 +186,6 @@ function buildOuterJoins(
 ) {
   const requestedFields: string[] = [];
   collectConditionFieldsFromFilters(request.filters, requestedFields);
-  if (request.search.value.length > 0) requestedFields.push(...request.search.fields);
   requestedFields.push(...request.sorting.map((rule) => rule.key));
 
   const relationSteps = new Map<string, FieldRegistryRelationStep>();
@@ -279,21 +278,22 @@ function buildExistsCondition(
   entry: FieldRegistryEntry,
   condition: QueryFilterCondition,
   scalarBuilder: (column: any, condition: QueryFilterCondition) => SQL,
+  firstRelationIndex = entry.firstManyIndex,
 ) {
-  if (!entry.isManyPath) return scalarBuilder(entry.column, condition);
+  if (firstRelationIndex < 0) return scalarBuilder(entry.column, condition);
 
-  const manyStep = entry.relationPath[entry.firstManyIndex];
-  if (!manyStep) {
-    throw new Error(`Invalid many relation path for field "${condition.key}"`);
+  const firstStep = entry.relationPath[firstRelationIndex];
+  if (!firstStep) {
+    throw new Error(`Invalid relation path for field "${condition.key}"`);
   }
 
   let query: any = (db as any)
     .select({ one: sql<number>`1` })
-    .from((schema as any)[manyStep.targetTableName]);
+    .from((schema as any)[firstStep.targetTableName]);
 
-  const correlationCondition = eqColumns(manyStep.sourceColumns, manyStep.targetColumns);
+  const correlationCondition = eqColumns(firstStep.sourceColumns, firstStep.targetColumns);
 
-  for (let index = entry.firstManyIndex + 1; index < entry.relationPath.length; index++) {
+  for (let index = firstRelationIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
     if (!step) {
       throw new Error(`Invalid relation step while resolving field "${condition.key}"`);
@@ -621,15 +621,21 @@ export function createQueryResourceUtils<
   function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
     if (search.value.length === 0) return undefined;
     if (request && indexedSearchRequests.has(request)) return compileIndexedSearch(request);
-    const predicates = search.fields.map((field) =>
-      compileCondition({
-        type: "condition",
-        key: field,
-        operator: "contains",
-        value: search.value,
-      }),
-    );
+    const predicates = search.fields.map((field) => compileSearchField(field, search.value));
     return predicates.length > 0 ? (or(...predicates) ?? undefined) : undefined;
+  }
+
+  function compileSearchField(field: string, value: string) {
+    const entry = resolveField(field);
+    if (!entry) return sql`true`;
+    return buildExistsCondition(
+      database,
+      config.schema,
+      entry,
+      { type: "condition", key: field, operator: "contains", value },
+      buildScalarCondition,
+      entry.relationPath.length > 0 ? 0 : -1,
+    );
   }
 
   function compileIndexedSearch(request: QueryRequest) {
@@ -660,17 +666,7 @@ export function createQueryResourceUtils<
         (database as any).select({ id: rootTable.id }).from(rootTable),
         config.schema,
         joins,
-      ).where(
-        and(
-          filter,
-          compileCondition({
-            type: "condition",
-            key: entry!.path,
-            operator: "contains",
-            value: search.value,
-          }),
-        ),
-      );
+      ).where(and(filter, compileSearchField(entry!.path, search.value)));
       return sql`(${query})`;
     });
     return inArray(rootTable.id, sql`(${sql.join(branches, sql` union `)})`);
