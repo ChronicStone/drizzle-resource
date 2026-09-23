@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.5.1
+
+### Patch Changes
+
+- [#31](https://github.com/ChronicStone/drizzle-resource/pull/31) [`930c369`](https://github.com/ChronicStone/drizzle-resource/commit/930c369b977a633779ec5214413f96d7600ef96c) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Preserve root matches when free-text search includes optional relation fields. Relation search predicates now use correlated existence checks, so missing relations cannot remove matches from other fields.
+
 ## 2.5.0
 
 ### Minor Changes
