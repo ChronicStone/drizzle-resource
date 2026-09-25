@@ -81,15 +81,17 @@ type RelationRow<TValue> =
 
 type OverrideOutput<TSchema> = TSchema extends z.ZodType<infer TOutput> ? TOutput : never;
 
-type OverrideColumns<TRow extends Record<string, unknown>, TColumns> = TColumns extends object
-  ? Omit<TRow, keyof TColumns> & {
-      [TKey in keyof TColumns & keyof TRow]: TColumns[TKey] extends (
-        schema: z.ZodType<TRow[TKey]>,
-      ) => infer TSchema
-        ? OverrideOutput<TSchema>
-        : TRow[TKey];
-    }
-  : TRow;
+type OverrideColumns<TRow extends Record<string, unknown>, TColumns> = [TColumns] extends [never]
+  ? TRow
+  : TColumns extends object
+    ? Omit<TRow, keyof TColumns> & {
+        [TKey in keyof TColumns & keyof TRow]: TColumns[TKey] extends (
+          schema: z.ZodType<TRow[TKey]>,
+        ) => infer TSchema
+          ? OverrideOutput<TSchema>
+          : TRow[TKey];
+      }
+    : TRow;
 
 type OverrideRelation<TValue, TOverride> =
   NonNullable<TValue> extends readonly unknown[]
@@ -109,10 +111,11 @@ type OverrideRelations<TRow extends Record<string, unknown>, TRowOverride> = TRo
     : OverrideColumns<TRow, TRowOverride extends { columns?: infer TColumns } ? TColumns : never>
   : OverrideColumns<TRow, TRowOverride extends { columns?: infer TColumns } ? TColumns : never>;
 
-type OverrideRow<TRow extends Record<string, unknown>, TRowOverride> = OverrideRelations<
-  TRow,
-  TRowOverride
->;
+type OverrideRow<TRow extends Record<string, unknown>, TRowOverride> = [TRowOverride] extends [
+  undefined,
+]
+  ? TRow
+  : OverrideRelations<TRow, TRowOverride>;
 
 export interface QueryResponseSchemaOverride<
   TRow extends Record<string, unknown> = Record<string, unknown>,
@@ -228,30 +231,75 @@ function responseRowSchema(
   tableName: string,
   withClause: Record<string, unknown> | undefined,
   override?: QueryResponseSchemaOverride,
+  view?: { select: Record<string, any> },
 ): any {
   const table = resource.schema[tableName];
   if (!table) throw new Error(`Unknown table "${tableName}" in resource response schema`);
-
   const base = createSelectSchema(table, override?.columns) as any;
   const shape = { ...base.shape } as Record<string, any>;
+  const model = resource.models?.[tableName];
   const relations = resource.relationGraph[tableName]?.relations ?? {};
-
-  for (const [relationName, relationConfig] of Object.entries(withClause ?? {})) {
+  for (const key of Object.keys(shape)) {
+    if (
+      model?.private?.includes(key) ||
+      (view ? view.select[key] !== true : model?.hidden?.includes(key))
+    )
+      delete shape[key];
+  }
+  for (const [key, selection] of Object.entries(view?.select ?? {})) {
+    if (model?.private?.includes(key))
+      throw new Error(`Cannot select private field "${tableName}.${key}"`);
+    if (selection !== true || !model?.virtual?.[key]) continue;
+    const field = model.virtual[key];
+    const overridden = (override?.columns as any)?.[key];
+    let validator;
+    switch (field.kind) {
+      case "text":
+        validator = z.string();
+        break;
+      case "number":
+        validator = z.number();
+        break;
+      case "boolean":
+        validator = z.boolean();
+        break;
+      case "timestamp":
+        validator = z.date();
+        break;
+      default:
+        if (!overridden)
+          throw new Error(
+            `Provide a response schema override for scalar virtual "${tableName}.${key}"`,
+          );
+        validator = z.unknown();
+    }
+    if (field.nullable) validator = validator.nullable();
+    if (typeof overridden === "function") validator = overridden(validator);
+    shape[key] = validator;
+  }
+  const selectedRelations = view
+    ? Object.fromEntries(Object.entries(view.select).filter(([key]) => key in relations))
+    : (withClause ?? {});
+  for (const [relationName, selection] of Object.entries(selectedRelations)) {
     const relation = relations[relationName];
     if (!relation) throw new Error(`Unknown relation "${relationName}" on table "${tableName}"`);
-    const nestedWith =
-      relationConfig && typeof relationConfig === "object" && "with" in relationConfig
-        ? ((relationConfig as { with?: Record<string, unknown> }).with ?? undefined)
-        : undefined;
+    const nestedWith = view ? undefined : (selection as any)?.with;
+    const nestedView =
+      view && selection !== true ? (selection as { select: Record<string, any> }) : undefined;
     const nested = responseRowSchema(
       resource,
       relation.targetTableName,
       nestedWith,
       override?.relations?.[relationName],
+      nestedView,
     );
-    shape[relationName] = relation.relationType === "many" ? z.array(nested) : nested.nullable();
+    shape[relationName] =
+      relation.relationType === "many"
+        ? z.array(nested)
+        : relation.optional === false
+          ? nested
+          : nested.nullable();
   }
-
   return z.object(shape);
 }
 
@@ -380,7 +428,51 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
   });
 }
 
+interface ResourceWithViews {
+  $infer: {
+    query: Record<string, unknown>;
+    views: Record<string, Record<string, unknown>>;
+    summary: Record<string, unknown>;
+  };
+}
+
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
+export function responseSchema<
+  R extends ResourceWithViews,
+  const N extends Extract<keyof R["$infer"]["views"], string>,
+  const O extends QueryResponseSchemaOverride<R["$infer"]["views"][N]>,
+  const S extends z.ZodType<R["$infer"]["summary"]> | undefined = undefined,
+>(
+  resource: R,
+  options: { view: N; summary?: S; override: O },
+): z.ZodType<
+  QuerySchemaResponse<OverrideRow<R["$infer"]["views"][N], O>> &
+    (S extends undefined ? {} : { summary: R["$infer"]["summary"] })
+>;
+export function responseSchema<
+  R extends ResourceWithViews,
+  const N extends Extract<keyof R["$infer"]["views"], string>,
+  const S extends z.ZodType<R["$infer"]["summary"]> | undefined = undefined,
+>(
+  resource: R,
+  options: { view: N; summary?: S },
+): z.ZodType<
+  QuerySchemaResponse<R["$infer"]["views"][N]> &
+    (S extends undefined ? {} : { summary: R["$infer"]["summary"] })
+>;
+export function responseSchema<
+  R extends ResourceWithViews,
+  const O extends QueryResponseSchemaOverride<R["$infer"]["query"]>,
+>(
+  resource: R,
+  options: { summary: z.ZodType<R["$infer"]["summary"]>; override: O },
+): z.ZodType<
+  QuerySchemaResponse<OverrideRow<R["$infer"]["query"], O>> & { summary: R["$infer"]["summary"] }
+>;
+export function responseSchema<R extends ResourceWithViews>(
+  resource: R,
+  options: { summary: z.ZodType<R["$infer"]["summary"]> },
+): z.ZodType<QuerySchemaResponse<R["$infer"]["query"]> & { summary: R["$infer"]["summary"] }>;
 export function responseSchema<
   TResource extends {
     key: string;
@@ -427,19 +519,31 @@ export function responseSchema<
 >(resource: TResource): z.ZodType<QuerySchemaResponse<ResourceRow<TResource>>>;
 export function responseSchema(
   resource: any,
-  options?: QueryResponseSchemaOverride | { load: string; override?: QueryResponseSchemaOverride },
+  options?:
+    | QueryResponseSchemaOverride
+    | { load?: string; view?: string; summary?: z.ZodType; override?: QueryResponseSchemaOverride },
 ): any {
-  const hydrationOptions = options && "load" in options ? options : undefined;
+  const hydrationOptions =
+    options &&
+    ("load" in options || "view" in options || "summary" in options || "override" in options)
+      ? options
+      : undefined;
   const override = hydrationOptions
     ? hydrationOptions.override
     : (options as QueryResponseSchemaOverride | undefined);
+  const view =
+    hydrationOptions?.view === undefined ? undefined : resource.views?.[hydrationOptions.view];
+  if (hydrationOptions?.view !== undefined && !view)
+    throw new Error(`Unknown view "${hydrationOptions.view}"`);
   const row = responseRowSchema(
     resource,
     String(resource.key),
     responseRelations(resource, hydrationOptions?.load),
     override,
+    view,
   );
   return z.strictObject({
+    ...(hydrationOptions?.summary ? { summary: hydrationOptions.summary } : {}),
     rows: z.array(row),
     pageInfo: z.union([
       z.strictObject({
