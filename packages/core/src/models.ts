@@ -23,17 +23,23 @@ type SingleScalar<Q extends TypedQueryBuilder<any, any>> =
 
 function expression<T>(kind: VirtualField["kind"], decode: (value: any) => T) {
   return <TTable, TDb = QueryEngineDb>(
-    factory: (table: TTable, context: { db: TDb }) => SQL,
+    factory: SQL | ((table: TTable, context: { db: TDb }) => SQL),
   ): VirtualField<T, TTable, TDb> => ({
     kind,
-    resolve: (table, context) => factory(table, context).mapWith(decode),
+    resolve: (table, context) => {
+      const value = typeof factory === "function" ? factory(table, context) : factory;
+      return sql`${value}`.mapWith(decode);
+    },
   });
 }
 
 /** SQL expressions are built lazily, using the owning table alias and current transaction. */
-type ExpressionFactory<T> = <TTable, TDb = QueryEngineDb>(
-  factory: (table: TTable, context: { db: TDb }) => SQL,
-) => VirtualField<T, TTable, TDb>;
+interface ExpressionFactory<T> {
+  (value: SQL): VirtualField<T>;
+  <TTable, TDb = QueryEngineDb>(
+    factory: (table: TTable, context: { db: TDb }) => SQL,
+  ): VirtualField<T, TTable, TDb>;
+}
 
 export interface VirtualHelpers {
   text: ExpressionFactory<string>;
@@ -49,6 +55,9 @@ export interface VirtualHelpers {
       context: { db: TDb },
     ) => Q & (SingleScalar<NoInfer<Q>> extends false ? never : unknown),
   ): VirtualField<ScalarResult<Q>, TTable, TDb>;
+  scalar<Q extends TypedQueryBuilder<any, any>>(
+    query: Q & (SingleScalar<NoInfer<Q>> extends false ? never : unknown),
+  ): VirtualField<ScalarResult<Q>>;
 }
 
 export const virtual: VirtualHelpers = {
@@ -62,16 +71,18 @@ export const virtual: VirtualHelpers = {
     return { ...field, nullable: true };
   },
   scalar<TTable, TDb, Q extends TypedQueryBuilder<any, any>>(
-    factory: (
-      table: TTable,
-      context: { db: TDb },
-    ) => Q & (SingleScalar<NoInfer<Q>> extends false ? never : unknown),
+    factory:
+      | Q
+      | ((
+          table: TTable,
+          context: { db: TDb },
+        ) => Q & (SingleScalar<NoInfer<Q>> extends false ? never : unknown)),
   ): VirtualField<ScalarResult<Q>, TTable, TDb> {
     return {
       kind: "scalar",
       nullable: true,
       resolve(table, context) {
-        const query = factory(table, context);
+        const query = typeof factory === "function" ? factory(table, context) : factory;
         const fields = Object.values((query as any).getSelectedFields());
         if (fields.length !== 1) throw new Error("A scalar virtual must select exactly one column");
         const field: any = fields[0];
@@ -94,6 +105,71 @@ export interface RuntimeModel {
   private?: readonly string[];
   hidden?: readonly string[];
   virtual?: Record<string, VirtualField>;
+}
+
+/** Resolve model factories with contextual table/database types and retain alias-aware execution. */
+export function resolveModels(
+  schema: Record<string, any>,
+  db: QueryEngineDb,
+  definitions: Record<string, any>,
+): Record<string, RuntimeModel> {
+  const models: Record<string, RuntimeModel> = {};
+  for (const [name, model] of Object.entries(definitions)) {
+    if (typeof model.virtual !== "function") {
+      models[name] = model;
+      continue;
+    }
+    if (!schema[name]) throw new Error(`Unknown model "${name}"`);
+    const factory = model.virtual;
+    const cache = new WeakMap<object, WeakMap<object, Record<string, VirtualField>>>();
+    function fields(table: object, database: QueryEngineDb): Record<string, VirtualField> {
+      let databases = cache.get(table);
+      if (!databases) {
+        databases = new WeakMap();
+        cache.set(table, databases);
+      }
+      let resolved = databases.get(database);
+      if (!resolved) {
+        resolved = factory(table, { db: database });
+        if (!resolved || typeof resolved !== "object" || Array.isArray(resolved))
+          throw new Error(`Invalid virtual fields for "${name}"`);
+        for (const [key, field] of Object.entries(resolved)) {
+          if (!field || typeof field.resolve !== "function")
+            throw new Error(`Invalid virtual "${name}.${key}"`);
+        }
+        databases.set(database, resolved);
+      }
+      return resolved;
+    }
+    const virtuals: Record<string, VirtualField> = {};
+    for (const [key, field] of Object.entries(fields(schema[name], db))) {
+      virtuals[key] = {
+        ...field,
+        resolve(table, context) {
+          const selected = fields(table, context.db)[key];
+          if (!selected) throw new Error(`Missing virtual "${name}.${key}" in factory result`);
+          return selected.resolve(table, context);
+        },
+      };
+    }
+    models[name] = { ...model, virtual: virtuals };
+  }
+  return models;
+}
+
+export function hasModelPolicies(
+  config: { models?: Record<string, RuntimeModel>; relations: Record<string, any> },
+  root: string,
+  relations: Record<string, any> | undefined,
+): boolean {
+  const model = config.models?.[root];
+  if (model?.private?.length || model?.hidden?.length) return true;
+  return Object.entries(relations ?? {}).some(([name, selection]) => {
+    const target = config.relations[root]?.relations?.[name]?.targetTableName;
+    return (
+      target && hasModelPolicies(config, target, selection === true ? undefined : selection.with)
+    );
+  });
 }
 
 export interface RuntimeView {

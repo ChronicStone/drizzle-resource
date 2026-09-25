@@ -1,6 +1,7 @@
 import type { ConfiguredEngine, ModelDefinitions } from "./model-types.js";
-import { compileProjection, validateModels } from "./models.js";
+import { compileProjection, hasModelPolicies, resolveModels, validateModels } from "./models.js";
 import type { Projection } from "./models.js";
+import { resolveSummarySelection, resolveSummaryShape } from "./summary.js";
 import type {
   DefineResourceOptions,
   GenericObject,
@@ -306,7 +307,12 @@ export function createQueryEngine<
     TModels &
     Record<Exclude<keyof TModels, keyof TSchema>, never>;
 }): ConfiguredEngine<TDb, TSchema, TRelations, TModels> {
-  const config = inputConfig as QueryEngineConfig<TDb, TSchema, TRelations>;
+  const config = {
+    ...inputConfig,
+    models: inputConfig.models
+      ? resolveModels(inputConfig.schema, inputConfig.db, inputConfig.models)
+      : undefined,
+  } as QueryEngineConfig<TDb, TSchema, TRelations>;
   validateModels(config.schema, config.models ?? {}, config.relations);
   function buildEngine<TEngineContext extends GenericObject>(): QueryEngine<
     TDb,
@@ -414,7 +420,7 @@ export function createQueryEngine<
       for (const [name, view] of Object.entries(options.views ?? {})) {
         viewProjections.set(name, compileProjection(config, root, relationsClause, view as any));
       }
-      const defaultProjections = new WeakMap<object, Projection>();
+      const defaultProjections = new WeakMap<object, Projection | undefined>();
       const emptyRelations = {};
       function resolveProjection(relations: any, view?: string) {
         if (view !== undefined) {
@@ -424,11 +430,11 @@ export function createQueryEngine<
         }
         if (!config.models || !Object.keys(config.models).length) return undefined;
         const key = relations ?? emptyRelations;
-        let projection = defaultProjections.get(key);
-        if (!projection) {
-          projection = compileProjection(config, root, relations);
-          defaultProjections.set(key, projection);
-        }
+        if (defaultProjections.has(key)) return defaultProjections.get(key);
+        const projection = hasModelPolicies(config, root, relations)
+          ? compileProjection(config, root, relations)
+          : undefined;
+        defaultProjections.set(key, projection);
         return projection;
       }
       if (options.summary && (options.strategy?.query || options.strategy?.ids)) {
@@ -497,6 +503,7 @@ export function createQueryEngine<
       const filterBuilder = createQueryFilterBuilder<any>();
 
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
+      let summaryShape: ReturnType<typeof resolveSummaryShape> | undefined;
       const resource = {
         $infer: undefined as never,
         key: root,
@@ -506,6 +513,17 @@ export function createQueryEngine<
         hydration: hydrationClause,
         views: options.views,
         models: config.models,
+        getSummaryShape() {
+          if (!options.summary) return undefined;
+          return (summaryShape ??= resolveSummaryShape(
+            resolveSummarySelection(
+              config.schema[root],
+              config.models?.[root],
+              options.summary,
+              config.db,
+            ),
+          ));
+        },
         fields: fieldRegistry,
         queryConfig: {
           search: {
@@ -989,7 +1007,19 @@ export function createQueryEngine<
 
         const inputResource = executionOptions.trustedInput ? trustedResource : resource;
 
-        assertKnownFields(inputResource, normalizedRequest);
+        const suppliedSorting = request.sorting.length
+          ? request.sorting
+          : (options.query?.sort?.defaults ?? []);
+        // The normalizer's ID tie-breaker is internal; explicit client ID sorts remain public input.
+        const validationRequest =
+          !inputResource.fields.has("id") &&
+          !suppliedSorting.some(({ key }: { key: string }) => key === "id")
+            ? {
+                ...normalizedRequest,
+                sorting: normalizedRequest.sorting.filter(({ key }) => key !== "id"),
+              }
+            : normalizedRequest;
+        assertKnownFields(inputResource, validationRequest);
         assertKnownFacetFields(inputResource, normalizedRequest.facets ?? []);
 
         const scopedRequest = {

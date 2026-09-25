@@ -1,4 +1,5 @@
 import type { Projection } from "./models.js";
+import { resolveSummarySelection } from "./summary.js";
 import {
   and,
   asc,
@@ -1059,24 +1060,12 @@ export function createQueryResourceUtils<
   }) {
     const aggregateRequest = { ...request, sorting: [] };
     await prepareSearch(aggregateRequest);
-    const model = config.models?.[resource.key];
-    const fields: Record<string, any> = { ...getColumns(rootTable) };
-    for (const [key, field] of Object.entries(model?.virtual ?? {})) {
-      Object.defineProperty(fields, key, {
-        enumerable: true,
-        configurable: true,
-        get: () => field.resolve(rootTable, { db: database }),
-      });
-    }
-    for (const key of model?.private ?? []) delete fields[key];
-    const selection = summary(fields);
-    if (
-      !selection ||
-      !Object.keys(selection).length ||
-      Object.values(selection).some((field) => !is(field, SQL) && !is(field, SQL.Aliased))
-    ) {
-      throw new Error("Summary must return a non-empty object of SQL aggregate expressions");
-    }
+    const selection = resolveSummarySelection(
+      rootTable,
+      config.models?.[resource.key],
+      summary,
+      database,
+    );
     let countKey = "__resource_count";
     while (countKey in selection) countKey += "_";
     const selected = includeCount

@@ -33,7 +33,12 @@ type Columns<S, K extends keyof S> = S[K] extends QueryEngineTable ? S[K]["_"]["
 type Model<M, K> = K extends keyof M ? M[K] : {};
 type Keys<M, K, P extends "private" | "hidden"> =
   Model<M, K> extends { [F in P]: readonly (infer V)[] } ? Extract<V, string> : never;
-type Virtuals<M, K> = Model<M, K> extends { virtual: infer V } ? V : {};
+type Virtuals<M, K> =
+  Model<M, K> extends { virtual: infer V }
+    ? V extends (...args: any[]) => infer Fields
+      ? Fields
+      : V
+    : {};
 type Value<T> = T extends VirtualField<infer V, any, any> ? V : never;
 type Relations<R, K> = K extends keyof R ? (R[K] extends { relations: infer V } ? V : {}) : {};
 type Target<R> = R extends { targetTableName: infer K } ? K : never;
@@ -44,7 +49,9 @@ export type ModelDefinitions<S extends QueryEngineSchema, D extends QueryEngineD
   [K in keyof S]?: {
     private?: readonly Extract<keyof Columns<S, K>, string>[];
     hidden?: readonly Extract<keyof Columns<S, K>, string>[];
-    virtual?: Record<string, VirtualField<any, S[K], D>>;
+    virtual?:
+      | Record<string, VirtualField<any, S[K], D>>
+      | ((table: S[K], context: { db: D }) => Record<string, VirtualField>);
   };
 };
 
@@ -157,6 +164,21 @@ type SummaryFields<S, M, K extends keyof S> = Omit<Columns<S, K>, Keys<M, K, "pr
 };
 type WithSummary<R, S, B> = B extends true ? R & { summary: SummaryResult<S> } : R;
 type SelectionArgs<N, L> = { view?: N; load?: never } | { view?: never; load?: L };
+type HasModelPolicies<R, M, K, W, Depth extends unknown[] = []> = Depth["length"] extends 8
+  ? true
+  : [Keys<M, K, "private"> | Keys<M, K, "hidden">] extends [never]
+    ? true extends {
+        [F in keyof W & keyof Relations<R, K>]: HasModelPolicies<
+          R,
+          M,
+          Target<Relations<R, K>[F]>,
+          Nested<W[F]>,
+          [...Depth, unknown]
+        >;
+      }[keyof W & keyof Relations<R, K>]
+      ? true
+      : false
+    : true;
 
 type ResultRow<
   D extends QueryEngineDb,
@@ -173,9 +195,9 @@ type ResultRow<
   Op extends "query" | "findById",
 > = Name extends keyof V
   ? SelectedRow<D, S, R, M, K, W, V[Name]>
-  : keyof M extends never
-    ? ResourceRowForLoad<D, S, R, K, W, Row, ResolveResourceLoad<W, H, Op, Load>>
-    : SelectedRow<D, S, R, M, K, ResolveResourceLoad<W, H, Op, Load>, undefined>;
+  : HasModelPolicies<R, M, K, ResolveResourceLoad<W, H, Op, Load>> extends true
+    ? SelectedRow<D, S, R, M, K, ResolveResourceLoad<W, H, Op, Load>, undefined>
+    : ResourceRowForLoad<D, S, R, K, W, Row, ResolveResourceLoad<W, H, Op, Load>>;
 
 type Resource<
   D extends QueryEngineDb,
@@ -194,7 +216,11 @@ type Resource<
   "$infer" | "query" | "findById" | "queryRows" | "scan"
 > & {
   views: V;
-  models: M;
+  models: {
+    [Table in keyof M]: M[Table] extends { virtual: (...args: any[]) => infer Fields }
+      ? Omit<M[Table], "virtual"> & { virtual: Fields }
+      : M[Table];
+  };
   $infer: Omit<
     QueryResource<D, S, R, K, W, C, Row, H>["$infer"],
     "query" | "findById" | "profiles"

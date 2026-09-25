@@ -50,21 +50,25 @@ const engine = createQueryEngine({
     accounts: {
       private: ["secret"],
       hidden: ["metadata"],
-      virtual: {
-        upperName: virtual.text((account) => sql`upper(${account.name})`),
-        doubled: virtual.number((account) => sql`${account.amount} * 2`),
-        latest: virtual.scalar((account, { db: executionDb }) => {
-          scalarDatabases.push(executionDb);
-          return executionDb
-            .select({ value: entries.completedAt })
-            .from(entries)
-            .where(eq(entries.accountId, account.id))
-            .orderBy(desc(entries.completedAt))
-            .limit(1);
-        }),
+      virtual: (account, { db: executionDb }) => {
+        expectTypeOf(account).toEqualTypeOf<typeof accounts>();
+        expectTypeOf(executionDb).toEqualTypeOf<typeof db>();
+        scalarDatabases.push(executionDb);
+        return {
+          upperName: virtual.text(sql`upper(${account.name})`),
+          doubled: virtual.number(sql`${account.amount} * 2`),
+          latest: virtual.scalar(
+            executionDb
+              .select({ value: entries.completedAt })
+              .from(entries)
+              .where(eq(entries.accountId, account.id))
+              .orderBy(desc(entries.completedAt))
+              .limit(1),
+          ),
+        };
       },
     },
-  } satisfies import("../index.js").ModelDefinitions<typeof schema, typeof db>,
+  },
 }).withContext<{ tenant: string }>();
 const resource = engine.defineResource("accounts", {
   relations: { entries: true },
@@ -250,6 +254,46 @@ describe("model and view definitions", () => {
     const defaults = await custom.query({ request });
     expect(defaults.rows).toEqual([{ id: 1, name: "Alpha", tenant: "a", amount: "1.00" }]);
     expect((await custom.query({ request, view: "list" })).rows).toEqual([{ name: "Alpha" }]);
+  });
+
+  it("preserves custom row shapes when model policies only apply to unrelated tables", async () => {
+    type CustomRow = { id: number; transformed: string };
+    const custom = engine.defineResource<"entries", undefined, { tenant: string }, CustomRow>(
+      "entries",
+      {
+        strategy: {
+          query: async () => ({
+            rows: [{ id: 1, transformed: "custom" }],
+            pageInfo: {
+              mode: "offset",
+              pageIndex: 1,
+              pageSize: 1,
+              count: "exact",
+              rowCount: 1,
+              hasNextPage: false,
+            },
+          }),
+          rows: async ({ ids }) => ids.map((id) => ({ id, transformed: "custom" })),
+        },
+      },
+    );
+    const page = await custom.query({ request });
+    expectTypeOf(page.rows).toEqualTypeOf<CustomRow[]>();
+    expect(page.rows).toEqual([{ id: 1, transformed: "custom" }]);
+    expect(await custom.queryRows({ request, ids: [1] })).toEqual(page.rows);
+    const scopedGraph = engine.defineResource<
+      "entries",
+      { account: true },
+      { tenant: string },
+      CustomRow,
+      { profiles: { list: {} }; defaults: { query: "list" } }
+    >("entries", {
+      relations: { account: true },
+      hydration: { profiles: { list: {} }, defaults: { query: "list" } },
+      strategy: { query: async () => ({ rows: page.rows, pageInfo: page.pageInfo }) },
+    });
+    expectTypeOf<typeof scopedGraph.$infer.query>().toEqualTypeOf<CustomRow>();
+    expect((await scopedGraph.query({ request })).rows).toEqual(page.rows);
   });
 
   it("rejects private query paths before database execution", async () => {
@@ -482,5 +526,32 @@ describe.skipIf(!connectionString)("model projections and summaries in PostgreSQ
       { name: "Beta", upperName: "BETA" },
     ]);
     expect(statements.some((statement) => statement.includes("sum("))).toBe(false);
+  });
+
+  it("keeps private IDs available internally without allowing public ID sorts", async () => {
+    const privateIds = createQueryEngine({
+      db,
+      schema,
+      relations,
+      models: { accounts: { private: ["id", "secret"] } },
+    }).defineResource("accounts", { summary: () => ({ rows: count() }) });
+    const defaultSort = { ...request, sorting: [] };
+    const page = await privateIds.query({ request: defaultSort, summary: true });
+    expectTypeOf(page.rows[0]).not.toHaveProperty("id");
+    expect(page.rows[0]).not.toHaveProperty("id");
+    expect(page.summary.rows).toBe(3);
+    expect(await privateIds.querySummary({ request: defaultSort })).toEqual({ rows: 3 });
+    expect((await privateIds.queryRows({ request: defaultSort, ids: [1] }))[0]).not.toHaveProperty(
+      "id",
+    );
+    expect(await privateIds.findById({ id: 1 })).not.toHaveProperty("id");
+    const scanned = await privateIds.scan({ batchSize: 1 }, async (batches) => {
+      const collected: Array<typeof privateIds.$infer.query> = [];
+      for await (const batch of batches) collected.push(...batch.rows);
+      return collected;
+    });
+    expect(scanned).toHaveLength(3);
+    expect(scanned.every((row) => !("id" in row))).toBe(true);
+    await expect(privateIds.query({ request })).rejects.toThrow('Unknown sorting field "id"');
   });
 });
