@@ -1,3 +1,4 @@
+import { getColumns } from "drizzle-orm";
 import { createSelectSchema } from "drizzle-orm/zod";
 import { z } from "zod";
 
@@ -428,6 +429,41 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
   });
 }
 
+function summaryResponseSchema(resource: any): any {
+  const fields = resource.getSummaryShape?.();
+  if (!fields) throw new Error("No summary defined for this resource");
+  const entries: Record<string, any> = {};
+  for (const [name, field] of Object.entries(fields) as Array<[string, any]>) {
+    let validator;
+    if (field.kind === "column") {
+      const key = Object.entries(getColumns(field.column.table)).find(
+        ([, column]) => column === field.column,
+      )?.[0];
+      if (!key) throw new Error(`Unknown summary column for "${name}"`);
+      validator = (createSelectSchema(field.column.table) as any).shape[key];
+    } else {
+      switch (field.kind) {
+        case "number":
+          validator = z.number();
+          break;
+        case "string":
+          validator = z.string();
+          break;
+        case "boolean":
+          validator = z.boolean();
+          break;
+        case "date":
+          validator = z.date();
+          break;
+        default:
+          throw new Error(`Unknown summary value kind for "${name}"`);
+      }
+    }
+    entries[name] = field.nullable ? validator.nullable() : validator;
+  }
+  return z.object(entries);
+}
+
 interface ResourceWithViews {
   $infer: {
     query: Record<string, unknown>;
@@ -436,43 +472,52 @@ interface ResourceWithViews {
   };
 }
 
+type SummaryOption<R extends ResourceWithViews> = keyof R["$infer"]["summary"] extends never
+  ? never
+  : boolean | z.ZodType<R["$infer"]["summary"]>;
+
 /** Build a response schema from Drizzle select schemas and the resource relation tree. */
 export function responseSchema<
   R extends ResourceWithViews,
   const N extends Extract<keyof R["$infer"]["views"], string>,
   const O extends QueryResponseSchemaOverride<R["$infer"]["views"][N]>,
-  const S extends z.ZodType<R["$infer"]["summary"]> | undefined = undefined,
+  const S extends SummaryOption<R> | undefined = undefined,
 >(
   resource: R,
   options: { view: N; summary?: S; override: O },
 ): z.ZodType<
   QuerySchemaResponse<OverrideRow<R["$infer"]["views"][N], O>> &
-    (S extends undefined ? {} : { summary: R["$infer"]["summary"] })
+    (S extends false | undefined ? {} : { summary: R["$infer"]["summary"] })
 >;
 export function responseSchema<
   R extends ResourceWithViews,
   const N extends Extract<keyof R["$infer"]["views"], string>,
-  const S extends z.ZodType<R["$infer"]["summary"]> | undefined = undefined,
+  const S extends SummaryOption<R> | undefined = undefined,
 >(
   resource: R,
   options: { view: N; summary?: S },
 ): z.ZodType<
   QuerySchemaResponse<R["$infer"]["views"][N]> &
-    (S extends undefined ? {} : { summary: R["$infer"]["summary"] })
+    (S extends false | undefined ? {} : { summary: R["$infer"]["summary"] })
 >;
 export function responseSchema<
   R extends ResourceWithViews,
   const O extends QueryResponseSchemaOverride<R["$infer"]["query"]>,
+  const S extends SummaryOption<R>,
 >(
   resource: R,
-  options: { summary: z.ZodType<R["$infer"]["summary"]>; override: O },
+  options: { summary: S; override: O },
 ): z.ZodType<
-  QuerySchemaResponse<OverrideRow<R["$infer"]["query"], O>> & { summary: R["$infer"]["summary"] }
+  QuerySchemaResponse<OverrideRow<R["$infer"]["query"], O>> &
+    (S extends false ? {} : { summary: R["$infer"]["summary"] })
 >;
-export function responseSchema<R extends ResourceWithViews>(
+export function responseSchema<R extends ResourceWithViews, const S extends SummaryOption<R>>(
   resource: R,
-  options: { summary: z.ZodType<R["$infer"]["summary"]> },
-): z.ZodType<QuerySchemaResponse<R["$infer"]["query"]> & { summary: R["$infer"]["summary"] }>;
+  options: { summary: S },
+): z.ZodType<
+  QuerySchemaResponse<R["$infer"]["query"]> &
+    (S extends false ? {} : { summary: R["$infer"]["summary"] })
+>;
 export function responseSchema<
   TResource extends {
     key: string;
@@ -521,7 +566,12 @@ export function responseSchema(
   resource: any,
   options?:
     | QueryResponseSchemaOverride
-    | { load?: string; view?: string; summary?: z.ZodType; override?: QueryResponseSchemaOverride },
+    | {
+        load?: string;
+        view?: string;
+        summary?: boolean | z.ZodType;
+        override?: QueryResponseSchemaOverride;
+      },
 ): any {
   const hydrationOptions =
     options &&
@@ -543,7 +593,14 @@ export function responseSchema(
     view,
   );
   return z.strictObject({
-    ...(hydrationOptions?.summary ? { summary: hydrationOptions.summary } : {}),
+    ...(hydrationOptions?.summary
+      ? {
+          summary:
+            hydrationOptions.summary === true
+              ? summaryResponseSchema(resource)
+              : hydrationOptions.summary,
+        }
+      : {}),
     rows: z.array(row),
     pageInfo: z.union([
       z.strictObject({
