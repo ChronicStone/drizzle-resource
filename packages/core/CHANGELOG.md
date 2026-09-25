@@ -1,5 +1,11 @@
 # @drizzle-resource/core
 
+## 1.1.2
+
+### Patch Changes
+
+- [#37](https://github.com/ChronicStone/drizzle-resource/pull/37) [`2463231`](https://github.com/ChronicStone/drizzle-resource/commit/246323199752ceb3e4feaf5b5dc9d8a04d29a881) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Normalize omitted pagination, sorting, filters, and search fields at the query engine boundary so valid sparse transport requests do not fail during list or summary queries.
+
 ## 1.1.1
 
 ### Patch Changes
