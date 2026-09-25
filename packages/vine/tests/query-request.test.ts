@@ -149,6 +149,18 @@ describe("Vine request schema", () => {
     });
   });
 
+  it("returns complete defaults through vine.create for an empty search", async () => {
+    const validator = vine.create(requestSchema(resource));
+
+    await expect(
+      validator.validate({ search: { value: "", fields: ["name"] } }),
+    ).resolves.toMatchObject({
+      sorting: [{ key: "id", dir: "asc" }],
+      filters: [],
+      search: { value: "", fields: ["name"] },
+    });
+  });
+
   it("uses offset defaults when a supplied pagination object omits its mode", async () => {
     const validator = vine.compile(requestSchema(resource));
 
