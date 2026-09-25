@@ -1,5 +1,11 @@
 # @drizzle-resource/core
 
+## 1.1.1
+
+### Patch Changes
+
+- [#35](https://github.com/ChronicStone/drizzle-resource/pull/35) [`7ad770a`](https://github.com/ChronicStone/drizzle-resource/commit/7ad770aa1527c943f97d78435ff656ce68018f00) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Export the typed resource returned by `defineResource` so applications can type shared resource helpers with views, model policies, and summaries.
+
 ## 1.1.0
 
 ### Minor Changes
