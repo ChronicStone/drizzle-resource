@@ -1,5 +1,11 @@
 # drizzle-resource
 
+## 2.6.0
+
+### Minor Changes
+
+- [#33](https://github.com/ChronicStone/drizzle-resource/pull/33) [`9a36c61`](https://github.com/ChronicStone/drizzle-resource/commit/9a36c612279e0a561a096cf3a4094a89ee75ba50) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add engine model definitions for private, hidden, and SQL virtual fields, exact typed resource views, and typed summaries over the complete scoped and filtered dataset. Summaries execute in one SQL statement and share their count with exact pagination. Virtual callbacks infer their owning table and database. Zod and Valibot response schemas support views and automatically derive validators for standard Drizzle aggregates.
+
 ## 2.5.1
 
 ### Patch Changes
