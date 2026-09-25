@@ -1,3 +1,12 @@
+export { virtual } from "./src/models.js";
+export type { VirtualField } from "./src/models.js";
+export type {
+  ConfiguredEngine,
+  ModelDefinitions,
+  ResourceView,
+  SummarySelection,
+  SummaryResult,
+} from "./src/model-types.js";
 export { createQueryEngine } from "./src/engine.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
 export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contracts.js";

@@ -1,3 +1,6 @@
+import type { ConfiguredEngine, ModelDefinitions } from "./model-types.js";
+import { compileProjection, validateModels } from "./models.js";
+import type { Projection } from "./models.js";
 import type {
   DefineResourceOptions,
   GenericObject,
@@ -294,9 +297,17 @@ export function createQueryEngine<
   TDb extends QueryEngineConfig["db"],
   TSchema extends QueryEngineConfig["schema"],
   TRelations extends QueryEngineConfig["relations"],
->(
-  config: QueryEngineConfig<TDb, TSchema, TRelations>,
-): QueryEngine<TDb, TSchema, TRelations, Record<string, unknown>> {
+  const TModels extends object = {},
+>(inputConfig: {
+  db: TDb;
+  schema: TSchema;
+  relations: TRelations;
+  models?: ModelDefinitions<TSchema, TDb> &
+    TModels &
+    Record<Exclude<keyof TModels, keyof TSchema>, never>;
+}): ConfiguredEngine<TDb, TSchema, TRelations, TModels> {
+  const config = inputConfig as QueryEngineConfig<TDb, TSchema, TRelations>;
+  validateModels(config.schema, config.models ?? {}, config.relations);
   function buildEngine<TEngineContext extends GenericObject>(): QueryEngine<
     TDb,
     TSchema,
@@ -399,13 +410,43 @@ export function createQueryEngine<
         return defaultProfile ? hydrationClause!.profiles[defaultProfile] : relationsClause;
       }
 
+      const viewProjections = new Map<string, Projection>();
+      for (const [name, view] of Object.entries(options.views ?? {})) {
+        viewProjections.set(name, compileProjection(config, root, relationsClause, view as any));
+      }
+      const defaultProjections = new WeakMap<object, Projection>();
+      const emptyRelations = {};
+      function resolveProjection(relations: any, view?: string) {
+        if (view !== undefined) {
+          const projection = viewProjections.get(view);
+          if (!projection) throw new Error(`Unknown view "${view}" for resource "${root}"`);
+          return projection;
+        }
+        if (!config.models || !Object.keys(config.models).length) return undefined;
+        const key = relations ?? emptyRelations;
+        let projection = defaultProjections.get(key);
+        if (!projection) {
+          projection = compileProjection(config, root, relations);
+          defaultProjections.set(key, projection);
+        }
+        return projection;
+      }
+      if (options.summary && (options.strategy?.query || options.strategy?.ids)) {
+        throw new Error("Summaries require the built-in matching-row strategy");
+      }
+      resolveProjection(relationsClause);
+
       const trustedFieldRegistry = buildFieldRegistry(config, root, relationsClause, {
         nonFilterable: options.query?.filters?.disabled,
         nonSortable: options.query?.sort?.disabled,
       });
       const hiddenFields = new Set<string>(options.query?.filters?.hidden ?? []);
       const fieldRegistry = new Map(
-        Array.from(trustedFieldRegistry).filter(([field]) => !hiddenFields.has(field)),
+        Array.from(trustedFieldRegistry).filter(
+          ([field, entry]) =>
+            !hiddenFields.has(field) &&
+            !config.models?.[entry.tableName]?.private?.includes(field.split(".").at(-1)!),
+        ),
       );
       const allFields = Array.from(fieldRegistry.keys()).sort();
       const allowedSearchFields = new Set(
@@ -456,13 +497,15 @@ export function createQueryEngine<
       const filterBuilder = createQueryFilterBuilder<any>();
 
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
-      const resource: QueryResource<any, any, any, any, any, any, any, any> = {
+      const resource = {
         $infer: undefined as never,
         key: root,
         schema: config.schema,
         relationGraph: config.relations,
         relations: relationsClause,
         hydration: hydrationClause,
+        views: options.views,
+        models: config.models,
         fields: fieldRegistry,
         queryConfig: {
           search: {
@@ -502,26 +545,53 @@ export function createQueryEngine<
               options.query?.validation?.maxFacetLimit ?? defaultQueryValidation.maxFacetLimit,
           },
         },
+        querySummary: async ({
+          request,
+          context,
+          db,
+          execution,
+        }: {
+          request: QueryRequestInput;
+          context?: any;
+          db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
+        }) => {
+          if (!options.summary) throw new Error(`No summary defined for resource "${root}"`);
+          const normalizedRequest = prepareRequest(request, context, { execution });
+          const utils = createQueryResourceUtils(config, { resource: trustedResource, db });
+          return (
+            await utils.executeSummaryQuery({
+              request: normalizedRequest,
+              summary: options.summary,
+            })
+          ).summary;
+        },
         query: async ({
           request,
           context,
           db,
           execution,
           load,
+          view,
+          summary,
         }: {
+          view?: string;
+          summary?: boolean;
           request: QueryRequestInput;
           context?: any;
           db?: QueryEngineDb;
           execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
-        }): Promise<any> => executeQuery({ request, context, db, execution, load }),
+        }): Promise<any> => executeQuery({ request, context, db, execution, load, view, summary }),
         scan: executeScan,
         findById: async ({
           id,
           context,
           db,
           load,
+          view,
         }: {
+          view?: string;
           id: unknown;
           context?: any;
           db?: QueryEngineDb;
@@ -540,6 +610,7 @@ export function createQueryEngine<
             context,
             db,
             load,
+            view,
             operation: "findById",
             trustedInput: true,
           });
@@ -571,7 +642,9 @@ export function createQueryEngine<
           db,
           execution,
           load,
+          view,
         }: {
+          view?: string;
           request: QueryRequestInput;
           ids: unknown[];
           context?: any;
@@ -579,13 +652,22 @@ export function createQueryEngine<
           execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
         }): Promise<any> => {
+          if (view !== undefined && load !== undefined)
+            throw new Error("Use either view or load, not both");
           const normalizedRequest = prepareRequest(request, context, { execution });
           const hydrationRelations = resolveHydrationRelations("query", load);
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
             db,
           });
-          return executeRows(normalizedRequest, ids, context, utils, hydrationRelations);
+          return executeRows(
+            normalizedRequest,
+            ids,
+            context,
+            utils,
+            hydrationRelations,
+            resolveProjection(hydrationRelations, view),
+          );
         },
         queryFacets: async ({
           request,
@@ -616,7 +698,7 @@ export function createQueryEngine<
             context,
           );
         },
-      };
+      } as unknown as QueryResource<any, any, any, any, any, any, any, any>;
 
       trustedResource = {
         ...resource,
@@ -631,10 +713,13 @@ export function createQueryEngine<
           batchSize?: number;
           count?: QueryCountMode;
           signal?: AbortSignal;
+          view?: string;
           load?: string | Record<string, unknown>;
         },
         consume: (batches: AsyncIterable<QueryScanBatch<GenericObject>>) => Promise<TResult>,
       ): Promise<TResult> {
+        if (args.view !== undefined && args.load !== undefined)
+          throw new Error("Use either view or load, not both");
         const batchSize = args.batchSize ?? 1000;
         if (!Number.isSafeInteger(batchSize) || batchSize < 1) {
           throw new Error("Scan batch size must be a positive safe integer");
@@ -654,6 +739,7 @@ export function createQueryEngine<
           { execution: { maxPageSize: batchSize } },
         );
         const hydrationRelations = resolveHydrationRelations("query", args.load);
+        const projection = resolveProjection(hydrationRelations, args.view);
         return withScanDatabase(args.db ?? config.db, async (database) => {
           const utils = createQueryResourceUtils(config, {
             resource: trustedResource,
@@ -672,6 +758,7 @@ export function createQueryEngine<
                       args.context,
                       utils,
                       hydrationRelations,
+                      projection,
                     );
                     args.signal?.throwIfAborted();
                     yield {
@@ -709,11 +796,20 @@ export function createQueryEngine<
                 const { ids, pageInfo } = await executeIds(current, args.context, utils);
                 response = {
                   rows: ids.length
-                    ? await executeRows(current, ids, args.context, utils, hydrationRelations)
+                    ? await executeRows(
+                        current,
+                        ids,
+                        args.context,
+                        utils,
+                        hydrationRelations,
+                        projection,
+                      )
                     : [],
                   pageInfo,
                 };
               }
+              if (options.strategy?.query && projection)
+                response.rows = response.rows.map((row) => projection.project(row));
               args.signal?.throwIfAborted();
               if (response.pageInfo.rowCount !== null) totalRows = response.pageInfo.rowCount;
               if (!response.rows.length) return;
@@ -767,9 +863,13 @@ export function createQueryEngine<
         db,
         execution,
         load,
+        view,
+        summary,
         operation = "query",
         trustedInput = false,
       }: {
+        view?: string;
+        summary?: boolean;
         request: QueryRequestInput;
         context?: any;
         db?: QueryEngineDb;
@@ -778,6 +878,8 @@ export function createQueryEngine<
         operation?: "query" | "findById";
         trustedInput?: boolean;
       }) {
+        if (view !== undefined && load !== undefined)
+          throw new Error("Use either view or load, not both");
         const normalizedRequest = prepareRequest(request, context, { execution, trustedInput });
         const limits = resolveExecutionLimits(resource.queryConfig.validation, execution);
         const hydrationRelations = resolveHydrationRelations(operation, load);
@@ -785,6 +887,16 @@ export function createQueryEngine<
           resource: trustedResource,
           db,
         });
+        const projection = resolveProjection(hydrationRelations, view);
+        if (summary && !options.summary)
+          throw new Error(`No summary defined for resource "${root}"`);
+        const aggregate = summary
+          ? await utils.executeSummaryQuery({
+              request: normalizedRequest,
+              summary: options.summary,
+              includeCount: normalizedRequest.pagination.count === "exact",
+            })
+          : undefined;
         const customQueryStrategy = resolveQueryStrategy(options);
         let response: QueryResponse<any>;
 
@@ -796,13 +908,21 @@ export function createQueryEngine<
             utils,
             relations: hydrationRelations,
           });
+          if (projection) response.rows = response.rows.map((row) => projection.project(row));
         } else if (!options.strategy?.ids && !options.strategy?.rows && !options.strategy?.facets) {
           response = await utils.executeHydratedPage({
             request: normalizedRequest,
             relations: hydrationRelations,
+            projection,
+            rowCount: aggregate?.rowCount,
           });
         } else {
-          const idsResponse = await executeIds(normalizedRequest, context, utils);
+          const idsResponse = await executeIds(
+            normalizedRequest,
+            context,
+            utils,
+            aggregate?.rowCount,
+          );
           const rows =
             idsResponse.ids.length > 0
               ? await executeRows(
@@ -811,6 +931,7 @@ export function createQueryEngine<
                   context,
                   utils,
                   hydrationRelations,
+                  projection,
                 )
               : [];
 
@@ -819,6 +940,8 @@ export function createQueryEngine<
             pageInfo: idsResponse.pageInfo,
           };
         }
+
+        if (aggregate) Object.assign(response, { summary: aggregate.summary });
 
         if (
           !normalizedRequest.facets ||
@@ -886,6 +1009,7 @@ export function createQueryEngine<
         request: QueryRequest,
         context: any,
         utils: ReturnType<typeof createQueryResourceUtils>,
+        rowCount?: number,
       ) {
         if (options.strategy?.ids) {
           return options.strategy.ids({
@@ -896,7 +1020,7 @@ export function createQueryEngine<
           });
         }
 
-        return utils.executeIdsQuery({ request });
+        return utils.executeIdsQuery({ request, rowCount });
       }
 
       async function executeRows(
@@ -905,9 +1029,10 @@ export function createQueryEngine<
         context: any,
         utils: ReturnType<typeof createQueryResourceUtils>,
         hydrationRelations: Record<string, unknown> | undefined,
+        projection?: Projection,
       ) {
         if (options.strategy?.rows) {
-          return options.strategy.rows({
+          const rows = await options.strategy.rows({
             request,
             ids,
             context,
@@ -915,9 +1040,10 @@ export function createQueryEngine<
             utils,
             relations: hydrationRelations,
           });
+          return projection ? rows.map((row: any) => projection.project(row)) : rows;
         }
 
-        return utils.executeRowsQuery({ ids, request, relations: hydrationRelations });
+        return utils.executeRowsQuery({ ids, request, relations: hydrationRelations, projection });
       }
 
       return resource;
@@ -937,5 +1063,10 @@ export function createQueryEngine<
     } as QueryEngine<TDb, TSchema, TRelations, TEngineContext>;
   }
 
-  return buildEngine<Record<string, unknown>>();
+  return buildEngine<Record<string, unknown>>() as unknown as ConfiguredEngine<
+    TDb,
+    TSchema,
+    TRelations,
+    TModels
+  >;
 }

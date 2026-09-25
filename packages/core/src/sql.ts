@@ -1,3 +1,4 @@
+import type { Projection } from "./models.js";
 import {
   and,
   asc,
@@ -11,13 +12,14 @@ import {
   lt,
   or,
   sql,
+  SQL,
   isSQLWrapper,
   is,
   inArray,
 } from "drizzle-orm";
 import { getColumns } from "drizzle-orm";
 import { getTableConfig, IndexedColumn, PgColumn, PgDialect, PgTable } from "drizzle-orm/pg-core";
-import type { SQL, SQLWrapper } from "drizzle-orm";
+import type { SQLWrapper } from "drizzle-orm";
 
 import type {
   FieldRegistryEntry,
@@ -337,7 +339,17 @@ export function buildFieldRegistry<
     relationPath: FieldRegistryRelationStep[],
   ) {
     const columns = getColumns((config.schema as any)[tableName]);
-    for (const columnName of Object.keys(columns)) {
+    const virtuals = config.models?.[tableName]?.virtual ?? {};
+    const fields = {
+      ...columns,
+      ...Object.fromEntries(
+        Object.entries(virtuals).map(([key, field]) => [
+          key,
+          field.resolve((config.schema as any)[tableName], { db: config.db }),
+        ]),
+      ),
+    };
+    for (const columnName of Object.keys(fields)) {
       const path = [...prefix, columnName].join(".");
       if (hidden.has(path)) continue;
 
@@ -350,7 +362,8 @@ export function buildFieldRegistry<
       registry.set(path, {
         path,
         source,
-        column: (columns as Record<string, unknown>)[columnName],
+        column: fields[columnName],
+        virtual: virtuals[columnName],
         tableName,
         relationPath,
         firstManyIndex,
@@ -444,6 +457,24 @@ export function createQueryResourceUtils<
   const cached = database === config.db ? utilsCache.get(resource) : undefined;
   if (cached) return cached as QueryResourceUtils<TRow, TWith>;
 
+  if (database !== config.db && config.models) {
+    resource = {
+      ...resource,
+      fields: new Map(
+        [...resource.fields].map(([key, entry]) => [
+          key,
+          entry.virtual
+            ? {
+                ...entry,
+                column: entry.virtual.resolve((config.schema as any)[entry.tableName], {
+                  db: database,
+                }),
+              }
+            : entry,
+        ]),
+      ),
+    };
+  }
   const rootTable = (config.schema as any)[resource.key];
   const uniqueRootId = columnsAreUnique(rootTable, [rootTable.id]) && rootTable.id.notNull;
   const indexedSearchColumns = new Set<PgColumn>();
@@ -455,7 +486,7 @@ export function createQueryResourceUtils<
   }
 
   function buildScalarCondition(column: any, condition: QueryFilterCondition): SQL {
-    const text = isTextColumn(column);
+    const text = isTextColumn(column) || resolveField(condition.key)?.virtual?.kind === "text";
     const caseSensitiveFields: ReadonlySet<string> = resource.queryConfig.filters.caseSensitive;
     const caseSensitive = caseSensitiveFields.has(condition.key);
     switch (condition.operator) {
@@ -915,7 +946,9 @@ export function createQueryResourceUtils<
   async function executeRowsQuery({
     ids,
     relations = resource.relations as QueryRelationsSubset<TWith> | undefined,
+    projection,
   }: {
+    projection?: Projection;
     ids: unknown[];
     request?: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
@@ -930,6 +963,7 @@ export function createQueryResourceUtils<
         },
       },
       with: relations,
+      ...projection?.config(database, true),
     });
 
     const orderIndex = new Map(orderedIds.map((id: unknown, index: number) => [id, index]));
@@ -938,7 +972,7 @@ export function createQueryResourceUtils<
         Number(orderIndex.get(left.id) ?? 0) - Number(orderIndex.get(right.id) ?? 0),
     );
 
-    return rows;
+    return projection ? rows.map((row: any) => projection.project(row)) : rows;
   }
 
   async function scanIds<TResult>(
@@ -1014,10 +1048,61 @@ export function createQueryResourceUtils<
     );
   }
 
+  async function executeSummaryQuery({
+    request,
+    summary,
+    includeCount = false,
+  }: {
+    request: QueryRequest;
+    summary: (fields: Record<string, any>) => Record<string, SQL | SQL.Aliased>;
+    includeCount?: boolean;
+  }) {
+    const aggregateRequest = { ...request, sorting: [] };
+    await prepareSearch(aggregateRequest);
+    const model = config.models?.[resource.key];
+    const fields: Record<string, any> = { ...getColumns(rootTable) };
+    for (const [key, field] of Object.entries(model?.virtual ?? {})) {
+      Object.defineProperty(fields, key, {
+        enumerable: true,
+        configurable: true,
+        get: () => field.resolve(rootTable, { db: database }),
+      });
+    }
+    for (const key of model?.private ?? []) delete fields[key];
+    const selection = summary(fields);
+    if (
+      !selection ||
+      !Object.keys(selection).length ||
+      Object.values(selection).some((field) => !is(field, SQL) && !is(field, SQL.Aliased))
+    ) {
+      throw new Error("Summary must return a non-empty object of SQL aggregate expressions");
+    }
+    let countKey = "__resource_count";
+    while (countKey in selection) countKey += "_";
+    const selected = includeCount
+      ? { ...selection, [countKey]: sql`count(*)`.mapWith(Number) }
+      : selection;
+    const joins = buildOuterJoins(resource, aggregateRequest);
+    const direct = preservesRootCardinality(joins);
+    const query = (database as any).select(selected).from(rootTable);
+    const rows = await (direct
+      ? joinRelationSteps(query, config.schema, joins).where(buildWhereClause(aggregateRequest))
+      : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))));
+    if (rows.length !== 1) throw new Error("Summary query must return exactly one aggregate row");
+    const row = rows[0];
+    const rowCount = includeCount ? (row[countKey] as number) : undefined;
+    if (includeCount) delete row[countKey];
+    return { summary: row, rowCount };
+  }
+
   async function executeHydratedPage({
     request,
     relations,
+    projection,
+    rowCount,
   }: {
+    projection?: Projection;
+    rowCount?: number;
     request: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
   }) {
@@ -1025,11 +1110,15 @@ export function createQueryResourceUtils<
       ? await resolveAggregates({
           request,
           facets: request.facets,
-          includeCount: request.pagination.count === "exact",
+          includeCount: request.pagination.count === "exact" && rowCount === undefined,
         })
       : undefined;
-    const { ids, pageInfo } = await executeIdsQuery({ request, rowCount: aggregates?.rowCount });
-    const rows = ids.length === 0 ? [] : await executeRowsQuery({ ids, request, relations });
+    const { ids, pageInfo } = await executeIdsQuery({
+      request,
+      rowCount: rowCount ?? aggregates?.rowCount,
+    });
+    const rows =
+      ids.length === 0 ? [] : await executeRowsQuery({ ids, request, relations, projection });
     return { rows, pageInfo, ...(aggregates ? { facets: aggregates.facets } : {}) };
   }
 
@@ -1303,6 +1392,7 @@ export function createQueryResourceUtils<
     compileSearch,
     compileOrderBy,
     buildWhereClause,
+    executeSummaryQuery,
     executeIdsQuery,
     scanIds,
     executeRowsQuery,
