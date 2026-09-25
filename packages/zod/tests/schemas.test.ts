@@ -1,8 +1,9 @@
-import { defineRelationsPart } from "drizzle-orm";
+import { drizzle } from "drizzle-orm/node-postgres";
+import { count, sql, defineRelationsPart } from "drizzle-orm";
 import { pgTable, uuid, varchar } from "drizzle-orm/pg-core";
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 import { z } from "zod";
-import { createQueryEngine } from "../../core/index.js";
+import { createQueryEngine, virtual } from "../../core/index.js";
 
 import { requestSchema, responseSchema } from "../index.js";
 
@@ -32,7 +33,7 @@ const relations = defineRelationsPart(
   }),
 );
 const resource = createQueryEngine({
-  db: { query: { orders: { findMany: async () => [] } } },
+  db: drizzle({ connection: "postgres://localhost/unused", relations }),
   schema,
   relations,
 }).defineResource("orders", {
@@ -178,5 +179,84 @@ describe("Zod schemas", () => {
 
     expect(listResponse.parse({ rows: [row], pageInfo }).rows[0]).not.toHaveProperty("customer");
     expect(detailResponse.parse({ rows: [row], pageInfo }).rows[0]).toHaveProperty("customer");
+  });
+});
+
+describe("model-aware response schemas", () => {
+  it("matches hidden defaults, exact nested views, virtuals and typed summaries", () => {
+    const db = drizzle({ connection: "postgres://localhost/unused", relations });
+    const engine = createQueryEngine({
+      db,
+      schema,
+      relations,
+      models: {
+        orders: {
+          private: ["customerId"],
+          hidden: ["reference"],
+          virtual: {
+            upperReference: virtual.text((order: typeof orders) => sql`upper(${order.reference})`),
+            latest: virtual.scalar(
+              (_order: typeof orders, { db: executionDb }: { db: typeof db }) =>
+                executionDb.select({ value: orders.reference }).from(orders).limit(1),
+            ),
+          },
+        },
+        customers: { hidden: ["name"] },
+      },
+    });
+    const selected = engine.defineResource("orders", {
+      relations: { customer: true },
+      views: {
+        list: { select: { reference: true, upperReference: true, customer: true } },
+        scalar: { select: { latest: true } },
+      },
+      hydration: { profiles: { list: {} }, defaults: { query: "list" } },
+      summary: () => ({ rows: count() }),
+    });
+    const defaults = responseSchema(selected);
+    const id = "11111111-1111-4111-8111-111111111111";
+    const pageInfo = {
+      mode: "offset",
+      pageIndex: 1,
+      pageSize: 25,
+      hasNextPage: false,
+      count: "exact",
+      rowCount: 1,
+    };
+    expect(defaults.parse({ rows: [{ id }], pageInfo }).rows).toEqual([{ id }]);
+    const validator = responseSchema(selected, {
+      view: "list",
+      summary: z.object({ rows: z.number() }),
+    });
+    expectTypeOf<z.output<typeof validator>["rows"][number]>().toEqualTypeOf<{
+      reference: string;
+      upperReference: string;
+      customer: { id: string };
+    }>();
+    expectTypeOf<z.output<typeof validator>["summary"]>().toEqualTypeOf<{ rows: number }>();
+    const payload = {
+      rows: [{ reference: "ORD", upperReference: "ORD", customer: { id } }],
+      pageInfo,
+      summary: { rows: 1 },
+    };
+    expect(validator.parse(payload)).toEqual(payload);
+    expect(() => responseSchema(selected, { view: "scalar" })).toThrow("schema override");
+    const scalar = responseSchema(selected, {
+      view: "scalar",
+      override: { columns: { latest: () => z.string().nullable() } },
+    });
+    expect(scalar.parse({ rows: [{ latest: null }], pageInfo }).rows).toEqual([{ latest: null }]);
+    const transformed = responseSchema(selected, {
+      view: "list",
+      override: {
+        columns: { upperReference: (field) => field.transform((value) => value.length) },
+      },
+    });
+    expectTypeOf<
+      z.output<typeof transformed>["rows"][number]["upperReference"]
+    >().toEqualTypeOf<number>();
+    expect(transformed.parse({ rows: payload.rows, pageInfo }).rows[0]?.upperReference).toBe(3);
+    // @ts-expect-error summary schema must match the SQL aggregate result
+    responseSchema(selected, { view: "list", summary: z.object({ rows: z.string() }) });
   });
 });

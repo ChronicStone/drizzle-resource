@@ -1,3 +1,4 @@
+import type { Projection, RuntimeModel, VirtualField } from "./models.js";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
 
@@ -657,6 +658,7 @@ export interface FieldRegistryEntry {
   path: string;
   source: "root" | "relation";
   column: unknown;
+  virtual?: VirtualField;
   tableName: string;
   relationPath: FieldRegistryRelationStep[];
   firstManyIndex: number;
@@ -776,6 +778,7 @@ export interface QueryResourceUtils<
    */
   executeIdsQuery: (args: {
     request: QueryRequest;
+    rowCount?: number;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   scanIds: <TResult>(
     args: { request: QueryRequest; batchSize: number; count: QueryCountMode; signal?: AbortSignal },
@@ -785,6 +788,7 @@ export interface QueryResourceUtils<
    * Hydrate rows by ID using Drizzle relational queries.
    */
   executeRowsQuery: (args: {
+    projection?: Projection;
     ids: Array<TRow extends { id: infer TId } ? TId : unknown>;
     request?: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
@@ -793,6 +797,8 @@ export interface QueryResourceUtils<
    * Execute the built-in IDs query followed by row hydration.
    */
   executeHydratedPage: (args: {
+    projection?: Projection;
+    rowCount?: number;
     request: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
   }) => Promise<QueryResponse<TRow>>;
@@ -806,6 +812,11 @@ export interface QueryResourceUtils<
   /**
    * Inspect a field path in the resource registry.
    */
+  executeSummaryQuery: (args: {
+    request: QueryRequest;
+    summary: (fields: Record<string, any>) => Record<string, SQL | SQL.Aliased>;
+    includeCount?: boolean;
+  }) => Promise<{ summary: Record<string, unknown>; rowCount?: number }>;
   resolveField: (path: string) => FieldRegistryEntry | undefined;
 }
 
@@ -1406,6 +1417,7 @@ export interface QueryEngineConfig<
    * Drizzle database instance containing relational `db.query.*.findMany(...)`.
    */
   db: TDb;
+  models?: Record<string, RuntimeModel>;
   /**
    * Drizzle schema object keyed by table name.
    */

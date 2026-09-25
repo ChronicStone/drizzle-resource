@@ -13,9 +13,9 @@
     }
   },
   "scripts": {
-    "typecheck": "vp check && tsc --noEmit",
+    "typecheck": "vp check && tsc --noEmit -p tsconfig.typecheck.json",
     "test": "vp test",
     "build": "vp pack",
-    "check": "vp check && tsc --noEmit && vp pack"
+    "check": "vp check && tsc --noEmit -p tsconfig.typecheck.json && vp pack"
   }
 }
