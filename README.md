@@ -1,3 +1,5 @@
+
+
 # drizzle-resource
 
 **Schema-driven query resources for [Drizzle ORM](https://orm.drizzle.team).** One typed contract for filtering, sorting, search, pagination, hydration, and facets — define it once, query it consistently across every table endpoint.
@@ -108,7 +110,7 @@ bun run build
 bun run ci
 ```
 
-`bun run ci` runs the package checks plus Twoslash verification for the docs.
+`bun run ci` runs the package checks plus the docs build.
 
 ## Release workflow
 
