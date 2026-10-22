@@ -554,4 +554,112 @@ describe.skipIf(!connectionString)("model projections and summaries in PostgreSQ
     expect(scanned.every((row) => !("id" in row))).toBe(true);
     await expect(privateIds.query({ request })).rejects.toThrow('Unknown sorting field "id"');
   });
+
+  it("counts facets on text, number, boolean and nullable virtuals", async () => {
+    const faceted = createQueryEngine({
+      db,
+      schema,
+      relations,
+      models: {
+        accounts: {
+          virtual: (account) => ({
+            tier: virtual.text(sql`case when ${account.amount} > ${15} then 'HIGH' else 'LOW' end`),
+            doubled: virtual.number(sql`${account.amount} * ${2}`),
+            annotated: virtual.boolean(sql`${account.metadata} is not null`),
+            note: virtual.nullable(virtual.text(sql`${account.metadata}`)),
+          }),
+        },
+      },
+    });
+    const accountsResource = faceted.defineResource("accounts", {});
+    const entriesResource = faceted.defineResource("entries", { relations: { account: true } });
+    const tenant = { type: "condition", key: "tenant", operator: "is", value: "a" } as const;
+    const options = (result: { facets: Array<{ key: string; options: unknown[] }> }) =>
+      result.facets.map((facet) => [facet.key, facet.options]);
+
+    const all = await accountsResource.queryFacets({
+      request: { ...request, filters: [tenant] },
+      facets: [
+        { key: "tier" },
+        { key: "doubled" },
+        { key: "annotated" },
+        { key: "note" },
+        { key: "name" },
+        { key: "tier", search: "hi" },
+      ],
+    });
+    expect(options(all)).toEqual([
+      [
+        "tier",
+        [
+          { value: "HIGH", count: 1 },
+          { value: "LOW", count: 1 },
+        ],
+      ],
+      [
+        "doubled",
+        [
+          { value: 20.5, count: 1 },
+          { value: 41.5, count: 1 },
+        ],
+      ],
+      [
+        "annotated",
+        [
+          { value: false, count: 1 },
+          { value: true, count: 1 },
+        ],
+      ],
+      ["note", [{ value: "operator", count: 1 }]],
+      [
+        "name",
+        [
+          { value: "Alpha", count: 1 },
+          { value: "Beta", count: 1 },
+        ],
+      ],
+      ["tier", [{ value: "HIGH", count: 1 }]],
+    ]);
+    expect(all.facets[0]?.total).toBe(2);
+
+    const filtered = await accountsResource.query({
+      request: {
+        ...request,
+        filters: [tenant, { type: "condition", key: "tier", operator: "is", value: "HIGH" }],
+        facets: [
+          { key: "tier", mode: "exclude-self" },
+          { key: "tier", mode: "include-self" },
+          { key: "annotated" },
+        ],
+      },
+    });
+    expect(filtered.rows.map((row) => row.name)).toEqual(["Beta"]);
+    expect(options(filtered as never)).toEqual([
+      [
+        "tier",
+        [
+          { value: "HIGH", count: 1 },
+          { value: "LOW", count: 1 },
+        ],
+      ],
+      ["tier", [{ value: "HIGH", count: 1 }]],
+      ["annotated", [{ value: false, count: 1 }]],
+    ]);
+
+    const nestedFacets = await entriesResource.queryFacets({
+      request,
+      facets: [{ key: "account.tier" }, { key: "account.tier", limit: 1, cursor: "1" }],
+    });
+    expect(options(nestedFacets)).toEqual([
+      [
+        "account.tier",
+        [
+          { value: "LOW", count: 2 },
+          { value: "HIGH", count: 1 },
+        ],
+      ],
+      ["account.tier", [{ value: "HIGH", count: 1 }]],
+    ]);
+    expect(nestedFacets.facets[1]?.nextCursor).toBeNull();
+  });
 });

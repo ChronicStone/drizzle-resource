@@ -1186,9 +1186,10 @@ export function createQueryResourceUtils<
 
     async function resolveSingle(plan: (typeof plans)[number]) {
       const { entry, index, limit, offset, facet } = plan;
+      const column = is(entry.column, PgColumn);
       let bucketsQuery: any = (database as any)
         .select({
-          value: entry.column,
+          value: column ? entry.column : (entry.column as SQL).as("value"),
           count: (plan.unique
             ? sql<number>`count(*)`
             : sql<number>`count(distinct ${rootTable.id})`
@@ -1197,7 +1198,7 @@ export function createQueryResourceUtils<
         .from(rootTable);
       bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins)
         .where(and(plan.where, buildFacetValuePredicate(entry.column, facet.search)))
-        .groupBy(entry.column as any);
+        .groupBy(column ? (entry.column as any) : sql`1`);
 
       const facetBuckets = (database as any).$with(`facet_buckets_${index}`).as(bucketsQuery);
       let facetQuery: any = (database as any)
