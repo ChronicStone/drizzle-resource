@@ -215,6 +215,37 @@ function allowedString(values: Set<string>, label: string) {
   return z.string().refine((value) => values.has(value), `${label} is not allowed`);
 }
 
+const ENUM_COLUMN_TYPES = new Set(["PgEnumColumn", "PgEnumObjectColumn"]);
+
+function enumFilterValues(resource: any, filters: Set<string>) {
+  const enums = new Map<string, Set<unknown>>();
+  for (const key of filters) {
+    const column = resource.fields.get(key)?.column;
+    if (column?.enumValues && ENUM_COLUMN_TYPES.has(column.columnType)) {
+      enums.set(key, new Set(column.enumValues));
+    }
+  }
+  return enums;
+}
+
+function hasAllowedEnumValues(
+  condition: { key?: unknown; operator?: unknown; value?: unknown },
+  enums: Map<string, Set<unknown>>,
+) {
+  const allowed = typeof condition.key === "string" ? enums.get(condition.key) : undefined;
+  if (!allowed || condition.operator === "contains") return true;
+  const { value } = condition;
+  const values =
+    condition.operator === "between"
+      ? typeof value === "object" && value !== null && !Array.isArray(value)
+        ? [(value as { from?: unknown }).from, (value as { to?: unknown }).to]
+        : []
+      : Array.isArray(value)
+        ? value
+        : [value];
+  return values.every((item) => item === null || item === undefined || allowed.has(item));
+}
+
 function hasAllowedFilterDepth(filters: any[], maxDepth: number) {
   const stack = filters.map((filter) => ({ filter, depth: 1 }));
   while (stack.length > 0) {
@@ -320,26 +351,32 @@ function responseRelations(resource: any, load?: string) {
 /** Build a strict transport schema from a resource's request contract. */
 export function requestSchema(resource: any, override?: QueryRequestSchemaOverride): any {
   const contract = resolveQueryRequestContract(resource, override);
+  const enums = enumFilterValues(resource, contract.filters);
   const filter: z.ZodType<any> = z.lazy(() =>
     z.discriminatedUnion("type", [
-      z.strictObject({
-        type: z.literal("condition"),
-        key: allowedString(contract.filters, "Filter field"),
-        operator: z.enum([
-          "contains",
-          "is",
-          "isAnyOf",
-          "isNot",
-          "gt",
-          "gte",
-          "lt",
-          "lte",
-          "between",
-          "before",
-          "after",
-        ]),
-        value: z.unknown(),
-      }),
+      z
+        .strictObject({
+          type: z.literal("condition"),
+          key: allowedString(contract.filters, "Filter field"),
+          operator: z.enum([
+            "contains",
+            "is",
+            "isAnyOf",
+            "isNot",
+            "gt",
+            "gte",
+            "lt",
+            "lte",
+            "between",
+            "before",
+            "after",
+          ]),
+          value: z.unknown(),
+        })
+        .refine((condition) => hasAllowedEnumValues(condition, enums), {
+          message: "Filter value is not allowed",
+          path: ["value"],
+        }),
       z.strictObject({
         type: z.literal("group"),
         combinator: z.enum(["and", "or"]),
