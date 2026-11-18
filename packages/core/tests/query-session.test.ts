@@ -285,7 +285,9 @@ describe("native relation SQL", () => {
     expect(relationAnyOfQuery.params).toEqual(["Acct_1", "Acct_2"]);
 
     const relationIsNotQuery = dialect.sqlToQuery(relationCompiled[2]!);
-    expect(relationIsNotQuery.sql).toContain('not ("relation_child"."parent_id" = $1)');
+    // A to-many isNot reads « no child holds the value »: NOT EXISTS around a positive match.
+    expect(relationIsNotQuery.sql).toContain('"relation_child"."parent_id" = $1');
+    expect(relationIsNotQuery.sql).not.toContain("not (");
     expect(relationIsNotQuery.sql).not.toContain("lower(");
     expect(relationIsNotQuery.params).toEqual(["Acct_1"]);
   });

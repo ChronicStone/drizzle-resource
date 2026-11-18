@@ -63,6 +63,7 @@ interface QuerySchemaResponse<TRow> {
     options: Array<{ value: unknown; count: number }>;
     nextCursor?: string | null;
     total?: number;
+    missing?: number;
   }>;
 }
 
@@ -380,6 +381,8 @@ export function requestSchema(
             "between",
             "before",
             "after",
+            "isEmpty",
+            "isNotEmpty",
           ]),
           value: z.unknown(),
         })
@@ -469,6 +472,7 @@ export function requestSchema(
           search: z.string().optional(),
           limit: z.number().int().positive().max(contract.limits.maxFacetLimit).optional(),
           cursor: z.string().nullable().optional(),
+          missing: z.boolean().optional(),
         }),
       )
       .max(contract.limits.maxFacetCount)
@@ -689,6 +693,7 @@ export function responseSchema(
             z.strictObject({ value: z.unknown(), count: z.number().int().nonnegative() }),
           ),
           nextCursor: z.string().nullable().optional(),
+          missing: z.number().int().nonnegative().optional(),
           total: z.number().int().nonnegative().optional(),
         }),
       )

@@ -54,6 +54,8 @@ const QUERY_FILTER_OPERATORS = [
   "between",
   "before",
   "after",
+  "isEmpty",
+  "isNotEmpty",
 ] as const satisfies readonly QueryFilterCondition["operator"][];
 
 const QUERY_SORT_DIRECTIONS = ["asc", "desc"] as const;
@@ -414,6 +416,7 @@ function requestSchemaProperties(
           .max(contract.limits.maxFacetLimit)
           .optional(),
         cursor: vine.string().nullable().optional(),
+        missing: vine.boolean().optional(),
       }),
     )
     .maxLength(contract.limits.maxFacetCount);

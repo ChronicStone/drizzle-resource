@@ -87,6 +87,17 @@ function normalizeString(value: unknown) {
   return String(value ?? "").toLowerCase();
 }
 
+function isArrayColumn(column: any): boolean {
+  return column?.columnType === "PgArray" || (column?.dimensions ?? 0) > 0;
+}
+
+/** Null, `''` on text, or an empty array. */
+function buildEmptyPredicate(column: any, text: boolean): SQL {
+  if (isArrayColumn(column)) return sql`(${column} is null or cardinality(${column}) = 0)`;
+  if (text) return sql`(${column} is null or ${column} = '')`;
+  return sql`${column} is null`;
+}
+
 function isTextColumn(column: any): boolean {
   const t = column?.columnType;
   return t === "PgVarchar" || t === "PgText" || t === "PgChar" || t === "PgCitext";
@@ -170,6 +181,10 @@ function eqColumns(sourceColumns: readonly unknown[], targetColumns: readonly un
   return and(...predicates) ?? sql`true`;
 }
 
+function isEmptinessOperator(operator: QueryFilterCondition["operator"]) {
+  return operator === "isEmpty" || operator === "isNotEmpty";
+}
+
 function collectConditionFields(node: QueryFilterNode, fields: string[]) {
   if (node.type === "condition") {
     fields.push(node.key);
@@ -183,13 +198,47 @@ function collectConditionFieldsFromFilters(filters: QueryRequest["filters"], fie
   for (const node of filters) collectConditionFields(node, fields);
 }
 
+/**
+ * Relations (by first step) that a filter tests for emptiness. Rows with no related row are the
+ * ones `isEmpty` looks for, so every condition on such a relation reads it through EXISTS:
+ * a join would drop those rows before an `or` could keep them.
+ */
+function collectEmptinessRelations(
+  resource: QueryResource<any, any, any, any, any, any, any>,
+  node: QueryFilterNode,
+  relations = new Set<string>(),
+) {
+  if (node.type === "group") {
+    for (const child of node.children) collectEmptinessRelations(resource, child, relations);
+    return relations;
+  }
+  const first = isEmptinessOperator(node.operator)
+    ? resource.fields.get(node.key)?.relationPath[0]
+    : undefined;
+  if (first) relations.add(first.path);
+  return relations;
+}
+
+function readsThroughExists(entry: FieldRegistryEntry, relations: ReadonlySet<string>) {
+  const first = entry.relationPath[0];
+  return first !== undefined && relations.has(first.path);
+}
+
 function buildOuterJoins(
   resource: QueryResource<any, any, any, any, any, any, any>,
   request: QueryRequest,
 ) {
-  const requestedFields: string[] = [];
-  collectConditionFieldsFromFilters(request.filters, requestedFields);
-  requestedFields.push(...request.sorting.map((rule) => rule.key));
+  const filterFields: string[] = [];
+  collectConditionFieldsFromFilters(request.filters, filterFields);
+  const emptiness = new Set<string>();
+  for (const node of request.filters) collectEmptinessRelations(resource, node, emptiness);
+  const requestedFields = [
+    ...filterFields.filter((path) => {
+      const entry = resource.fields.get(path);
+      return !entry || !readsThroughExists(entry, emptiness);
+    }),
+    ...request.sorting.map((rule) => rule.key),
+  ];
 
   const relationSteps = new Map<string, FieldRegistryRelationStep>();
   for (const path of requestedFields) {
@@ -260,13 +309,20 @@ function dedupeIds<TId>(ids: TId[]): TId[] {
   return deduped;
 }
 
+/**
+ * Joins a relation path. To-one steps are LEFT joins: sorting or selecting an optional linked
+ * field never hides the rows that have no linked row. `inner` lists the steps that must match,
+ * such as a facet's own path, whose buckets only count rows that hold the relation.
+ */
 function joinRelationSteps(
   query: any,
   schema: QueryEngineConfig["schema"],
   relationSteps: FieldRegistryRelationStep[],
+  inner: ReadonlySet<string> = new Set(),
 ) {
   for (const step of relationSteps) {
-    query = query.innerJoin(
+    const join = step.relationType === "many" || inner.has(step.path) ? "innerJoin" : "leftJoin";
+    query = query[join](
       (schema as any)[step.targetTableName],
       eqColumns(step.sourceColumns, step.targetColumns),
     );
@@ -527,18 +583,29 @@ export function createQueryResourceUtils<
                 : eq(column, condition.value as any)
               : eq(column, condition.value as any);
       case "isNot": {
-        const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
-        if (scalar === null) return isNotNull(column as any);
-        if (typeof scalar === "boolean")
-          return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
-        const comparison =
-          typeof scalar === "string"
-            ? text && !caseSensitive
-              ? eq(sql`lower(${column})`, normalizeString(scalar))
-              : eq(column, scalar as any)
-            : eq(column, scalar as any);
-        return sql`not (${comparison})`;
+        // Every listed value is excluded; a listed null also excludes empty rows.
+        const values = Array.isArray(condition.value) ? condition.value : [condition.value];
+        const listed = values.filter((value) => value !== null && value !== undefined);
+        const excludesNull = listed.length < values.length;
+        if (!listed.length) return isNotNull(column as any);
+        const matches = or(
+          ...listed.map((value) =>
+            typeof value === "boolean"
+              ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
+              : typeof value === "string"
+                ? text && !caseSensitive
+                  ? eq(sql`lower(${column})`, normalizeString(value))
+                  : eq(column, value as any)
+                : eq(column, value as any),
+          ),
+        );
+        const excluded = sql`not (${matches})`;
+        return excludesNull ? (and(isNotNull(column as any), excluded) as SQL) : excluded;
       }
+      case "isEmpty":
+        return buildEmptyPredicate(column, text);
+      case "isNotEmpty":
+        return sql`not (${buildEmptyPredicate(column, text)})`;
       case "gt":
       case "after":
         return sql`${column} > ${condition.value as any}`;
@@ -571,17 +638,57 @@ export function createQueryResourceUtils<
     }
   }
 
-  function compileCondition(condition: QueryFilterCondition): SQL {
+  function compileCondition(
+    condition: QueryFilterCondition,
+    emptiness: ReadonlySet<string> = collectEmptinessRelations(resource, condition),
+  ): SQL {
     const entry = resolveField(condition.key);
     if (!entry) return sql`true`;
+    if (condition.operator === "isNot" && entry.isManyPath) {
+      // A to-many path is « has none of the values », not « has one row with another value ».
+      const holdsValue = buildExistsCondition(
+        database,
+        config.schema,
+        entry,
+        { ...condition, operator: "isAnyOf" },
+        buildScalarCondition,
+        readsThroughExists(entry, emptiness) ? 0 : entry.firstManyIndex,
+      );
+      return sql`not ${holdsValue}`;
+    }
+    if (readsThroughExists(entry, emptiness)) {
+      // The whole relation path, to-one or to-many, inside one EXISTS from the root.
+      if (!isEmptinessOperator(condition.operator)) {
+        return buildExistsCondition(
+          database,
+          config.schema,
+          entry,
+          condition,
+          buildScalarCondition,
+          0,
+        );
+      }
+      const holdsValue = buildExistsCondition(
+        database,
+        config.schema,
+        entry,
+        { ...condition, operator: "isNotEmpty" },
+        buildScalarCondition,
+        0,
+      );
+      return condition.operator === "isEmpty" ? sql`not ${holdsValue}` : holdsValue;
+    }
     return buildExistsCondition(database, config.schema, entry, condition, buildScalarCondition);
   }
 
-  function compileFilterNode(node: QueryFilterNode): SQL {
-    if (node.type === "condition") return compileCondition(node);
+  function compileFilterNode(
+    node: QueryFilterNode,
+    emptiness: ReadonlySet<string> = collectEmptinessRelations(resource, node),
+  ): SQL {
+    if (node.type === "condition") return compileCondition(node, emptiness);
     if (node.children.length === 0) return sql`true`;
 
-    const children = node.children.map(compileFilterNode);
+    const children = node.children.map((child) => compileFilterNode(child, emptiness));
     return node.combinator === "and"
       ? (and(...children) ?? sql`true`)
       : (or(...children) ?? sql`false`);
@@ -734,24 +841,10 @@ export function createQueryResourceUtils<
         step,
       ]),
     );
-    const membership = buildOuterJoins(resource, request).filter(
-      (step) => !required.has(step.path),
-    );
-    const first = membership[0];
-    const membershipPredicate = first
-      ? exists(
-          joinRelationSteps(
-            (database as any)
-              .select({ one: sql<number>`1` })
-              .from(config.schema[first.targetTableName]),
-            config.schema,
-            membership.slice(1),
-          ).where(eqColumns(first.sourceColumns, first.targetColumns)),
-        )
-      : undefined;
+    // Sort-only joins are LEFT joins: they never restrict which rows match, so the count skips them.
     return {
       joins: [...required.values()],
-      where: and(buildWhereClause(request), membershipPredicate),
+      where: buildWhereClause(request),
     };
   }
 
@@ -1154,6 +1247,8 @@ export function createQueryResourceUtils<
           limit,
           offset,
           joins: steps,
+          // Buckets count the rows that hold the faceted relation; `missing` counts the others.
+          inner: new Set(entry.relationPath.map((step) => step.path)),
           unique,
           where,
           predicate:
@@ -1196,7 +1291,7 @@ export function createQueryResourceUtils<
           ).as("count"),
         })
         .from(rootTable);
-      bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins)
+      bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins, plan.inner)
         .where(and(plan.where, buildFacetValuePredicate(entry.column, facet.search)))
         .groupBy(column ? (entry.column as any) : sql`1`);
 
@@ -1240,6 +1335,7 @@ export function createQueryResourceUtils<
           .from(rootTable),
         config.schema,
         first.joins,
+        new Set(group.flatMap((plan) => [...plan.inner])),
       )
         .where(first.where)
         .groupBy(
@@ -1353,15 +1449,46 @@ export function createQueryResourceUtils<
           first.joins.length === countPlan!.joins.length &&
           first.joins.every((step) => countPlan!.joins.some((other) => step.path === other.path)),
       );
-    await Promise.all(
-      groups.map((group) =>
-        group === countGroup
-          ? resolveGroupingSets(group, true)
-          : group.length === 1
-            ? resolveSingle(group[0]!)
-            : resolveGroupingSets(group),
+    /** `missing`: one count of the facet's own scope with the field empty, as `isEmpty` reads it. */
+    async function resolveMissing(plan: (typeof plans)[number]) {
+      const scoped = applyFacetMode(request, {
+        ...plan.facet,
+        mode: plan.facet.mode ?? "exclude-self",
+      });
+      const empty: QueryRequest = {
+        ...scoped,
+        filters: [
+          ...scoped.filters,
+          { type: "condition", key: plan.facet.key, operator: "isEmpty", value: null },
+        ],
+      };
+      const [row] = await applyOuterJoins(
+        (database as any).select({ count: sql<number>`count(*)` }).from(rootTable),
+        empty,
+      ).where(buildWhereClause(empty));
+      return Number(row?.count ?? 0);
+    }
+
+    const [, missing] = await Promise.all([
+      Promise.all(
+        groups.map((group) =>
+          group === countGroup
+            ? resolveGroupingSets(group, true)
+            : group.length === 1
+              ? resolveSingle(group[0]!)
+              : resolveGroupingSets(group),
+        ),
       ),
-    );
+      Promise.all(
+        plans.map(async (plan) =>
+          plan.facet.missing ? ([plan.index, await resolveMissing(plan)] as const) : undefined,
+        ),
+      ),
+    ]);
+    for (const entry of missing) {
+      if (entry && results[entry[0]])
+        results[entry[0]] = { ...results[entry[0]]!, missing: entry[1] };
+    }
 
     return {
       facets: results,

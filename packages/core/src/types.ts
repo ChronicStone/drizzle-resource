@@ -46,7 +46,10 @@ export type QueryFilterOperator =
   | "lte"
   | "between"
   | "before"
-  | "after";
+  | "after"
+  /** No value: null, `''` on text, an empty array, or no related row on a relation path. */
+  | "isEmpty"
+  | "isNotEmpty";
 
 /**
  * A single filter condition applied to one field path.
@@ -288,6 +291,10 @@ export interface QueryFacetRequest<TField extends string = string> {
    * Pagination cursor returned as `nextCursor` by a previous facet response.
    */
   cursor?: string | null;
+  /**
+   * Also count the rows where the field is empty (the `isEmpty` filter), returned as `missing`.
+   */
+  missing?: boolean;
 }
 
 /**
@@ -316,6 +323,10 @@ export interface QueryFacetResult<TField extends string = string> {
    * Bucketed facet values for this field.
    */
   options: QueryFacetOption[];
+  /**
+   * Rows where the field is empty, when the request asked for `missing`.
+   */
+  missing?: number;
   /**
    * Cursor for the next page of facet buckets, or `null` when exhausted.
    */
@@ -702,6 +713,14 @@ export interface QueryFilterBuilder<TField extends string> {
    * Compile a non-equality comparison.
    */
   isNot: (key: TField, value: unknown) => QueryFilterCondition<TField>;
+  /**
+   * Match rows where the field is empty: null, `''`, an empty array, or no related row.
+   */
+  isEmpty: (key: TField) => QueryFilterCondition<TField>;
+  /**
+   * Match rows where the field holds a value.
+   */
+  isNotEmpty: (key: TField) => QueryFilterCondition<TField>;
   /**
    * Compile a strict greater-than comparison.
    */
