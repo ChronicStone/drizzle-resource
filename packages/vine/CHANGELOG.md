@@ -1,5 +1,12 @@
 # @drizzle-resource/vine
 
+## 1.1.1
+
+### Patch Changes
+
+- Updated dependencies [[`2062a7a`](https://github.com/ChronicStone/drizzle-resource/commit/2062a7af8ede024d46039eea28e20b2a6d3d7795), [`37357ed`](https://github.com/ChronicStone/drizzle-resource/commit/37357ed40499ba62adfe50a0fda2eedf14a487ea)]:
+  - @drizzle-resource/core@1.2.1
+
 ## 1.1.0
 
 ### Minor Changes
