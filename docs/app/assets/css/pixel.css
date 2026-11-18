@@ -1340,6 +1340,17 @@
   color: var(--ink);
   line-height: 1.1;
 }
+.px-blabels .px-bdot {
+  font-family: var(--font-mono);
+  font-weight: 700;
+}
+.px-blabels b em {
+  margin-left: 4px;
+  font-family: var(--font-mono);
+  font-size: 0.42em;
+  font-style: normal;
+  color: var(--ink3);
+}
 .px-blabels small {
   display: block;
   font-family: var(--font-mono);
@@ -1370,8 +1381,17 @@
     line-height: 1.25;
   }
   .px-blabels b {
-    font-size: 17px;
+    font-size: 15px;
     margin-bottom: 3px;
+    white-space: nowrap;
+  }
+  /* the intro above already names the setup */
+  .px-bench .px-win-h small {
+    display: none;
+  }
+  /* the panel title carries the unit on phones */
+  .px-blabels b em {
+    display: none;
   }
   .px-blabels small {
     font-size: 9px;

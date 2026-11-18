@@ -18,7 +18,7 @@ interface Row {
 const props = withDefaults(
   defineProps<{
     title: string;
-    unit?: "ms" | "s";
+    unit?: "ms" | "s" | "rps";
     rows: Row[];
     /** labels for the two bars of a pair */
     legend?: [string, string];
@@ -61,19 +61,24 @@ const ticks = computed(() =>
 const H = computed(() => props.rows.length * rowH.value + 28);
 const x = (v: number) => L.value + (v / max.value) * (R.value - L.value);
 const fmt = (v: number) =>
-  props.unit === "s"
-    ? `${v.toFixed(2)} s`
-    : v >= 10
-      ? `${Math.round(v)} ms`
-      : `${v.toFixed(v < 1 ? 2 : 1)} ms`;
-const tick = (v: number) => String(Math.round(v * 100) / 100);
+  props.unit === "rps"
+    ? `${Math.round(v).toLocaleString("en")}/s`
+    : props.unit === "s"
+      ? `${v.toFixed(2)} s`
+      : v >= 10
+        ? `${Math.round(v)} ms`
+        : `${v.toFixed(v < 1 ? 2 : 1)} ms`;
+const unitName = computed(() =>
+  props.unit === "rps" ? "requests per second" : props.unit === "s" ? "seconds" : "milliseconds",
+);
+const tick = (v: number) => (Math.round(v * 100) / 100).toLocaleString("en");
 </script>
 
 <template>
   <figure class="px-embed not-prose bb">
     <div ref="root" class="bb-measure" />
     <figcaption class="bb-cap">
-      <span><b>{{ title }}</b>, {{ unit === "s" ? "seconds" : "milliseconds" }}</span>
+      <span><b>{{ title }}</b>, {{ unitName }}</span>
       <span v-if="legend" class="bb-legend">
         <span><i class="base" />{{ legend[0] }}</span>
         <span><i class="hit" />{{ legend[1] }}</span>
