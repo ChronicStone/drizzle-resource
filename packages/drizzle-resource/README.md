@@ -10,7 +10,7 @@
 <p align="center">
   <a href="https://npmjs.com/package/drizzle-resource"><img alt="npm version" src="https://img.shields.io/npm/v/drizzle-resource?style=flat&colorA=0a0b0c&colorB=8f6400" /></a>
   <a href="https://npmjs.com/package/drizzle-resource"><img alt="npm downloads" src="https://img.shields.io/npm/dm/drizzle-resource?style=flat&colorA=0a0b0c&colorB=8f6400" /></a>
-  <img alt="Drizzle ORM 1.0" src="https://img.shields.io/badge/drizzle--orm-%3E%3D1.0.0--rc.4-8f6400?style=flat&colorA=0a0b0c" />
+  <img alt="Drizzle ORM 1.0" src="https://img.shields.io/badge/drizzle--orm-%3E%3D1.0.0--rc.5-8f6400?style=flat&colorA=0a0b0c" />
   <img alt="MIT license" src="https://img.shields.io/badge/license-MIT-8f6400?style=flat&colorA=0a0b0c" />
 </p>
 
@@ -34,7 +34,7 @@ Field paths such as `customer.name` or `orderLines.product.category` are typed f
 bun add drizzle-resource      # or: pnpm add / npm install
 ```
 
-Requires `drizzle-orm >= 1.0.0-rc.4` with relational queries.
+Requires `drizzle-orm >= 1.0.0-rc.5` with relational queries.
 
 ## Define a resource
 

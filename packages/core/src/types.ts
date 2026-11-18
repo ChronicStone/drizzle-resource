@@ -381,12 +381,21 @@ export type QueryWith<
     ? NonNullable<TWith>
     : never;
 
+/**
+ * The row of a root table, from the table's own `$inferSelect`.
+ *
+ * Reading it off `ReturnType<typeof db.query[table].findMany>` stopped working with
+ * drizzle-orm 1.0.0-rc.5: its generic config resolves to the constraint there, and every
+ * column comes back as `unknown`. The `findMany` path stays as a fallback for entries
+ * without `$inferSelect`.
+ */
 export type QueryRowShape<
   TDb extends QueryEngineDb,
   TSchema extends QueryEngineSchema,
   TRoot extends QueryRootKey<TDb, TSchema>,
-> =
-  Awaited<ReturnType<TDb["query"][TRoot]["findMany"]>> extends Array<infer TRow>
+> = TSchema[TRoot] extends { $inferSelect: infer TRow extends GenericObject }
+  ? TRow
+  : Awaited<ReturnType<TDb["query"][TRoot]["findMany"]>> extends Array<infer TRow>
     ? Extract<TRow, GenericObject>
     : GenericObject;
 
