@@ -815,9 +815,7 @@ function showRule() {
             <footer class="pg-foot">
               <div class="pg-count">
                 <template v-if="result">
-                  <span class="pg-stat"
-                    ><b class="pg-pix">{{ num(rowCount) }}</b> orders</span
-                  >
+                  <span class="pg-stat"><b class="pg-pix">{{ num(rowCount) }}</b> orders</span>
                   <span v-if="summary && result.summary" class="pg-stat" :title="money(revenue)"
                     ><b class="pg-pix">{{ compactMoney(revenue) }}</b> revenue</span
                   >

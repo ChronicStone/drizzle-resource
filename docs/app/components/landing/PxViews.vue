@@ -86,9 +86,7 @@ const anyCustomer = computed(() =>
           :class="{ on: i === current }"
           @click="current = i"
         >
-          <b>{{ a.name }}</b
-          ><span>{{ a.who }}</span
-          ><em class="px-pix">{{ a.fields.length }}</em>
+          <b>{{ a.name }}</b><span>{{ a.who }}</span><em class="px-pix">{{ a.fields.length }}</em>
         </button>
       </div>
       <div class="px-resp">
@@ -100,9 +98,8 @@ const anyCustomer = computed(() =>
         </div>
         <span class="fl">{</span>
         <span v-for="[k, v] in ROOT" :key="k" class="fl i1" :class="{ gone: !fields.has(k) }"
-          ><span class="t-k">{{ k }}</span
-          >: <span :class="isString(v) ? 't-s' : 't-n'">{{ v }}</span
-          >,</span
+          ><span class="t-k">{{ k }}</span>:
+          <span :class="isString(v) ? 't-s' : 't-n'">{{ v }}</span>,</span
         >
         <span class="fl i1" :class="{ gone: !anyCustomer }"
           ><span class="t-k">customer</span>: {</span
@@ -112,9 +109,11 @@ const anyCustomer = computed(() =>
           :key="k"
           class="fl i2"
           :class="{ gone: !fields.has(k) }"
-          ><span class="t-k">{{ k.split(".")[1] }}</span
-          >: <span class="t-s">{{ v }}</span
-          >,<span v-if="tag" class="tg">{{ tag }}</span></span
+          ><span class="t-k">{{ k.split(".")[1] }}</span>: <span class="t-s">{{ v }}</span>,<span
+            v-if="tag"
+            class="tg"
+            >{{ tag }}</span
+          ></span
         >
         <span class="fl i1" :class="{ gone: !anyCustomer }">},</span>
         <span class="fl">}</span>

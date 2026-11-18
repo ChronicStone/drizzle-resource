@@ -17,5 +17,8 @@
     "test": "vp test",
     "build": "vp pack",
     "check": "vp check && tsc --noEmit -p tsconfig.typecheck.json && vp pack"
+  },
+  "dependencies": {
+    "@drizzle-resource/core": "workspace:*"
   }
 }

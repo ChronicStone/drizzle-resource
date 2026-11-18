@@ -315,8 +315,16 @@ describe("defineResource", () => {
     const requests: QueryRequest[] = [];
     const selected = {
       id: "emp_1",
+      departmentId: "dep_1",
       fullName: "Ada",
-      department: { company: { country: "France" } },
+      email: "ada@example.com",
+      department: {
+        id: "dep_1",
+        companyId: "co_1",
+        name: "Engineering",
+        budget: null,
+        company: { id: "co_1", name: "Acme", country: "France" },
+      },
     };
     const engine = createQueryEngine({
       db: {

@@ -174,20 +174,15 @@ onBeforeUnmount(() => window.clearInterval(timer));
             :class="{ on: i === selected }"
             @mousedown.prevent="accept(p[0])"
           >
-            {{ value }}<b>{{ p[0].slice(value.length) }}</b
-            ><i>{{ p[1] }}</i>
+            {{ value }}<b>{{ p[0].slice(value.length) }}</b><i>{{ p[1] }}</i>
           </button>
           <div class="ft">deletedAt is private and never offered</div>
         </div>
-        <div class="px-diag" :class="diag.kind">
-          {{ diag.main }}<small>{{ diag.small }}</small>
-        </div>
+        <div class="px-diag" :class="diag.kind">{{ diag.main }}<small>{{ diag.small }}</small></div>
       </div>
       <div class="px-tries">
         <button v-for="t in TRIES" :key="t.path" type="button" @click="tryPath(t.path)">
-          <code>{{ t.path }}</code
-          ><span>{{ t.text }}</span
-          ><i>try →</i>
+          <code>{{ t.path }}</code><span>{{ t.text }}</span><i>try →</i>
         </button>
       </div>
     </div>

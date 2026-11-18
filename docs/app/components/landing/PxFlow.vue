@@ -202,10 +202,7 @@ onBeforeUnmount(clear);
             aria-hidden="true"
           />
           <div v-for="(l, k) in LAYERS" :key="l[0]" class="px-layer" :class="layerClass(k)">
-            <div class="px-layer-n">
-              <em class="px-pix">{{ l[0] }}</em
-              >{{ l[1] }}
-            </div>
+            <div class="px-layer-n"><em class="px-pix">{{ l[0] }}</em>{{ l[1] }}</div>
             <div class="px-layer-o">
               <template v-if="k <= reached && SCENARIOS[current]!.steps[k]">
                 <span v-if="SCENARIOS[current]!.steps[k]!.tone === 'ok'" class="px-ok">✓ </span>

@@ -198,9 +198,7 @@ function copy() {
       <div ref="sourceEl" class="px-code px-src">
         <div class="px-code-bar">
           <b>orders.resource.ts</b>
-          <span class="px-lines"
-            ><em class="px-pix">{{ SOURCE.length }}</em> lines</span
-          >
+          <span class="px-lines"><em class="px-pix">{{ SOURCE.length }}</em> lines</span>
         </div>
         <pre><div
           v-for="(l, i) in SOURCE"
@@ -263,9 +261,7 @@ function copy() {
             </div>
             <div class="px-mini-body">
               <div class="px-part px-mini-fc" data-p="facets">
-                <div v-for="[name, n] in FACETS" :key="name">
-                  {{ name }} <span>{{ n }}</span>
-                </div>
+                <div v-for="[name, n] in FACETS" :key="name">{{ name }} <span>{{ n }}</span></div>
               </div>
               <div>
                 <table>
@@ -295,9 +291,6 @@ function copy() {
         </div>
       </div>
     </div>
-    <p class="px-fan-cap">
-      <b>{{ active }}</b
-      ><span>{{ CAPTIONS[active] }}</span>
-    </p>
+    <p class="px-fan-cap"><b>{{ active }}</b><span>{{ CAPTIONS[active] }}</span></p>
   </section>
 </template>

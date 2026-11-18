@@ -1,6 +1,7 @@
 import { getColumns } from "drizzle-orm";
 import { createSelectSchema } from "drizzle-orm/zod";
 import { z } from "zod";
+import type { QueryRequest } from "@drizzle-resource/core";
 
 export type QueryZodIntegrationConfig = { readonly package: "zod" };
 
@@ -350,7 +351,16 @@ function responseRelations(resource: any, load?: string) {
 }
 
 /** Build a strict transport schema from a resource's request contract. */
-export function requestSchema(resource: any, override?: QueryRequestSchemaOverride): any {
+/**
+ * The request a parsed schema returns: every key filled in from the resource defaults.
+ * Context is left out; pass it to `resource.query({ context })` on the server.
+ */
+export type QueryRequestSchemaOutput = Omit<QueryRequest, "context">;
+
+export function requestSchema(
+  resource: any,
+  override?: QueryRequestSchemaOverride,
+): z.ZodType<QueryRequestSchemaOutput> {
   const contract = resolveQueryRequestContract(resource, override);
   const enums = enumFilterValues(resource, contract.filters);
   const filter: z.ZodType<any> = z.lazy(() =>
