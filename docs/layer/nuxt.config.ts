@@ -71,6 +71,7 @@ export default defineNuxtConfig({
             "mdc",
             "md",
             "yaml",
+            "sql",
           ],
         },
         remarkPlugins: {
@@ -91,7 +92,7 @@ export default defineNuxtConfig({
         default: "vitesse-light",
         dark: "vitesse-dark",
       },
-      langs: ["ts", "tsx", "js", "json", "vue", "bash", "diff", "html", "css", "md", "yaml"],
+      langs: ["ts", "tsx", "js", "json", "vue", "bash", "diff", "html", "css", "md", "yaml", "sql"],
       noApiRoute: true,
     },
   },
