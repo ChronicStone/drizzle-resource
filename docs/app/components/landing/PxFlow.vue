@@ -40,7 +40,7 @@ const SCENARIOS: Scenario[] = [
     steps: [
       { text: 'where c."org_id" = $1 and ( … )   -- tenant from ctx', lang: "sql" },
       { text: "keys, operators and paths allowed", lang: "ts", tone: "ok" },
-      { text: 'select "id" … limit 26   -- 0.67 ms', lang: "sql" },
+      { text: 'select "id" … limit 26   -- 0.51 ms', lang: "sql" },
       { text: '25 rows · view "list" · relations in the same statement', lang: "ts" },
       { text: "grouping sets → status buckets + revenue", lang: "sql" },
     ],
