@@ -263,7 +263,7 @@ describe("defineResource", () => {
     });
   });
 
-  it("normalizes a search value omitted by a transport boundary", async () => {
+  it("normalizes omitted request defaults from a transport boundary", async () => {
     let capturedRequest: QueryRequest | undefined;
 
     const engine = createQueryEngine({
@@ -290,7 +290,6 @@ describe("defineResource", () => {
 
     await resource.query({
       request: {
-        ...baseRequest,
         search: {
           fields: ["fullName"],
         },
@@ -301,6 +300,14 @@ describe("defineResource", () => {
     expect(capturedRequest?.search).toEqual({
       fields: ["fullName"],
       value: "",
+    });
+    expect(capturedRequest?.filters).toEqual([]);
+    expect(capturedRequest?.sorting).toEqual([{ key: "id", dir: "asc" }]);
+    expect(capturedRequest?.pagination).toEqual({
+      mode: "offset",
+      pageIndex: 1,
+      pageSize: 25,
+      count: "exact",
     });
   });
 

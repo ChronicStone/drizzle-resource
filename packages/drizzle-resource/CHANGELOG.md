@@ -1,5 +1,29 @@
 # drizzle-resource
 
+## 2.6.3
+
+### Patch Changes
+
+- [#39](https://github.com/ChronicStone/drizzle-resource/pull/39) [`f0b0539`](https://github.com/ChronicStone/drizzle-resource/commit/f0b05396f88dcf5be4cdb2f0e44385a7c5bef62d) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Fix facets on virtual fields, which failed with a Drizzle alias error, or a PostgreSQL `GROUP BY` error when the virtual's SQL carried parameters. The Vine, Zod and Valibot request schemas now refuse filter values outside a PostgreSQL enum column's values, directly or through a relation path, so the request fails validation instead of reaching PostgreSQL as an invalid enum input.
+
+## 2.6.2
+
+### Patch Changes
+
+- [#37](https://github.com/ChronicStone/drizzle-resource/pull/37) [`2463231`](https://github.com/ChronicStone/drizzle-resource/commit/246323199752ceb3e4feaf5b5dc9d8a04d29a881) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Normalize omitted pagination, sorting, filters, and search fields at the query engine boundary so valid sparse transport requests do not fail during list or summary queries.
+
+## 2.6.1
+
+### Patch Changes
+
+- [#35](https://github.com/ChronicStone/drizzle-resource/pull/35) [`7ad770a`](https://github.com/ChronicStone/drizzle-resource/commit/7ad770aa1527c943f97d78435ff656ce68018f00) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Export the typed resource returned by `defineResource` so applications can type shared resource helpers with views, model policies, and summaries.
+
+## 2.6.0
+
+### Minor Changes
+
+- [#33](https://github.com/ChronicStone/drizzle-resource/pull/33) [`9a36c61`](https://github.com/ChronicStone/drizzle-resource/commit/9a36c612279e0a561a096cf3a4094a89ee75ba50) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add engine model definitions for private, hidden, and SQL virtual fields, exact typed resource views, and typed summaries over the complete scoped and filtered dataset. Summaries execute in one SQL statement and share their count with exact pagination. Virtual callbacks infer their owning table and database. Zod and Valibot response schemas support views and automatically derive validators for standard Drizzle aggregates.
+
 ## 2.5.1
 
 ### Patch Changes

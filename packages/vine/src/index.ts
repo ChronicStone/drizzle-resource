@@ -58,14 +58,56 @@ const QUERY_FILTER_OPERATORS = [
 
 const QUERY_SORT_DIRECTIONS = ["asc", "desc"] as const;
 const QUERY_FACET_MODES = ["exclude-self", "include-self"] as const;
+const ENUM_COLUMN_TYPES = new Set(["PgEnumColumn", "PgEnumObjectColumn"]);
+
+type QueryRequestVineResource = Pick<
+  QueryResource<any, any, any, any, any, any, any>,
+  "key" | "fields" | "queryConfig"
+>;
 
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null && !Array.isArray(value);
 }
 
-function unknownValueSchema(): SchemaTypes {
+function enumFilterValues(
+  resource: QueryRequestVineResource,
+  filters: Set<string>,
+): Map<string, Set<unknown>> {
+  const enums = new Map<string, Set<unknown>>();
+  for (const key of filters) {
+    const column = resource.fields.get(key)?.column as
+      | { columnType?: string; enumValues?: readonly string[] }
+      | undefined;
+    if (column?.enumValues && ENUM_COLUMN_TYPES.has(column.columnType ?? "")) {
+      enums.set(key, new Set(column.enumValues));
+    }
+  }
+  return enums;
+}
+
+function comparedFilterValues(operator: unknown, value: unknown): unknown[] {
+  if (operator === "contains") return [];
+  if (operator === "between") return isRecord(value) ? [value.from, value.to] : [];
+  return Array.isArray(value) ? value : [value];
+}
+
+const enumFilterValueRule = vine.createRule((value, enums: Map<string, Set<unknown>>, field) => {
+  const condition = isRecord(field.parent) ? field.parent : undefined;
+  const allowed = typeof condition?.key === "string" ? enums.get(condition.key) : undefined;
+  if (!allowed) return;
+
+  const valid = comparedFilterValues(condition?.operator, value).every(
+    (item) => item === null || item === undefined || allowed.has(item),
+  );
+  if (!valid) {
+    field.report("Filter value is not allowed", "enum", field, { choices: [...allowed] });
+  }
+});
+
+function filterValueSchema(enums: Map<string, Set<unknown>>): SchemaTypes {
   return vine
     .any()
+    .use(enumFilterValueRule(enums))
     .nullable()
     .transform((value): unknown => value);
 }
@@ -91,10 +133,12 @@ function strictObject<Properties extends Record<string, SchemaTypes>>(properties
 
 function filterNodeSchema({
   filters,
+  enums,
   maxDepth,
   depth,
 }: {
   filters: Set<string>;
+  enums: Map<string, Set<unknown>>;
   maxDepth: number;
   depth: number;
 }): SchemaTypes {
@@ -102,7 +146,7 @@ function filterNodeSchema({
     type: vine.literal("condition"),
     key: allowedStringSchema(filters, "Filter field"),
     operator: vine.enum(QUERY_FILTER_OPERATORS),
-    value: unknownValueSchema(),
+    value: filterValueSchema(enums),
   });
 
   if (depth >= maxDepth) return condition;
@@ -110,7 +154,7 @@ function filterNodeSchema({
   const group = strictObject({
     type: vine.literal("group"),
     combinator: vine.enum(["and", "or"] as const),
-    children: vine.array(filterNodeSchema({ filters, maxDepth, depth: depth + 1 })),
+    children: vine.array(filterNodeSchema({ filters, enums, maxDepth, depth: depth + 1 })),
   });
 
   return vine.union([
@@ -322,6 +366,7 @@ function normalizeRequestDefaults(
 
 function requestSchemaProperties(
   contract: ReturnType<typeof resolveQueryRequestContract>,
+  enums: Map<string, Set<unknown>>,
 ): QueryRequestVineSchemaProperties {
   const pageSize = vine.number().withoutDecimals().positive().max(contract.limits.maxPageSize);
   const offsetPagination = strictObject({
@@ -340,6 +385,7 @@ function requestSchemaProperties(
     .array(
       filterNodeSchema({
         filters: contract.filters,
+        enums,
         maxDepth: contract.limits.maxFilterDepth,
         depth: 1,
       }),
@@ -387,10 +433,7 @@ function requestSchemaProperties(
 }
 
 export function requestSchema(
-  resource: Pick<
-    QueryResource<any, any, any, any, any, any, any>,
-    "key" | "fields" | "queryConfig"
-  >,
+  resource: QueryRequestVineResource,
   override?: QueryRequestSchemaOverride,
 ): QueryRequestVineSchema {
   const contract = resolveQueryRequestContract(resource, override);
@@ -402,7 +445,7 @@ export function requestSchema(
     QueryRequestVineInput,
     QueryRequestVineOutput,
     QueryRequestVineOutput
-  >(requestSchemaProperties(contract))
+  >(requestSchemaProperties(contract, enumFilterValues(resource, contract.filters)))
     .use(strictObjectRule(["pagination", "sorting", "filters", "search", "facets"]))
     .use(reportRequestErrors(contract)())
     .use(normalizeRequestDefaults(contract, defaultSearchFields)());

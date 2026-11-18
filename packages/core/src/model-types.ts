@@ -199,7 +199,7 @@ type ResultRow<
     ? SelectedRow<D, S, R, M, K, ResolveResourceLoad<W, H, Op, Load>, undefined>
     : ResourceRowForLoad<D, S, R, K, W, Row, ResolveResourceLoad<W, H, Op, Load>>;
 
-type Resource<
+export type Resource<
   D extends QueryEngineDb,
   S extends QueryEngineSchema,
   R extends QueryEngineRelations,

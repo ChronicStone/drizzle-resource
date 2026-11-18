@@ -36,30 +36,39 @@ function normalizeRequest(
   defaultSearchFields: readonly string[],
   defaults?: ResourceQueryDefaultsConfig,
 ): QueryRequest {
-  const searchFields =
-    request.search.fields.length > 0 ? request.search.fields : defaultSearchFields;
+  const search = request.search ?? { value: "", fields: [] };
   const defaultPageIndex = defaults?.pagination?.pageIndex ?? 1;
   const defaultPageSize = defaults?.pagination?.pageSize ?? 25;
-  const requestedMode = request.pagination.mode ?? "offset";
+  const requestedPagination: QueryRequestInput["pagination"] =
+    request.pagination ??
+    (defaults?.pagination?.mode === "cursor"
+      ? { mode: "cursor", pageSize: defaultPageSize }
+      : { mode: "offset", pageIndex: defaultPageIndex, pageSize: defaultPageSize });
+  const searchFields = search.fields?.length > 0 ? search.fields : defaultSearchFields;
+  const requestedMode = requestedPagination.mode ?? defaults?.pagination?.mode ?? "offset";
   const defaultCount =
     defaults?.pagination?.mode === requestedMode ? defaults.pagination.count : undefined;
   const pagination =
-    request.pagination.mode === "cursor"
+    requestedMode === "cursor"
       ? {
           mode: "cursor" as const,
-          cursor: request.pagination.cursor ?? null,
-          pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
-          count: request.pagination.count ?? defaultCount ?? ("none" as const),
+          cursor: "cursor" in requestedPagination ? (requestedPagination.cursor ?? null) : null,
+          pageSize:
+            requestedPagination.pageSize > 0 ? requestedPagination.pageSize : defaultPageSize,
+          count: requestedPagination.count ?? defaultCount ?? ("none" as const),
         }
       : {
           mode: "offset" as const,
           pageIndex:
-            request.pagination.pageIndex > 0 ? request.pagination.pageIndex : defaultPageIndex,
-          pageSize: request.pagination.pageSize > 0 ? request.pagination.pageSize : defaultPageSize,
-          count: request.pagination.count ?? defaultCount ?? ("exact" as const),
+            "pageIndex" in requestedPagination && requestedPagination.pageIndex > 0
+              ? requestedPagination.pageIndex
+              : defaultPageIndex,
+          pageSize:
+            requestedPagination.pageSize > 0 ? requestedPagination.pageSize : defaultPageSize,
+          count: requestedPagination.count ?? defaultCount ?? ("exact" as const),
         };
   const requestedSorting =
-    request.sorting.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
+    request.sorting?.length > 0 ? request.sorting : [...(defaults?.sorting ?? [])];
   const sorting = !requestedSorting.some(({ key }) => key === "id")
     ? [...requestedSorting, { key: "id", dir: requestedSorting.at(-1)?.dir ?? ("asc" as const) }]
     : requestedSorting;
@@ -69,9 +78,10 @@ function normalizeRequest(
     context: {},
     pagination,
     sorting,
+    filters: request.filters ?? [],
     search: {
-      ...request.search,
-      value: typeof request.search.value === "string" ? request.search.value : "",
+      ...search,
+      value: typeof search.value === "string" ? search.value : "",
       fields: [...searchFields],
     },
   };
@@ -1007,7 +1017,7 @@ export function createQueryEngine<
 
         const inputResource = executionOptions.trustedInput ? trustedResource : resource;
 
-        const suppliedSorting = request.sorting.length
+        const suppliedSorting = request.sorting?.length
           ? request.sorting
           : (options.query?.sort?.defaults ?? []);
         // The normalizer's ID tie-breaker is internal; explicit client ID sorts remain public input.

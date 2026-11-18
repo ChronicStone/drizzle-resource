@@ -3,6 +3,7 @@ export type { VirtualField } from "./src/models.js";
 export type {
   ConfiguredEngine,
   ModelDefinitions,
+  Resource,
   ResourceView,
   SummarySelection,
   SummaryResult,
