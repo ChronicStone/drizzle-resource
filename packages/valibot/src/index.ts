@@ -1,6 +1,7 @@
 import { getColumns } from "drizzle-orm";
 import { createSelectSchema } from "drizzle-orm/valibot";
 import * as v from "valibot";
+import type { QueryRequest } from "@drizzle-resource/core";
 
 export type QueryValibotIntegrationConfig = { readonly package: "valibot" };
 
@@ -355,7 +356,16 @@ function responseRelations(resource: any, load?: string) {
 }
 
 /** Build a strict transport schema from a resource's request contract. */
-export function requestSchema(resource: any, override?: QueryRequestSchemaOverride): any {
+/**
+ * The request a parsed schema returns: every key filled in from the resource defaults.
+ * Context is left out; pass it to `resource.query({ context })` on the server.
+ */
+export type QueryRequestSchemaOutput = Omit<QueryRequest, "context">;
+
+export function requestSchema(
+  resource: any,
+  override?: QueryRequestSchemaOverride,
+): v.GenericSchema<unknown, QueryRequestSchemaOutput> {
   const contract = resolveQueryRequestContract(resource, override);
   const enums = enumFilterValues(resource, contract.filters);
   const filter: any = v.lazy(() =>
@@ -442,6 +452,7 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
           count: defaultCount,
         };
 
+  // Defaults fill every key at runtime; valibot keeps them optional in the inferred type.
   return v.strictObject({
     pagination: v.optional(
       v.pipe(
@@ -510,7 +521,7 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
         v.maxLength(contract.limits.maxFacetCount),
       ),
     ),
-  });
+  }) as unknown as v.GenericSchema<unknown, QueryRequestSchemaOutput>;
 }
 
 function summaryResponseSchema(resource: any): any {

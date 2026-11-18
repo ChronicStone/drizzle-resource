@@ -6,6 +6,7 @@ import * as v from "valibot";
 import { createQueryEngine, virtual } from "../../core/index.js";
 
 import { requestSchema, responseSchema } from "../index.js";
+import type { QueryRequestSchemaOutput } from "../index.js";
 
 const customers = pgTable("customers", {
   id: uuid().primaryKey(),
@@ -261,5 +262,14 @@ describe("model-aware response schemas", () => {
     expect(v.parse(transformed, { rows: payload.rows, pageInfo }).rows[0]?.upperReference).toBe(3);
     // @ts-expect-error summary schema must match the SQL aggregate result
     responseSchema(selected, { view: "list", summary: v.object({ rows: v.string() }) });
+  });
+});
+
+describe("requestSchema types", () => {
+  it("parses to a typed request, not any", () => {
+    const parsed = v.parse(requestSchema(resource), {});
+    expectTypeOf(parsed).not.toBeAny();
+    expectTypeOf(parsed).toEqualTypeOf<QueryRequestSchemaOutput>();
+    expectTypeOf(parsed.pagination.pageSize).toEqualTypeOf<number>();
   });
 });
