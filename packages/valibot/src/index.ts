@@ -62,6 +62,7 @@ interface QuerySchemaResponse<TRow> {
     options: Array<{ value: unknown; count: number }>;
     nextCursor?: string | null;
     total?: number;
+    missing?: number;
   }>;
 }
 
@@ -376,6 +377,8 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
             "between",
             "before",
             "after",
+            "isEmpty",
+            "isNotEmpty",
           ]),
           value: v.unknown(),
         }),
@@ -505,6 +508,7 @@ export function requestSchema(resource: any, override?: QueryRequestSchemaOverri
               ),
             ),
             cursor: v.optional(v.nullable(v.string())),
+            missing: v.optional(v.boolean()),
           }),
         ),
         v.maxLength(contract.limits.maxFacetCount),
@@ -732,6 +736,7 @@ export function responseSchema(
           ),
           nextCursor: v.optional(v.nullable(v.string())),
           total: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+          missing: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
         }),
       ),
     ),

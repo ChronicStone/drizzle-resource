@@ -62,6 +62,9 @@ const accepted: Condition[] = [
   ["customer.tier", "isAnyOf", ["GOLD", "SILVER"]],
   ["channel", "is", "other"],
   ["reference", "isAnyOf", ["NOPE"]],
+  ["status", "isEmpty", null],
+  ["customer.tier", "isNotEmpty", null],
+  ["channel", "isEmpty", null],
 ];
 
 const refused: Condition[] = [
@@ -94,6 +97,12 @@ describe("Vine enum filter values", () => {
     await expect(validator.validate({ filters: [condition(input)] })).rejects.toMatchObject({
       messages: [expect.objectContaining({ field: "filters.0.value", rule: "enum" })],
     });
+  });
+
+  it("accepts a facet that asks for its missing count", async () => {
+    await expect(
+      validator.validate({ facets: [{ key: "status", missing: true }] }),
+    ).resolves.toMatchObject({ facets: [{ key: "status", missing: true }] });
   });
 
   it("refuses invalid enum values inside filter groups", async () => {
