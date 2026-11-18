@@ -7,12 +7,12 @@ defineProps<{ bare?: boolean }>();
 /* Benchmark medians drawn in pixels: dim pixels are 2.4.1, bright pixels are today.
    When the chart enters the screen, the pixels above today's time fall away. */
 const ROWS = [
-  { name: "Page, no count", stmts: "1 → 1 statement", before: 38.59, after: 0.67 },
-  { name: "Page + exact count", stmts: "2 → 2", before: 48.48, after: 5.02 },
-  { name: "Relation search", stmts: "2 → 2", before: 167.35, after: 43.38 },
-  { name: "3 root facets", stmts: "3 → 1", before: 84.85, after: 24.57 },
-  { name: "5 mixed facets", stmts: "5 → 2", before: 194.66, after: 56.53 },
-  { name: "Exclude-self facets", stmts: "5 → 3", before: 127.51, after: 35.12 },
+  { name: "Page, no count", stmts: "1 → 1 statement", before: 39.95, after: 0.51 },
+  { name: "Page + exact count", stmts: "2 → 2", before: 62.46, after: 4.17 },
+  { name: "Relation search", stmts: "2 → 2", before: 79.46, after: 16.8 },
+  { name: "3 root facets", stmts: "3 → 1", before: 90.03, after: 24.76 },
+  { name: "5 mixed facets", stmts: "5 → 2", before: 195.04, after: 57.38 },
+  { name: "Exclude-self facets", stmts: "5 → 3", before: 138.22, after: 35.84 },
 ];
 const CELL = 6;
 const MS_PER_ROW = 5;
@@ -132,7 +132,7 @@ useFrame((now) => {
       </div>
       <p class="px-src">
         Source:
-        <NuxtLink to="/scale/benchmarks">benchmark results</NuxtLink>, run of September 21, 2026.
+        <NuxtLink to="/scale/benchmarks">benchmark results</NuxtLink>, run of November 18, 2026.
         Single-client engine timings, not HTTP or production latency.
       </p>
     </div>

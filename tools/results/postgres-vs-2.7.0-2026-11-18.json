@@ -1,0 +1,770 @@
+{
+  "timestamp": "2026-11-18T18:27:08.117Z",
+  "baseline": "provided module",
+  "rows": 200000,
+  "iterations": 10,
+  "concurrency": 1,
+  "environment": {
+    "version": "PostgreSQL 18.6 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "work_mem": "4MB"
+  },
+  "measurements": [
+    {
+      "scenario": "page-and-shared-count-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 23.653291999999965,
+          "p95Ms": 30.203125000000114,
+          "requestsPerSecond": 39.82015894192549,
+          "maxMs": 30.203125000000114,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 24.33874999999989,
+          "p95Ms": 27.587417000000073,
+          "requestsPerSecond": 40.65048945750286,
+          "maxMs": 27.587417000000073,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "relation-sorted-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 17.617917000000034,
+          "p95Ms": 38.557166999999936,
+          "requestsPerSecond": 45.84544707581426,
+          "maxMs": 38.557166999999936,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 17.53970800000002,
+          "p95Ms": 18.0642499999999,
+          "requestsPerSecond": 57.17378587406356,
+          "maxMs": 18.0642499999999,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-Ref-199999",
+      "variants": {
+        "baseline": {
+          "medianMs": 6.402707999999848,
+          "p95Ms": 9.460415999999896,
+          "requestsPerSecond": 143.35008077992154,
+          "maxMs": 9.460415999999896,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 6.609208999999964,
+          "p95Ms": 10.596082999999908,
+          "requestsPerSecond": 136.16743332789713,
+          "maxMs": 10.596082999999908,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 3.4795000000001437,
+          "p95Ms": 3.716999999999871,
+          "requestsPerSecond": 288.0903478987706,
+          "maxMs": 3.716999999999871,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 3.5104169999999613,
+          "p95Ms": 4.444082999999864,
+          "requestsPerSecond": 281.5853672924932,
+          "maxMs": 4.444082999999864,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-account",
+      "variants": {
+        "baseline": {
+          "medianMs": 147.84629199999972,
+          "p95Ms": 300.19233299999996,
+          "requestsPerSecond": 6.149098262902617,
+          "maxMs": 300.19233299999996,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 146.56504099999984,
+          "p95Ms": 150.62366599999996,
+          "requestsPerSecond": 6.832542197599553,
+          "maxMs": 150.62366599999996,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 143.6377080000002,
+          "p95Ms": 163.69579200000044,
+          "requestsPerSecond": 6.844424558379563,
+          "maxMs": 163.69579200000044,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 143.78466599999956,
+          "p95Ms": 191.10100000000057,
+          "requestsPerSecond": 6.769247651526126,
+          "maxMs": 191.10100000000057,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-account-19999",
+      "variants": {
+        "baseline": {
+          "medianMs": 1.6980839999996533,
+          "p95Ms": 2.1927080000004935,
+          "requestsPerSecond": 580.9730962395787,
+          "maxMs": 2.1927080000004935,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 1.6832500000000437,
+          "p95Ms": 2.9457079999992857,
+          "requestsPerSecond": 526.6588938836398,
+          "maxMs": 2.9457079999992857,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "countless-cross-table-search-ref",
+      "variants": {
+        "baseline": {
+          "medianMs": 0.8463750000009895,
+          "p95Ms": 1.0805830000008427,
+          "requestsPerSecond": 1144.841447473552,
+          "maxMs": 1.0805830000008427,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 0.840874999999869,
+          "p95Ms": 0.9941670000007434,
+          "requestsPerSecond": 1166.611349844826,
+          "maxMs": 0.9941670000007434,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 141.28329099999974,
+          "p95Ms": 152.59583399999974,
+          "requestsPerSecond": 7.091666495332003,
+          "maxMs": 152.59583399999974,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 134.56354099999953,
+          "p95Ms": 160.7755419999994,
+          "requestsPerSecond": 7.326409870632896,
+          "maxMs": 160.7755419999994,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 393.5933750000004,
+          "p95Ms": 617.4823329999999,
+          "requestsPerSecond": 2.4356543986198624,
+          "maxMs": 617.4823329999999,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 354.40750000000116,
+          "p95Ms": 497.11470799999915,
+          "requestsPerSecond": 2.6731887124873936,
+          "maxMs": 497.11470799999915,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-19999-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 446.3547089999993,
+          "p95Ms": 581.8385000000017,
+          "requestsPerSecond": 2.1467540948100496,
+          "maxMs": 581.8385000000017,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 412.2166249999973,
+          "p95Ms": 564.0875830000004,
+          "requestsPerSecond": 2.3231603570043746,
+          "maxMs": 564.0875830000004,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 6.484791999999288,
+          "p95Ms": 10.279875000000175,
+          "requestsPerSecond": 140.03853328290103,
+          "maxMs": 10.279875000000175,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 6.599082999997336,
+          "p95Ms": 8.028459000001021,
+          "requestsPerSecond": 146.8286846808827,
+          "maxMs": 8.028459000001021,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 230.82712499999616,
+          "p95Ms": 248.39562499999738,
+          "requestsPerSecond": 4.361368688542387,
+          "maxMs": 248.39562499999738,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 197.74524999999994,
+          "p95Ms": 325.93312499999956,
+          "requestsPerSecond": 4.688912901332862,
+          "maxMs": 325.93312499999956,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-account-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 386.82362499999726,
+          "p95Ms": 628.6077080000032,
+          "requestsPerSecond": 2.438846805316355,
+          "maxMs": 628.6077080000032,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 340.4775410000002,
+          "p95Ms": 376.1126250000016,
+          "requestsPerSecond": 2.9110163065099286,
+          "maxMs": 376.1126250000016,
+          "statementsPerRequest": 4
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-none",
+      "variants": {
+        "baseline": {
+          "medianMs": 124.46704200000386,
+          "p95Ms": 153.0906249999971,
+          "requestsPerSecond": 7.655477982724757,
+          "maxMs": 153.0906249999971,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 132.61891599999944,
+          "p95Ms": 137.02120899999863,
+          "requestsPerSecond": 7.590005850991321,
+          "maxMs": 137.02120899999863,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-exact",
+      "variants": {
+        "baseline": {
+          "medianMs": 218.50570799999696,
+          "p95Ms": 370.7418749999997,
+          "requestsPerSecond": 4.347437335329612,
+          "maxMs": 370.7418749999997,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 180.0404170000038,
+          "p95Ms": 297.5044160000034,
+          "requestsPerSecond": 5.192986187510459,
+          "maxMs": 297.5044160000034,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "wide-search-not-here-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 308.0708750000049,
+          "p95Ms": 433.3487920000043,
+          "requestsPerSecond": 3.16657481773637,
+          "maxMs": 433.3487920000043,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 274.2555000000066,
+          "p95Ms": 294.5736659999966,
+          "requestsPerSecond": 3.6738223741570235,
+          "maxMs": 294.5736659999966,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "related-facets-with-summary",
+      "variants": {
+        "baseline": {
+          "medianMs": 66.70729200000642,
+          "p95Ms": 92.08783299999777,
+          "requestsPerSecond": 14.179344730735972,
+          "maxMs": 92.08783299999777,
+          "statementsPerRequest": 5
+        },
+        "optimized": {
+          "medianMs": 62.11033399999724,
+          "p95Ms": 99.63408299999719,
+          "requestsPerSecond": 15.582350376597011,
+          "maxMs": 99.63408299999719,
+          "statementsPerRequest": 6
+        }
+      }
+    },
+    {
+      "scenario": "root-facets-with-missing",
+      "variants": {
+        "baseline": {
+          "medianMs": 22.68604200000118,
+          "p95Ms": 47.69033300000592,
+          "requestsPerSecond": 39.332076057302274,
+          "maxMs": 47.69033300000592,
+          "statementsPerRequest": 4
+        },
+        "optimized": {
+          "medianMs": 22.71441600000253,
+          "p95Ms": 27.30937499999709,
+          "requestsPerSecond": 43.05116523360334,
+          "maxMs": 27.30937499999709,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "id-selection-10",
+      "variants": {
+        "baseline": {
+          "medianMs": 0.6133330000011483,
+          "p95Ms": 0.7397909999999683,
+          "requestsPerSecond": 1596.6253726112689,
+          "maxMs": 0.7397909999999683,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 0.3105000000068685,
+          "p95Ms": 0.38254199999937555,
+          "requestsPerSecond": 3300.1024021889157,
+          "maxMs": 0.38254199999937555,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "id-selection-1000",
+      "variants": {
+        "baseline": {
+          "medianMs": 7.899250000002212,
+          "p95Ms": 9.158917000000656,
+          "requestsPerSecond": 128.2589130870503,
+          "maxMs": 9.158917000000656,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 2.799582999999984,
+          "p95Ms": 2.900708000001032,
+          "requestsPerSecond": 368.90101031999063,
+          "maxMs": 2.900708000001032,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "page-without-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 0.34104200000001583,
+          "p95Ms": 0.45816699999704724,
+          "requestsPerSecond": 2848.8340292028697,
+          "maxMs": 0.45816699999704724,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 0.30520899999828544,
+          "p95Ms": 0.3667090000017197,
+          "requestsPerSecond": 3211.3037893295273,
+          "maxMs": 0.3667090000017197,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "page-exact-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 3.3469590000022436,
+          "p95Ms": 3.5734169999996084,
+          "requestsPerSecond": 296.88860445633827,
+          "maxMs": 3.5734169999996084,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 3.3676249999989523,
+          "p95Ms": 3.542249999998603,
+          "requestsPerSecond": 299.63442801984394,
+          "maxMs": 3.542249999998603,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "relation-search-page",
+      "variants": {
+        "baseline": {
+          "medianMs": 14.887000000002445,
+          "p95Ms": 20.50195900000108,
+          "requestsPerSecond": 65.87962431564424,
+          "maxMs": 20.50195900000108,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 14.182374999996682,
+          "p95Ms": 15.290374999996857,
+          "requestsPerSecond": 69.52918216952897,
+          "maxMs": 15.290374999996857,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "three-root-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 23.13166700000147,
+          "p95Ms": 25.770292000001064,
+          "requestsPerSecond": 43.10768323412114,
+          "maxMs": 25.770292000001064,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 23.094875000002503,
+          "p95Ms": 27.29475000000093,
+          "requestsPerSecond": 42.77252938406479,
+          "maxMs": 27.29475000000093,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "five-mixed-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 54.33733299999585,
+          "p95Ms": 57.207625000002736,
+          "requestsPerSecond": 18.433423214581893,
+          "maxMs": 57.207625000002736,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 53.838457999998354,
+          "p95Ms": 57.4442080000008,
+          "requestsPerSecond": 18.561868249366558,
+          "maxMs": 57.4442080000008,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "filtered-exclude-self-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 30.091458000002604,
+          "p95Ms": 36.85033299999486,
+          "requestsPerSecond": 32.58645642284592,
+          "maxMs": 36.85033299999486,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 30.31708300000173,
+          "p95Ms": 43.65179100000387,
+          "requestsPerSecond": 30.743630784367717,
+          "maxMs": 43.65179100000387,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "deep-cursor-id-asc",
+      "variants": {
+        "baseline": {
+          "medianMs": 7.065750000001572,
+          "p95Ms": 20.291958999994677,
+          "requestsPerSecond": 120.9007731447144,
+          "maxMs": 20.291958999994677,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 1.2318749999976717,
+          "p95Ms": 5.956749999997555,
+          "requestsPerSecond": 526.767423227385,
+          "maxMs": 5.956749999997555,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "deep-cursor-id-desc",
+      "variants": {
+        "baseline": {
+          "medianMs": 5.611750000003667,
+          "p95Ms": 5.869917000003625,
+          "requestsPerSecond": 178.0274149401251,
+          "maxMs": 5.869917000003625,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 0.4483749999999418,
+          "p95Ms": 0.790500000002794,
+          "requestsPerSecond": 2079.290845382698,
+          "maxMs": 0.790500000002794,
+          "statementsPerRequest": 1
+        }
+      }
+    }
+  ],
+  "scans": [
+    {
+      "sorting": [
+        {
+          "key": "year",
+          "dir": "desc"
+        },
+        {
+          "key": "month",
+          "dir": "desc"
+        }
+      ],
+      "results": [
+        {
+          "iteration": 0,
+          "variant": "baseline-pages",
+          "durationMs": 1710.251040999996,
+          "clientCpuMs": 563.205,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 0,
+          "variant": "optimized-pages",
+          "durationMs": 949.5458750000034,
+          "clientCpuMs": 462.34,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 0,
+          "variant": "scan",
+          "durationMs": 957.9664579999953,
+          "clientCpuMs": 439.947,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "scan",
+          "durationMs": 909.2561249999999,
+          "clientCpuMs": 405.133,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "optimized-pages",
+          "durationMs": 911.7412500000064,
+          "clientCpuMs": 434.81,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 1,
+          "variant": "baseline-pages",
+          "durationMs": 1535.2723330000008,
+          "clientCpuMs": 496.527,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "baseline-pages",
+          "durationMs": 1497.7654579999944,
+          "clientCpuMs": 437.571,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "optimized-pages",
+          "durationMs": 848.1672920000128,
+          "clientCpuMs": 410.996,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        },
+        {
+          "iteration": 2,
+          "variant": "scan",
+          "durationMs": 1064.9938750000001,
+          "clientCpuMs": 434.367,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "3511a1c9bcb01d1a85142b799b9076bb86b404d11ecdd02d597a73e2dc5f9639"
+        }
+      ]
+    },
+    {
+      "sorting": [
+        {
+          "key": "account.name",
+          "dir": "asc"
+        }
+      ],
+      "results": [
+        {
+          "iteration": 0,
+          "variant": "baseline-pages",
+          "durationMs": 4426.276291000002,
+          "clientCpuMs": 811.184,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 0,
+          "variant": "optimized-pages",
+          "durationMs": 4775.746708000006,
+          "clientCpuMs": 879.505,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 0,
+          "variant": "scan",
+          "durationMs": 1287.1484580000106,
+          "clientCpuMs": 558.989,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "scan",
+          "durationMs": 1252.6160419999942,
+          "clientCpuMs": 518.979,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "optimized-pages",
+          "durationMs": 4130.390916000004,
+          "clientCpuMs": 690.409,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 1,
+          "variant": "baseline-pages",
+          "durationMs": 4075.5915830000013,
+          "clientCpuMs": 816.188,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "baseline-pages",
+          "durationMs": 4166.89675,
+          "clientCpuMs": 768.196,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "optimized-pages",
+          "durationMs": 3972.053832999998,
+          "clientCpuMs": 848.284,
+          "statements": 403,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        },
+        {
+          "iteration": 2,
+          "variant": "scan",
+          "durationMs": 772.1824999999953,
+          "clientCpuMs": 369.152,
+          "statements": 405,
+          "rowCount": 200000,
+          "maxBatchSize": 1000,
+          "digest": "fbfab314aadb0f2343dc73a5a82136e6bca180f0e24f84b0e96fe34953229b70"
+        }
+      ]
+    }
+  ]
+}
