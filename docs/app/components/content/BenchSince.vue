@@ -131,8 +131,9 @@ svg {
 .bs-legend .hit {
   fill: var(--hit);
   background: var(--hit);
-  stroke: var(--panel2);
-  stroke-width: 2;
+  stroke: var(--hit-text);
+  stroke-width: 1.5;
+  box-shadow: inset 0 0 0 1px var(--hit-text);
 }
 .base,
 .bs-legend .base {

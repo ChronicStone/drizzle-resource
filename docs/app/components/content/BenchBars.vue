@@ -210,6 +210,10 @@ svg {
 .bb-legend .hit {
   fill: var(--hit);
   background: var(--hit);
+  /* a darker edge keeps the yellow visible on light panels */
+  stroke: var(--hit-text);
+  stroke-width: 1;
+  box-shadow: inset 0 0 0 1px var(--hit-text);
 }
 .base,
 .bb-legend .base {
