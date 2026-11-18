@@ -47,7 +47,7 @@
     },
     "packages/core": {
       "name": "@drizzle-resource/core",
-      "version": "1.1.3",
+      "version": "1.2.1",
       "devDependencies": {
         "drizzle-orm": "1.0.0-rc.5",
       },
@@ -57,7 +57,7 @@
     },
     "packages/drizzle-resource": {
       "name": "drizzle-resource",
-      "version": "2.6.3",
+      "version": "2.7.1",
       "devDependencies": {
         "drizzle-orm": "1.0.0-rc.5",
       },
@@ -75,14 +75,14 @@
     },
     "packages/valibot": {
       "name": "@drizzle-resource/valibot",
-      "version": "1.0.1",
+      "version": "1.1.1",
       "dependencies": {
         "@drizzle-resource/core": "workspace:*",
       },
     },
     "packages/vine": {
       "name": "@drizzle-resource/vine",
-      "version": "1.0.4",
+      "version": "1.1.1",
       "dependencies": {
         "@drizzle-resource/core": "workspace:*",
       },
@@ -92,7 +92,7 @@
     },
     "packages/zod": {
       "name": "@drizzle-resource/zod",
-      "version": "1.0.1",
+      "version": "1.1.1",
       "dependencies": {
         "@drizzle-resource/core": "workspace:*",
       },

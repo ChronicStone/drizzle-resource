@@ -1,5 +1,15 @@
 # drizzle-resource
 
+## 2.7.1
+
+### Patch Changes
+
+- [#44](https://github.com/ChronicStone/drizzle-resource/pull/44) [`2062a7a`](https://github.com/ChronicStone/drizzle-resource/commit/2062a7af8ede024d46039eea28e20b2a6d3d7795) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Support drizzle-orm `1.0.0-rc.5`. Row, view and model field types were read from the return type of `db.query[table].findMany`, which resolves to `unknown` fields with rc.5. They now come from the table's `$inferSelect`. The minimum drizzle-orm version is `1.0.0-rc.5`.
+
+- [#46](https://github.com/ChronicStone/drizzle-resource/pull/46) [`37357ed`](https://github.com/ChronicStone/drizzle-resource/commit/37357ed40499ba62adfe50a0fda2eedf14a487ea) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Reduce PostgreSQL work for cursor pages, multi-value filters, searches across fields on the same relation, and exact counts for bounded unique-key selections. Large unfiltered reports can count repeated foreign keys before joining related facets.
+
+- [#44](https://github.com/ChronicStone/drizzle-resource/pull/44) [`2062a7a`](https://github.com/ChronicStone/drizzle-resource/commit/2062a7af8ede024d46039eea28e20b2a6d3d7795) Thanks [@ChronicStone](https://github.com/ChronicStone)! - `requestSchema` from `drizzle-resource/zod` and `drizzle-resource/valibot` now returns a typed schema instead of `any`. Parsing gives a `QueryRequestSchemaOutput` (the request with every default filled in, without `context`), the same shape the Vine schema already returned.
+
 ## 2.7.0
 
 ### Minor Changes
