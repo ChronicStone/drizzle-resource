@@ -2387,3 +2387,10 @@ html:not(.dark) .px-land :is(h1, h2) .px-acc {
     font-size: 11px;
   }
 }
+
+/* after the base title-bar margins above, so it wins: follow the tighter phone padding */
+@media (max-width: 760px) {
+  .px-bench > .px-win-h {
+    margin: -14px -12px 12px;
+  }
+}

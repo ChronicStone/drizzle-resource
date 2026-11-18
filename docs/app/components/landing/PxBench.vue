@@ -7,12 +7,12 @@ defineProps<{ bare?: boolean }>();
 /* Benchmark medians drawn in pixels: dim pixels are 2.4.1, bright pixels are today.
    When the chart enters the screen, the pixels above today's time fall away. */
 const ROWS = [
-  { name: "Page, no count", stmts: "1 → 1 statement", before: 39.95, after: 0.51 },
-  { name: "Page + exact count", stmts: "2 → 2", before: 62.46, after: 4.17 },
-  { name: "Relation search", stmts: "2 → 2", before: 79.46, after: 16.8 },
-  { name: "3 root facets", stmts: "3 → 1", before: 90.03, after: 24.76 },
-  { name: "5 mixed facets", stmts: "5 → 2", before: 195.04, after: 57.38 },
-  { name: "Exclude-self facets", stmts: "5 → 3", before: 138.22, after: 35.84 },
+  { name: "Page, no count", stmts: "statements: 1 → 1", before: 39.95, after: 0.51 },
+  { name: "Page + exact count", stmts: "statements: 2 → 2", before: 62.46, after: 4.17 },
+  { name: "Relation search", stmts: "statements: 2 → 2", before: 79.46, after: 16.8 },
+  { name: "3 root facets", stmts: "statements: 3 → 1", before: 90.03, after: 24.76 },
+  { name: "5 mixed facets", stmts: "statements: 5 → 2", before: 195.04, after: 57.38 },
+  { name: "Exclude-self facets", stmts: "statements: 5 → 3", before: 138.22, after: 35.84 },
 ];
 const CELL = 6;
 const MS_PER_ROW = 5;
