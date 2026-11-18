@@ -61,6 +61,9 @@ const accepted: Condition[] = [
   ["customer.tier", "isAnyOf", ["GOLD", "SILVER"]],
   ["channel", "is", "other"],
   ["reference", "isAnyOf", ["NOPE"]],
+  ["status", "isEmpty", null],
+  ["customer.tier", "isNotEmpty", null],
+  ["channel", "isEmpty", null],
 ];
 
 const refused: Condition[] = [
@@ -96,6 +99,13 @@ describe("Zod enum filter values", () => {
 
   it.each(refused)("refuses %s %s %j before SQL runs", (...input) => {
     expect(issuePaths({ filters: [condition(input)] })).toEqual(["filters.0.value"]);
+  });
+
+  it("accepts a facet that asks for its missing count", () => {
+    expect(issuePaths({ facets: [{ key: "status", missing: true }] })).toEqual([]);
+    expect(issuePaths({ facets: [{ key: "status", missing: "yes" }] })).toEqual([
+      "facets.0.missing",
+    ]);
   });
 
   it("refuses invalid enum values inside filter groups", () => {

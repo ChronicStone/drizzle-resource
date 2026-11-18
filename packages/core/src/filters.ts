@@ -52,6 +52,8 @@ export function createQueryFilterBuilder<TField extends string>(): QueryFilterBu
     is: (key, value) => condition(key, "is", value),
     isAnyOf: (key, value) => condition(key, "isAnyOf", value),
     isNot: (key, value) => condition(key, "isNot", value),
+    isEmpty: (key) => condition(key, "isEmpty", null),
+    isNotEmpty: (key) => condition(key, "isNotEmpty", null),
     gt: (key, value) => condition(key, "gt", value),
     gte: (key, value) => condition(key, "gte", value),
     lt: (key, value) => condition(key, "lt", value),

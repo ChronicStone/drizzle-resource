@@ -218,6 +218,129 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     },
   );
 
+  describe("isEmpty / isNotEmpty", () => {
+    async function ids(filters: QueryRequestInput["filters"]) {
+      const result = await resource.queryIds({
+        request: {
+          ...request,
+          filters,
+          sorting: [],
+          pagination: { ...request.pagination!, pageSize: 50 },
+        },
+      });
+      return result.ids;
+    }
+    const empty = (key: string, operator: "isEmpty" | "isNotEmpty" = "isEmpty") =>
+      ({ type: "condition", key, operator, value: null }) as const;
+
+    it("matches a null column, a missing to-one relation and no to-many row", async () => {
+      expect([
+        await ids([empty("rank")]),
+        await ids([empty("rank", "isNotEmpty")]),
+        await ids([empty("category.name")]),
+        await ids([empty("category.name", "isNotEmpty")]),
+        await ids([empty("tags.label")]),
+        await ids([empty("tags.label", "isNotEmpty")]),
+      ]).toEqual([[4, 5], [1, 2, 3], [4], [1, 2, 3, 5], [4, 5], [1, 2, 3]]);
+    });
+
+    it("keeps rows without the relation when OR-ed with a value on the same relation", async () => {
+      const or = (key: string, value: string) =>
+        [
+          {
+            type: "group",
+            combinator: "or",
+            children: [{ type: "condition", key, operator: "isAnyOf", value: [value] }, empty(key)],
+          },
+        ] as QueryRequestInput["filters"];
+      const not = (key: string, value: string) =>
+        [
+          {
+            type: "group",
+            combinator: "and",
+            children: [
+              { type: "condition", key, operator: "isNot", value: [value] },
+              empty(key, "isNotEmpty"),
+            ],
+          },
+        ] as QueryRequestInput["filters"];
+      expect([
+        await ids(or("category.name", "Alpha")),
+        await ids(or("tags.label", "blue")),
+        await ids(not("category.name", "Alpha")),
+        await ids(not("tags.label", "red")),
+      ]).toEqual([[1, 2, 4], [1, 3, 4, 5], [3, 5], [3]]);
+    });
+
+    it("applies every isNot value, and reads isNot on a to-many path as « has none of them »", async () => {
+      const not = (key: string, value: unknown[]) =>
+        [{ type: "condition", key, operator: "isNot", value }] as QueryRequestInput["filters"];
+      expect([
+        await ids(not("name", ["One", "Two"])),
+        await ids(not("tags.label", ["red"])),
+        await ids(not("tags.label", ["red", "blue"])),
+        await ids(not("category.name", ["Alpha", "Beta"])),
+      ]).toEqual([[3, 4, 5], [3, 4, 5], [4, 5], []]);
+    });
+
+    it("keeps rows without an optional to-one relation when sorting on it", async () => {
+      const sorted = (filters: QueryRequestInput["filters"]) =>
+        resource.queryIds({
+          request: {
+            ...request,
+            filters,
+            sorting: [{ key: "category.name", dir: "asc" }],
+            pagination: { ...request.pagination!, pageSize: 50 },
+          },
+        });
+      const all = await sorted([]);
+      const uncategorized = await sorted([empty("category.name")]);
+      const facets = await resource.queryFacets({
+        request: { ...request, sorting: [{ key: "category.name", dir: "asc" }] },
+        facets: [{ key: "category.name", missing: true }],
+      });
+      expect([
+        [...all.ids].sort(),
+        all.pageInfo.mode === "offset" ? all.pageInfo.rowCount : null,
+        uncategorized.ids,
+        uncategorized.pageInfo.mode === "offset" ? uncategorized.pageInfo.rowCount : null,
+        facets.facets[0]?.missing,
+      ]).toEqual([[1, 2, 3, 4, 5], 5, [4], 1, 1]);
+    });
+
+    it("treats an empty string as empty on text columns", async () => {
+      await expect(
+        db.transaction(async (tx) => {
+          await tx.insert(items).values({ id: 8, tenant: "a", name: "", rank: 9, active: true });
+          const result = await resource.queryIds({
+            db: tx,
+            request: { ...request, filters: [empty("name")], sorting: [] },
+          });
+          expect(result.ids).toEqual([8]);
+          tx.rollback();
+        }),
+      ).rejects.toThrow("Rollback");
+    });
+
+    it("counts the facet missing bucket only when asked, within the access scope", async () => {
+      const result = await resource.queryFacets({
+        request: { ...request, filters: [empty("category.name")] },
+        facets: [
+          { key: "category.name", missing: true },
+          { key: "tags.label", missing: true },
+          { key: "rank", missing: true },
+          { key: "active" },
+        ],
+      });
+      expect(result.facets.map((facet) => [facet.key, facet.missing])).toEqual([
+        ["category.name", 1],
+        ["tags.label", 1],
+        ["rank", 1],
+        ["active", undefined],
+      ]);
+    });
+  });
+
   it("counts distinct roots for repeated many-relation values", async () => {
     const result = await resource.queryFacets({
       request,
@@ -374,22 +497,22 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     expect(result.rows[1]?.tags).toHaveLength(1);
   });
 
-  it("keeps sort-only relation membership without joining it into aggregate rows", async () => {
+  it("sorts on an optional relation without restricting rows or joining it into aggregates", async () => {
     const sorted = { ...request, sorting: [{ key: "category.name", dir: "asc" as const }] };
     const start = statements.length;
     const result = await resource.queryIds({ request: sorted });
     expect(result.ids).toEqual([1, 2]);
-    expect(result.pageInfo).toMatchObject({ rowCount: 4 });
+    expect(result.pageInfo).toMatchObject({ rowCount: 5 });
     const facets = await resource.queryFacets({ request: sorted, facets: [{ key: "active" }] });
     expect(facets.facets[0]?.options).toEqual([
       { value: true, count: 3 },
-      { value: false, count: 1 },
+      { value: false, count: 2 },
     ]);
     const aggregateQueries = statements.slice(start).filter((query) => query.includes("count("));
     expect(aggregateQueries).toHaveLength(2);
     for (const query of aggregateQueries) {
-      expect(query).toContain("exists");
-      expect(query).not.toContain("inner join");
+      expect(query).not.toContain("exists");
+      expect(query).not.toContain(" join ");
     }
   });
 
