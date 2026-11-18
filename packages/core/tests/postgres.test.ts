@@ -269,12 +269,18 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
         await ids(or("tags.label", "blue")),
         await ids(not("category.name", "Alpha")),
         await ids(not("tags.label", "red")),
-      ]).toEqual([
-        [1, 2, 4],
-        [1, 3, 4, 5],
-        [3, 5],
-        [1, 3],
-      ]);
+      ]).toEqual([[1, 2, 4], [1, 3, 4, 5], [3, 5], [3]]);
+    });
+
+    it("applies every isNot value, and reads isNot on a to-many path as « has none of them »", async () => {
+      const not = (key: string, value: unknown[]) =>
+        [{ type: "condition", key, operator: "isNot", value }] as QueryRequestInput["filters"];
+      expect([
+        await ids(not("name", ["One", "Two"])),
+        await ids(not("tags.label", ["red"])),
+        await ids(not("tags.label", ["red", "blue"])),
+        await ids(not("category.name", ["Alpha", "Beta"])),
+      ]).toEqual([[3, 4, 5], [3, 4, 5], [4, 5], []]);
     });
 
     it("treats an empty string as empty on text columns", async () => {

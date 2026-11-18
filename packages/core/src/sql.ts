@@ -576,17 +576,24 @@ export function createQueryResourceUtils<
                 : eq(column, condition.value as any)
               : eq(column, condition.value as any);
       case "isNot": {
-        const scalar = Array.isArray(condition.value) ? condition.value[0] : condition.value;
-        if (scalar === null) return isNotNull(column as any);
-        if (typeof scalar === "boolean")
-          return sql`${column} != ${scalar ? sql.raw("true") : sql.raw("false")}`;
-        const comparison =
-          typeof scalar === "string"
-            ? text && !caseSensitive
-              ? eq(sql`lower(${column})`, normalizeString(scalar))
-              : eq(column, scalar as any)
-            : eq(column, scalar as any);
-        return sql`not (${comparison})`;
+        // Every listed value is excluded; a listed null also excludes empty rows.
+        const values = Array.isArray(condition.value) ? condition.value : [condition.value];
+        const listed = values.filter((value) => value !== null && value !== undefined);
+        const excludesNull = listed.length < values.length;
+        if (!listed.length) return isNotNull(column as any);
+        const matches = or(
+          ...listed.map((value) =>
+            typeof value === "boolean"
+              ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
+              : typeof value === "string"
+                ? text && !caseSensitive
+                  ? eq(sql`lower(${column})`, normalizeString(value))
+                  : eq(column, value as any)
+                : eq(column, value as any),
+          ),
+        );
+        const excluded = sql`not (${matches})`;
+        return excludesNull ? (and(isNotNull(column as any), excluded) as SQL) : excluded;
       }
       case "isEmpty":
         return buildEmptyPredicate(column, text);
@@ -630,6 +637,18 @@ export function createQueryResourceUtils<
   ): SQL {
     const entry = resolveField(condition.key);
     if (!entry) return sql`true`;
+    if (condition.operator === "isNot" && entry.isManyPath) {
+      // A to-many path is « has none of the values », not « has one row with another value ».
+      const holdsValue = buildExistsCondition(
+        database,
+        config.schema,
+        entry,
+        { ...condition, operator: "isAnyOf" },
+        buildScalarCondition,
+        readsThroughExists(entry, emptiness) ? 0 : entry.firstManyIndex,
+      );
+      return sql`not ${holdsValue}`;
+    }
     if (readsThroughExists(entry, emptiness)) {
       // The whole relation path, to-one or to-many, inside one EXISTS from the root.
       if (!isEmptinessOperator(condition.operator)) {
