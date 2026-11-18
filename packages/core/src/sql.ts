@@ -309,13 +309,20 @@ function dedupeIds<TId>(ids: TId[]): TId[] {
   return deduped;
 }
 
+/**
+ * Joins a relation path. To-one steps are LEFT joins: sorting or selecting an optional linked
+ * field never hides the rows that have no linked row. `inner` lists the steps that must match,
+ * such as a facet's own path, whose buckets only count rows that hold the relation.
+ */
 function joinRelationSteps(
   query: any,
   schema: QueryEngineConfig["schema"],
   relationSteps: FieldRegistryRelationStep[],
+  inner: ReadonlySet<string> = new Set(),
 ) {
   for (const step of relationSteps) {
-    query = query.innerJoin(
+    const join = step.relationType === "many" || inner.has(step.path) ? "innerJoin" : "leftJoin";
+    query = query[join](
       (schema as any)[step.targetTableName],
       eqColumns(step.sourceColumns, step.targetColumns),
     );
@@ -834,24 +841,10 @@ export function createQueryResourceUtils<
         step,
       ]),
     );
-    const membership = buildOuterJoins(resource, request).filter(
-      (step) => !required.has(step.path),
-    );
-    const first = membership[0];
-    const membershipPredicate = first
-      ? exists(
-          joinRelationSteps(
-            (database as any)
-              .select({ one: sql<number>`1` })
-              .from(config.schema[first.targetTableName]),
-            config.schema,
-            membership.slice(1),
-          ).where(eqColumns(first.sourceColumns, first.targetColumns)),
-        )
-      : undefined;
+    // Sort-only joins are LEFT joins: they never restrict which rows match, so the count skips them.
     return {
       joins: [...required.values()],
-      where: and(buildWhereClause(request), membershipPredicate),
+      where: buildWhereClause(request),
     };
   }
 
@@ -1254,6 +1247,8 @@ export function createQueryResourceUtils<
           limit,
           offset,
           joins: steps,
+          // Buckets count the rows that hold the faceted relation; `missing` counts the others.
+          inner: new Set(entry.relationPath.map((step) => step.path)),
           unique,
           where,
           predicate:
@@ -1296,7 +1291,7 @@ export function createQueryResourceUtils<
           ).as("count"),
         })
         .from(rootTable);
-      bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins)
+      bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins, plan.inner)
         .where(and(plan.where, buildFacetValuePredicate(entry.column, facet.search)))
         .groupBy(column ? (entry.column as any) : sql`1`);
 
@@ -1340,6 +1335,7 @@ export function createQueryResourceUtils<
           .from(rootTable),
         config.schema,
         first.joins,
+        new Set(group.flatMap((plan) => [...plan.inner])),
       )
         .where(first.where)
         .groupBy(

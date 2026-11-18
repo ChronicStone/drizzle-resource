@@ -283,6 +283,31 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
       ]).toEqual([[3, 4, 5], [3, 4, 5], [4, 5], []]);
     });
 
+    it("keeps rows without an optional to-one relation when sorting on it", async () => {
+      const sorted = (filters: QueryRequestInput["filters"]) =>
+        resource.queryIds({
+          request: {
+            ...request,
+            filters,
+            sorting: [{ key: "category.name", dir: "asc" }],
+            pagination: { ...request.pagination!, pageSize: 50 },
+          },
+        });
+      const all = await sorted([]);
+      const uncategorized = await sorted([empty("category.name")]);
+      const facets = await resource.queryFacets({
+        request: { ...request, sorting: [{ key: "category.name", dir: "asc" }] },
+        facets: [{ key: "category.name", missing: true }],
+      });
+      expect([
+        [...all.ids].sort(),
+        all.pageInfo.mode === "offset" ? all.pageInfo.rowCount : null,
+        uncategorized.ids,
+        uncategorized.pageInfo.mode === "offset" ? uncategorized.pageInfo.rowCount : null,
+        facets.facets[0]?.missing,
+      ]).toEqual([[1, 2, 3, 4, 5], 5, [4], 1, 1]);
+    });
+
     it("treats an empty string as empty on text columns", async () => {
       await expect(
         db.transaction(async (tx) => {
@@ -472,22 +497,22 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     expect(result.rows[1]?.tags).toHaveLength(1);
   });
 
-  it("keeps sort-only relation membership without joining it into aggregate rows", async () => {
+  it("sorts on an optional relation without restricting rows or joining it into aggregates", async () => {
     const sorted = { ...request, sorting: [{ key: "category.name", dir: "asc" as const }] };
     const start = statements.length;
     const result = await resource.queryIds({ request: sorted });
     expect(result.ids).toEqual([1, 2]);
-    expect(result.pageInfo).toMatchObject({ rowCount: 4 });
+    expect(result.pageInfo).toMatchObject({ rowCount: 5 });
     const facets = await resource.queryFacets({ request: sorted, facets: [{ key: "active" }] });
     expect(facets.facets[0]?.options).toEqual([
       { value: true, count: 3 },
-      { value: false, count: 1 },
+      { value: false, count: 2 },
     ]);
     const aggregateQueries = statements.slice(start).filter((query) => query.includes("count("));
     expect(aggregateQueries).toHaveLength(2);
     for (const query of aggregateQueries) {
-      expect(query).toContain("exists");
-      expect(query).not.toContain("inner join");
+      expect(query).not.toContain("exists");
+      expect(query).not.toContain(" join ");
     }
   });
 
