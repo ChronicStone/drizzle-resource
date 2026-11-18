@@ -1,6 +1,6 @@
 {
   "name": "@drizzle-resource/zod",
-  "version": "1.0.1",
+  "version": "1.1.0",
   "private": true,
   "type": "module",
   "main": "./build/index.js",
