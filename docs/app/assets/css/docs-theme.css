@@ -1,0 +1,201 @@
+/*
+ * The pixel palette, applied to the Nuxt UI tokens every docs component reads.
+ * Graphite neutrals, one accent (raincoat yellow) for what a query returns and the main action.
+ * Docs-only typography, code panels and tables are scoped to `.docs-shell` (layouts/docs.vue).
+ */
+:root {
+  --font-sans: "Geist", ui-sans-serif, system-ui, sans-serif;
+  --font-mono: "Geist Mono", ui-monospace, SFMono-Regular, Menlo, monospace;
+  --font-pixel: "Doto", ui-monospace, monospace;
+  --ui-radius: 0.5rem;
+
+  --ui-primary: #8f6400;
+  --ui-bg: #f5f5f2;
+  --ui-bg-muted: #eeeeea;
+  --ui-bg-elevated: #ffffff;
+  --ui-bg-accented: #e4e4df;
+  --ui-bg-inverted: #0b0c0d;
+  --ui-border: #dcdcd7;
+  --ui-border-muted: #e8e8e4;
+  --ui-border-accented: #bdbdb8;
+  --ui-border-inverted: #0b0c0d;
+  --ui-text-dimmed: #868b8f;
+  --ui-text-muted: #61676b;
+  --ui-text-toned: #44494c;
+  --ui-text: #23272a;
+  --ui-text-highlighted: #0b0c0d;
+  --ui-text-inverted: #ffffff;
+
+  --px-hit: #ffd23f;
+  --px-hit-ink: #151100;
+  --px-dot: rgba(0, 0, 0, 0.07);
+  --px-rain: rgba(30, 40, 46, 0.2);
+  --px-alt: #2c8794;
+  --px-warn: #d4472a;
+  --px-ok: #1e8a4f;
+
+  --doc-accent-soft: rgba(168, 122, 0, 0.1);
+  --doc-code-bg: #ffffff;
+  --doc-code-head: #f7f7f4;
+  --doc-code-line: rgba(15, 20, 25, 0.1);
+  --doc-code-shadow: 0 1px 2px rgba(15, 20, 25, 0.04), 0 16px 36px -28px rgba(15, 20, 25, 0.25);
+  --doc-code-ink: #24292f;
+  --doc-code-dim: #8c959f;
+}
+
+.dark {
+  --ui-primary: #ffd23f;
+  --ui-bg: #0a0b0c;
+  --ui-bg-muted: #111315;
+  --ui-bg-elevated: #131618;
+  --ui-bg-accented: #1a1d20;
+  --ui-bg-inverted: #edefef;
+  --ui-border: #202427;
+  --ui-border-muted: #181b1e;
+  --ui-border-accented: #30353a;
+  --ui-border-inverted: #edefef;
+  --ui-text-dimmed: #646b70;
+  --ui-text-muted: #858c91;
+  --ui-text-toned: #a3a9ac;
+  --ui-text: #d5d9db;
+  --ui-text-highlighted: #f2f4f4;
+  --ui-text-inverted: #0a0b0c;
+
+  --px-dot: rgba(255, 255, 255, 0.075);
+  --px-rain: rgba(220, 232, 238, 0.5);
+  --px-alt: #64c3cf;
+  --px-warn: #ff6b4a;
+  --px-ok: #7bd88f;
+
+  --doc-accent-soft: rgba(255, 210, 63, 0.12);
+  --doc-code-bg: #07080a;
+  --doc-code-head: #0e1012;
+  --doc-code-line: rgba(255, 255, 255, 0.08);
+  --doc-code-ink: #d7dcde;
+  --doc-code-dim: #596166;
+  --doc-code-shadow: 0 28px 60px -30px rgba(0, 0, 0, 0.8);
+}
+
+body {
+  -webkit-font-smoothing: antialiased;
+}
+
+/* the dot grid behind every page except the landing, which draws its own */
+html:not(:has(.px-land)) body {
+  background-image: radial-gradient(var(--px-dot) 1px, transparent 1.4px);
+  background-size: 14px 14px;
+  background-position: 7px 7px;
+  background-attachment: fixed;
+}
+
+/* ---------- typography ---------- */
+.docs-shell h1 {
+  font-weight: 700;
+  letter-spacing: -0.04em;
+  line-height: 1.02;
+}
+.docs-shell h2 {
+  font-weight: 700;
+  letter-spacing: -0.03em;
+}
+.docs-shell h3 {
+  font-weight: 600;
+  letter-spacing: -0.015em;
+}
+.docs-shell h4 {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.78rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ui-text-muted);
+}
+.docs-shell p,
+.docs-shell li {
+  text-wrap: pretty;
+}
+
+/* inline code reads as a token, not a box */
+.docs-shell :not(pre) > code {
+  border: 0;
+  background: var(--doc-accent-soft);
+  color: var(--ui-text-highlighted);
+  font-weight: 500;
+  font-size: 0.86em;
+  padding: 0.1em 0.4em;
+  border-radius: 4px;
+}
+.docs-shell a :not(pre) > code,
+.docs-shell a > code {
+  color: var(--ui-primary);
+}
+
+/* ---------- code panels: white in light mode, graphite in dark ---------- */
+.docs-shell pre.shiki {
+  background: var(--doc-code-bg) !important;
+  border-color: var(--doc-code-line) !important;
+  color: var(--doc-code-ink);
+  font-size: 0.82rem;
+  line-height: 1.75;
+  border-radius: 10px;
+  box-shadow: var(--doc-code-shadow);
+  white-space: pre !important;
+  word-break: normal !important;
+  overflow-wrap: normal !important;
+}
+.docs-shell pre.shiki code span {
+  color: var(--shiki-light, inherit);
+}
+.dark .docs-shell pre.shiki code span {
+  color: var(--shiki-dark, inherit);
+}
+.docs-shell pre.shiki ::selection {
+  background: rgba(255, 210, 63, 0.22);
+}
+.docs-shell pre.shiki + button,
+.docs-shell pre.shiki ~ button {
+  color: var(--doc-code-dim);
+}
+.docs-shell [data-slot="header"]:has(+ pre.shiki),
+.docs-shell .group:has(> pre.shiki) > div:first-child:not(pre) {
+  background: var(--doc-code-head);
+  border-color: var(--doc-code-line);
+  color: var(--doc-code-dim);
+}
+.docs-shell .twoslash .twoslash-hover {
+  border-bottom-color: rgba(255, 210, 63, 0.4) !important;
+}
+.docs-shell .twoslash-error {
+  background: none;
+  text-decoration: underline wavy #ff6b4a;
+  text-underline-offset: 4px;
+}
+
+/* ---------- tables: hairlines and mono column labels ---------- */
+.docs-shell table {
+  border-spacing: 0;
+}
+.docs-shell th {
+  font-family: var(--font-mono);
+  font-weight: 500;
+  font-size: 0.72rem;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--ui-text-muted);
+  background: color-mix(in oklab, var(--ui-bg-elevated) 70%, transparent);
+}
+.docs-shell td {
+  font-size: 0.9rem;
+}
+.docs-shell td,
+.docs-shell th {
+  border-color: var(--ui-border) !important;
+}
+
+/* light mode: the header search reads as a field */
+html:not(.dark) header .bg-elevated {
+  box-shadow: inset 0 0 0 1px var(--ui-border);
+}
+html:not(.dark) header .bg-elevated:hover {
+  box-shadow: inset 0 0 0 1px var(--ui-border-accented);
+}

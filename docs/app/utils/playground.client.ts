@@ -1,4 +1,4 @@
-import { asc, defineRelationsPart, eq, inArray } from "drizzle-orm";
+import { asc, count, defineRelationsPart, eq, inArray, sum } from "drizzle-orm";
 import { drizzle } from "drizzle-orm/sql-js";
 import { integer, sqliteTable, text } from "drizzle-orm/sqlite-core";
 import { createQueryEngine } from "drizzle-resource";
@@ -113,8 +113,19 @@ async function loadDatabaseBytes(databaseUrl: string) {
   return bytes;
 }
 
-function definePlaygroundResource(sqlite: SqlJsDatabase) {
-  const db = drizzle(sqlite, { schema });
+export interface PlaygroundStatement {
+  sql: string;
+  params: unknown[];
+}
+
+function definePlaygroundResource(
+  sqlite: SqlJsDatabase,
+  onQuery: (statement: PlaygroundStatement) => void,
+) {
+  const db = drizzle(sqlite, {
+    schema,
+    logger: { logQuery: (sql, params) => onQuery({ sql, params }) },
+  });
 
   async function fetchRowsByIds(ids: unknown[]) {
     const orderIds = ids.filter((id): id is string => typeof id === "string");
@@ -250,6 +261,10 @@ function definePlaygroundResource(sqlite: SqlJsDatabase) {
         disabled: ["orderLines.product.name"],
       },
     },
+    summary: (order: typeof orders) => ({
+      orders: count(),
+      revenue: sum(order.totalAmount),
+    }),
     strategy: {
       rows: async ({ ids }: { ids: unknown[] }) => {
         console.debug("[playground] hydrating rows with sql.js adapter", { idCount: ids.length });
@@ -259,7 +274,11 @@ function definePlaygroundResource(sqlite: SqlJsDatabase) {
   });
 
   return resource as {
-    query(args: { context: typeof playgroundContext; request: PlaygroundRequest }): Promise<{
+    query(args: {
+      context: typeof playgroundContext;
+      request: PlaygroundRequest;
+      summary?: boolean;
+    }): Promise<{
       rows: PlaygroundRow[];
       pageInfo: {
         mode: "offset";
@@ -275,6 +294,7 @@ function definePlaygroundResource(sqlite: SqlJsDatabase) {
         nextCursor?: string | null;
         total?: number;
       }>;
+      summary?: { orders: number; revenue: string | number | null };
     }>;
   };
 }
@@ -289,7 +309,8 @@ export async function createPlaygroundClient() {
   const bytes = await loadDatabaseBytes(databaseUrl);
   const sqlite = new SQL.Database(bytes);
 
-  const resource = definePlaygroundResource(sqlite);
+  let statements: PlaygroundStatement[] = [];
+  const resource = definePlaygroundResource(sqlite, (statement) => statements.push(statement));
   console.debug("[playground] resource ready");
 
   return {
@@ -297,18 +318,31 @@ export async function createPlaygroundClient() {
       console.debug("[playground] disposing sql.js database");
       sqlite.close();
     },
-    async run(request: PlaygroundRequest) {
+    /** `summary: true` adds the order count and revenue of every matching row (one aggregate statement). */
+    async run(request: PlaygroundRequest, options: { summary?: boolean } = {}) {
       console.debug("[playground] running request", request);
+      statements = [];
+      const started = performance.now();
       const result = (await resource.query({
         context: playgroundContext,
         request,
+        ...(options.summary ? { summary: true } : {}),
       })) as Awaited<ReturnType<typeof resource.query>>;
+      const elapsedMs = performance.now() - started;
       console.debug("[playground] request complete", {
         rowCount: result.pageInfo.rowCount,
         pageRows: result.rows.length,
         facetCount: result.facets?.length ?? 0,
       });
-      return result;
+      return { ...result, statements: [...statements], elapsedMs };
     },
   };
+}
+
+let sharedClient: ReturnType<typeof createPlaygroundClient> | undefined;
+
+/** One in-browser database for every live example on the page. */
+export function getSharedPlaygroundClient() {
+  sharedClient ??= createPlaygroundClient();
+  return sharedClient;
 }

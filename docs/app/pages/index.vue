@@ -25,8 +25,8 @@ useSeo({
 
 if (!page.value?.seo?.ogImage) {
   defineOgImageComponent("Landing", {
-    title,
-    description,
+    pageTitle: title,
+    pageDescription: description,
   });
 }
 </script>

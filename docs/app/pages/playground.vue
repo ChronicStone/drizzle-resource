@@ -1,724 +1,903 @@
 <script setup lang="ts">
-import type { TableColumn } from "@nuxt/ui";
+// eslint-disable-next-line import/no-unassigned-import
+import "~/assets/css/playground.css";
 import type { PlaygroundRequest } from "../utils/playground-request";
-import type { createPlaygroundClient } from "../utils/playground.client";
-
 import {
-  basePlaygroundRequest,
-  defaultPlaygroundRequest,
   formatValidationError,
-  playgroundContractSnippet,
-  playgroundContext,
   playgroundRequestSchema,
   playgroundSeedSummary,
-  playgroundTablesSnippet,
 } from "../utils/playground-request";
+import {
+  FACETS_ALLOWED,
+  OP_LABEL,
+  PAGE_SIZES,
+  SCENARIOS,
+  SEARCH_ALLOWED,
+  SEARCH_DEFAULTS,
+  SORT_DISABLED,
+  baseRequest,
+  conditionText,
+  draftFor,
+  groupText,
+  money,
+  num,
+} from "../utils/playground-ui";
+import type {
+  Condition,
+  FilterNode,
+  Group,
+  HoodTab,
+  PlaygroundClient,
+  PlaygroundResult,
+} from "../utils/playground-ui";
 
-definePageMeta({
-  layout: "default",
-  footer: false,
-});
+definePageMeta({ layout: "default", footer: false });
 
 useSeo({
   title: "Playground",
   description:
-    "Edit a real drizzle-resource request, validate it live, and run it against an in-browser SQLite database powered by sql.js and Drizzle.",
+    "Filter, search, sort and facet 10,000 sample orders with the real drizzle-resource engine, in your browser. See the request, every SQL statement and the resource rules each action used.",
   type: "website",
 });
 
-const requestText = ref(JSON.stringify(basePlaygroundRequest, null, 2));
-const isBooting = ref(true);
-const isRunning = ref(false);
-const bootMessage = ref("Loading playground database…");
-const bootstrapError = ref<string | null>(null);
-const runtimeError = ref<string | null>(null);
-const validationError = ref<string | null>(null);
-type PlaygroundClient = Awaited<ReturnType<typeof createPlaygroundClient>>;
-type PlaygroundResult = Awaited<ReturnType<PlaygroundClient["run"]>>;
-type PlaygroundRow = PlaygroundResult["rows"][number];
-
-const lastAppliedRequest = ref<PlaygroundRequest | null>(null);
-const lastRunAt = ref<string | null>(null);
-const result = shallowRef<PlaygroundResult | null>(null);
-const playground = shallowRef<PlaygroundClient | null>(null);
-
-const mobileTab = ref<"editor" | "results">("editor");
-const editorTab = ref<"request" | "contract" | "tables">("request");
-
-const examples = [
-  {
-    label: "Base",
-    value: basePlaygroundRequest,
-  },
-  {
-    label: "Pending + Processing",
-    value: defaultPlaygroundRequest,
-  },
-  {
-    label: "Laptop Search",
-    value: {
-      ...basePlaygroundRequest,
-      search: {
-        value: "laptop",
-        fields: [],
-      },
-    } satisfies PlaygroundRequest,
-  },
-  {
-    label: "Nested OR Group",
-    value: {
-      ...basePlaygroundRequest,
-      filters: [
-        {
-          type: "group",
-          combinator: "or",
-          children: [
-            {
-              type: "condition",
-              key: "status",
-              operator: "is",
-              value: "pending",
-            },
-            {
-              type: "condition",
-              key: "orderLines.product.category",
-              operator: "is",
-              value: "audio",
-            },
-          ],
-        },
-      ],
-      facets: [
-        { key: "status", mode: "exclude-self", limit: 10 },
-        { key: "orderLines.product.category", mode: "exclude-self", limit: 10 },
-      ],
-    } satisfies PlaygroundRequest,
-  },
-] as const;
-
-const PRODUCTS_VISIBLE = 2;
-
-const statusColor: Record<string, "warning" | "primary" | "success" | "error" | "neutral"> = {
-  pending: "warning",
-  processing: "primary",
-  shipped: "success",
-  cancelled: "error",
+/* ---------- state ---------- */
+const bodyJson = (r: PlaygroundRequest) => {
+  const { context: _c, ...body } = r;
+  return JSON.stringify(body, null, 2);
 };
 
-const dateFormatter = new Intl.DateTimeFormat("en-US", {
-  month: "short",
-  day: "numeric",
-  year: "numeric",
-});
+const request = ref<PlaygroundRequest>(baseRequest());
+const summary = ref(true);
+const scenario = ref("table");
+const hoodTab = ref<HoodTab>("request");
+const mobileView = ref<"app" | "hood">("app");
+const client = shallowRef<PlaygroundClient | null>(null);
+const result = shallowRef<PlaygroundResult | null>(null);
+const runError = ref<string | null>(null);
+const booting = ref(true);
+const running = ref(false);
+const runId = ref(0);
+const jsonText = ref(bodyJson(request.value));
+const jsonError = ref<string | null>(null);
+const editingJson = ref(false);
+const expanded = ref<string | null>(null);
+const copied = ref(false);
+const facetsOpen = ref(false);
+let timer: ReturnType<typeof setTimeout> | undefined;
+let fromJson = false;
 
-const countFormatter = new Intl.NumberFormat("en-US");
-
-const currencyFormatter = new Intl.NumberFormat("en-US", {
-  style: "currency",
-  currency: "USD",
-  maximumFractionDigits: 0,
-});
-
-const tableColumns: TableColumn<PlaygroundRow>[] = [
-  { accessorKey: "reference", header: "Reference" },
-  { accessorKey: "status", header: "Status" },
-  { accessorKey: "customer", header: "Customer", cell: ({ row }) => row.original.customer.name },
-  { accessorKey: "orderLines", header: "Products" },
-  {
-    accessorKey: "totalAmount",
-    header: "Total",
-    cell: ({ row }) => currencyFormatter.format(row.original.totalAmount),
-  },
-  {
-    accessorKey: "createdAt",
-    header: "Created",
-    cell: ({ row }) => dateFormatter.format(new Date(row.original.createdAt)),
-  },
-];
-
-const rows = computed(() => result.value?.rows ?? []);
-const facets = computed(() => result.value?.facets ?? []);
-const rowCount = computed(() => result.value?.pageInfo.rowCount ?? 0);
-const activeFilterCount = computed(() => lastAppliedRequest.value?.filters.length ?? 0);
-
-const sampleOptions = computed(() =>
-  examples.map((example) => ({
-    label: example.label,
-    value: example.label,
-  })),
-);
-
-const selectedExample = ref<(typeof examples)[number]["label"]>(examples[0]!.label);
-
-const editorTabs = [
-  {
-    label: "Request",
-    value: "request",
-    icon: "i-lucide-file-json-2",
-  },
-  {
-    label: "Contract",
-    value: "contract",
-    icon: "i-lucide-file-code-2",
-  },
-  {
-    label: "Tables",
-    value: "tables",
-    icon: "i-lucide-database",
-  },
-] as const;
-
-const contractMarkdown = `\`\`\`ts [orders.resource.ts]
-${playgroundContractSnippet}
-\`\`\``;
-
-const tablesMarkdown = `\`\`\`ts [schema.ts]
-${playgroundTablesSnippet}
-\`\`\``;
-
-let runTimer: ReturnType<typeof setTimeout> | undefined;
-
-function setExample(label: string) {
-  const example = examples.find((entry) => entry.label === label) ?? examples[0]!;
-  selectedExample.value = example.label;
-  requestText.value = JSON.stringify(example.value, null, 2);
-}
-
-function parseRequestText() {
-  try {
-    const parsed = JSON.parse(requestText.value);
-    const validated = playgroundRequestSchema.safeParse(parsed);
-
-    if (!validated.success) {
-      return {
-        data: null,
-        error: formatValidationError(validated.error),
-      };
-    }
-
-    return {
-      data: validated.data,
-      error: null,
-    };
-  } catch (error) {
-    return {
-      data: null,
-      error: formatValidationError(error as Error),
-    };
+async function run() {
+  if (!client.value) return;
+  const parsed = playgroundRequestSchema.safeParse(request.value);
+  if (!parsed.success) {
+    runError.value = `The request schema rejected the body. ${formatValidationError(parsed.error)}`;
+    runId.value++;
+    return;
   }
-}
-
-async function runRequest(request: PlaygroundRequest) {
-  if (!playground.value) return;
-
-  isRunning.value = true;
-  runtimeError.value = null;
-  console.debug("[playground-page] applying request");
-
+  running.value = true;
   try {
-    const nextResult = await playground.value.run(request);
-    result.value = nextResult;
-    lastAppliedRequest.value = request;
-    lastRunAt.value = new Intl.DateTimeFormat("en-US", {
-      hour: "2-digit",
-      minute: "2-digit",
-      second: "2-digit",
-    }).format(new Date());
+    result.value = await client.value.run(parsed.data, { summary: summary.value });
+    runError.value = null;
   } catch (error) {
-    runtimeError.value = formatValidationError(error as Error);
-    console.error("[playground-page] request failed", error);
+    runError.value = (error as Error).message || String(error);
   } finally {
-    isRunning.value = false;
+    running.value = false;
+    runId.value++;
   }
 }
 
 watch(
-  requestText,
+  [request, summary],
   () => {
-    clearTimeout(runTimer);
-
-    const parsed = parseRequestText();
-    validationError.value = parsed.error;
-
-    if (!parsed.data || !playground.value) {
-      return;
-    }
-
-    runTimer = setTimeout(() => {
-      void runRequest(parsed.data);
-    }, 250);
+    if (!fromJson) jsonText.value = bodyJson(request.value);
+    clearTimeout(timer);
+    timer = setTimeout(run, 160);
   },
-  { immediate: false },
+  { deep: true },
 );
 
-onMounted(async () => {
+watch(jsonText, (text) => {
+  if (text === bodyJson(request.value)) return;
   try {
-    bootMessage.value = "Loading SQL engine…";
-    const { createPlaygroundClient } = await import("../utils/playground.client");
-    bootMessage.value = "Opening pre-seeded playground database…";
-    playground.value = await createPlaygroundClient();
-
-    bootMessage.value = "Running initial query…";
-    const parsed = parseRequestText();
-    validationError.value = parsed.error;
-
-    if (parsed.data) {
-      await runRequest(parsed.data);
-    }
+    const parsed = JSON.parse(text);
+    jsonError.value = null;
+    fromJson = true;
+    request.value = { context: {}, ...parsed };
+    scenario.value = "";
+    nextTick(() => (fromJson = false));
   } catch (error) {
-    bootstrapError.value = formatValidationError(error as Error);
-    console.error("[playground-page] bootstrap failed", error);
-  } finally {
-    isBooting.value = false;
-    bootMessage.value = "Playground ready";
+    jsonError.value = `Invalid JSON: ${(error as Error).message}`;
   }
 });
 
-onBeforeUnmount(() => {
-  clearTimeout(runTimer);
-  playground.value?.dispose();
+function useScenario(id: string) {
+  const s = SCENARIOS.find((x) => x.id === id);
+  if (!s) return;
+  scenario.value = id;
+  request.value = s.make();
+  hoodTab.value = s.tab;
+  expanded.value = null;
+  history.replaceState(null, "", `/playground#${id}`);
+  nextTick(() =>
+    document
+      .querySelector(".pg-scen .on")
+      ?.scrollIntoView({ inline: "center", block: "nearest", behavior: "smooth" }),
+  );
+}
+const activeScenario = computed(() => SCENARIOS.find((s) => s.id === scenario.value));
+
+/** any change made by hand leaves the scenario */
+function touch() {
+  scenario.value = "";
+}
+
+onMounted(async () => {
+  const shared = new URLSearchParams(location.search).get("request");
+  const fromHash = location.hash.slice(1);
+  if (shared) {
+    try {
+      request.value = { ...baseRequest(), ...JSON.parse(atob(shared)) };
+      scenario.value = "";
+    } catch {
+      runError.value = "The shared link could not be read.";
+    }
+  } else if (SCENARIOS.some((s) => s.id === fromHash)) useScenario(fromHash);
+  window.addEventListener("keydown", onKey);
+  try {
+    const { getSharedPlaygroundClient } = await import("../utils/playground.client");
+    client.value = await getSharedPlaygroundClient();
+    await run();
+  } catch (error) {
+    runError.value = (error as Error).message;
+  } finally {
+    booting.value = false;
+  }
 });
+onBeforeUnmount(() => {
+  clearTimeout(timer);
+  window.removeEventListener("keydown", onKey);
+});
+
+const searchInput = ref<{ inputRef?: HTMLInputElement } | null>(null);
+function onKey(e: KeyboardEvent) {
+  const t = e.target as HTMLElement;
+  if (e.key === "/" && !/INPUT|TEXTAREA|SELECT/.test(t.tagName) && !t.isContentEditable) {
+    e.preventDefault();
+    searchInput.value?.inputRef?.focus();
+  }
+}
+
+async function share() {
+  const url = `${location.origin}/playground?request=${btoa(bodyJson(request.value))}`;
+  try {
+    await navigator.clipboard.writeText(url);
+  } catch {
+    history.replaceState(null, "", url);
+  }
+  copied.value = true;
+  setTimeout(() => (copied.value = false), 1600);
+}
+function reset() {
+  useScenario("table");
+}
+
+/* ---------- search ---------- */
+const searchFields = computed(() =>
+  request.value.search.fields.length ? request.value.search.fields : SEARCH_DEFAULTS,
+);
+function toggleSearchField(f: string) {
+  touch();
+  const fields = request.value.search.fields;
+  const base = fields.length ? fields : [...SEARCH_DEFAULTS];
+  const next = base.includes(f) ? base.filter((x) => x !== f) : [...base, f];
+  request.value.search.fields =
+    next.length === SEARCH_DEFAULTS.length && SEARCH_DEFAULTS.every((d) => next.includes(d))
+      ? []
+      : next;
+  resetPage();
+}
+function onSearch(value: string) {
+  touch();
+  request.value.search.value = value;
+  resetPage();
+}
+
+/* ---------- filters ---------- */
+const filters = computed(() => request.value.filters as FilterNode[]);
+const editor = ref<{ index: number; draft: Condition } | null>(null);
+const editorOpen = computed({
+  get: () => editor.value !== null,
+  set: (v) => {
+    if (!v) editor.value = null;
+  },
+});
+function openNew() {
+  editor.value = { index: -1, draft: draftFor("status") };
+}
+function openEdit(index: number) {
+  const node = filters.value[index];
+  if (node?.type === "condition") editor.value = { index, draft: JSON.parse(JSON.stringify(node)) };
+}
+function applyFilter(c: Condition) {
+  touch();
+  if (!editor.value) return;
+  if (editor.value.index < 0) filters.value.push(c);
+  else filters.value.splice(editor.value.index, 1, c);
+  editor.value = null;
+  resetPage();
+}
+function removeFilter(index: number) {
+  touch();
+  filters.value.splice(index, 1);
+  editor.value = null;
+  resetPage();
+}
+function editGroup() {
+  hoodTab.value = "request";
+  editingJson.value = true;
+  mobileView.value = "hood";
+}
+function clearAll() {
+  touch();
+  request.value.filters = [];
+  request.value.search.value = "";
+  resetPage();
+}
+
+/* ---------- facets ---------- */
+function bucketCondition(key: string) {
+  return filters.value.find(
+    (n): n is Condition => n.type === "condition" && n.key === key && n.operator === "isAnyOf",
+  );
+}
+const bucketOn = (key: string, value: unknown) =>
+  !!(bucketCondition(key)?.value as unknown[] | undefined)?.includes(value);
+function toggleBucket(key: string, value: unknown) {
+  touch();
+  let c = bucketCondition(key);
+  if (!c) {
+    c = { type: "condition", key, operator: "isAnyOf", value: [] };
+    filters.value.push(c);
+  }
+  const values = c.value as unknown[];
+  const i = values.indexOf(value);
+  if (i >= 0) values.splice(i, 1);
+  else values.push(value);
+  if (!values.length) filters.value.splice(filters.value.indexOf(c), 1);
+  resetPage();
+}
+const requestedFacets = computed(() => (request.value.facets ?? []).map((f) => f.key));
+function toggleFacet(key: string) {
+  touch();
+  const facets = (request.value.facets ??= []);
+  const i = facets.findIndex((f) => f.key === key);
+  if (i >= 0) facets.splice(i, 1);
+  else facets.push({ key, mode: "exclude-self", limit: 8 });
+}
+const facetMax = (opts: { count: number }[]) => Math.max(1, ...opts.map((o) => o.count));
+const FIELD_NAME: Record<string, string> = {
+  reference: "reference",
+  "customer.name": "customer",
+  "orderLines.product.name": "product",
+  "orderLines.product.sku": "sku",
+};
+const shortKey = (k: string) => FIELD_NAME[k] ?? k;
+const FACET_LABEL: Record<string, string> = {
+  status: "Status",
+  "orderLines.product.category": "Product category",
+  "customer.name": "Customer",
+};
+const facetLabel = (k: string) => FACET_LABEL[k] ?? k;
+
+/* ---------- sorting ---------- */
+function sortBy(key: string, add: boolean) {
+  touch();
+  const sorting = request.value.sorting;
+  const i = sorting.findIndex((s) => s.key === key);
+  if (add) {
+    if (i < 0) sorting.push({ key, dir: "desc" });
+    else if (sorting[i]!.dir === "desc") sorting[i]!.dir = "asc";
+    else sorting.splice(i, 1);
+  } else {
+    const dir = i === 0 && sorting[0]!.dir === "desc" ? "asc" : "desc";
+    request.value.sorting = [{ key, dir }];
+  }
+  resetPage();
+}
+function sortState(key: string) {
+  const i = request.value.sorting.findIndex((s) => s.key === key);
+  if (i < 0) return null;
+  return { dir: request.value.sorting[i]!.dir, rank: i + 1 };
+}
+const COLUMNS: { key: string; label: string; cls: string; disabled?: boolean }[] = [
+  { key: "reference", label: "Order", cls: "c-ref" },
+  { key: "customer.name", label: "Customer", cls: "c-cust" },
+  { key: SORT_DISABLED, label: "Products", cls: "c-prod", disabled: true },
+  { key: "totalAmount", label: "Total", cls: "c-num" },
+  { key: "createdAt", label: "Created", cls: "c-date" },
+];
+
+/* ---------- pagination ---------- */
+function resetPage() {
+  request.value.pagination.pageIndex = 1;
+  expanded.value = null;
+}
+const rowCount = computed(() => result.value?.pageInfo.rowCount ?? 0);
+const pageCount = computed(() =>
+  Math.max(1, Math.ceil(rowCount.value / request.value.pagination.pageSize)),
+);
+function go(page: number) {
+  touch();
+  request.value.pagination.pageIndex = Math.min(pageCount.value, Math.max(1, page));
+  expanded.value = null;
+}
+function setPageSize(size: number) {
+  touch();
+  request.value.pagination.pageSize = size;
+  resetPage();
+}
+const items = (r: Row) => r.orderLines.reduce((n, l) => n + l.quantity, 0);
+const dateText = (iso: string) =>
+  new Date(`${iso.slice(0, 10)}T00:00:00Z`).toLocaleDateString("en-US", {
+    month: "short",
+    day: "numeric",
+    timeZone: "UTC",
+  });
+const yearText = (iso: string) => iso.slice(0, 4);
+const compactMoney = (n: number) =>
+  n >= 1e6 ? `$${(n / 1e6).toLocaleString("en-US", { maximumFractionDigits: 2 })}M` : money(n);
+const revenue = computed(() => Number(result.value?.summary?.revenue ?? 0));
+const stale = computed(() => !!runError.value || running.value);
+
+/* search matches are marked in the cells */
+const term = computed(() => request.value.search.value.trim().toLowerCase());
+function marked(text: string, field: string) {
+  const safe = text.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  if (!term.value || !searchFields.value.includes(field)) return safe;
+  const i = text.toLowerCase().indexOf(term.value);
+  if (i < 0) return safe;
+  const esc = (t: string) => t.replace(/[&<>"]/g, (c) => `&#${c.charCodeAt(0)};`);
+  return `${esc(text.slice(0, i))}<mark>${esc(text.slice(i, i + term.value.length))}</mark>${esc(text.slice(i + term.value.length))}`;
+}
+type Row = PlaygroundResult["rows"][number];
+/** the first product, or the first one that matches the search */
+function shownLine(r: Row) {
+  if (term.value && searchFields.value.some((f) => f.startsWith("orderLines.product")))
+    return (
+      r.orderLines.find(
+        (l) =>
+          l.product.name.toLowerCase().includes(term.value) ||
+          l.product.sku.toLowerCase().includes(term.value),
+      ) ?? r.orderLines[0]
+    );
+  return r.orderLines[0];
+}
+function showRule() {
+  hoodTab.value = "resource";
+  mobileView.value = "hood";
+}
 </script>
 
 <template>
-  <div class="flex h-[calc(100svh-var(--ui-header-height,64px))] flex-col overflow-hidden">
-    <!-- Top bar -->
-    <div
-      class="flex shrink-0 items-center gap-3 border-b border-default bg-default/80 px-4 py-2.5 backdrop-blur"
-    >
-      <UBadge color="primary" variant="soft" size="sm">Browser Playground</UBadge>
-
-      <div class="hidden items-center gap-2 text-xs text-toned sm:flex">
-        <span>
-          {{ countFormatter.format(playgroundSeedSummary.orders) }} orders ·
-          {{ countFormatter.format(playgroundSeedSummary.customers) }} customers ·
-          {{ countFormatter.format(playgroundSeedSummary.products) }} products
-        </span>
-        <UBadge color="neutral" variant="subtle" size="sm">
-          orgId: {{ playgroundContext.orgId }}
-        </UBadge>
+  <div class="pg" :data-view="mobileView">
+    <!-- ======== top bar ======== -->
+    <header class="pg-top">
+      <div class="pg-title">
+        <h1>Playground</h1>
+        <p>
+          {{ num(playgroundSeedSummary.orders) }} orders in an in-browser SQLite database, queried
+          by the real engine.
+        </p>
       </div>
+      <nav class="pg-scen" aria-label="Examples">
+        <button
+          v-for="s in SCENARIOS"
+          :key="s.id"
+          type="button"
+          :class="{ on: scenario === s.id }"
+          :aria-pressed="scenario === s.id"
+          @click="useScenario(s.id)"
+        >
+          {{ s.label }}
+        </button>
+      </nav>
+    </header>
 
-      <div class="ml-auto flex items-center gap-2">
-        <div v-if="isBooting || isRunning" class="flex items-center gap-1.5">
-          <span class="size-1.5 animate-pulse rounded-full bg-primary" />
-          <span class="text-xs text-primary">{{ isBooting ? "Booting…" : "Running…" }}</span>
-        </div>
-        <div v-else-if="!validationError" class="flex items-center gap-1.5">
-          <span class="size-1.5 rounded-full bg-success" />
-          <span class="text-xs text-success">Valid</span>
-        </div>
-        <div v-else-if="validationError" class="flex items-center gap-1.5">
-          <span class="size-1.5 rounded-full bg-error" />
-          <span class="text-xs text-error">Invalid</span>
-        </div>
+    <div class="pg-sub">
+      <p class="pg-note" :class="{ custom: !activeScenario }">
+        <template v-if="activeScenario">
+          {{ activeScenario.text }}
+          <NuxtLink :to="activeScenario.docs">Docs →</NuxtLink>
+        </template>
+        <template v-else>Your own request. Copy the link to share it, or pick an example.</template>
+      </p>
+      <div class="pg-actions">
+        <UButton
+          color="neutral"
+          variant="ghost"
+          size="sm"
+          icon="i-lucide-rotate-ccw"
+          label="Reset"
+          @click="reset"
+        />
+        <UButton
+          color="neutral"
+          variant="outline"
+          size="sm"
+          :icon="copied ? 'i-lucide-check' : 'i-lucide-link'"
+          :label="copied ? 'Link copied' : 'Copy link'"
+          @click="share"
+        />
       </div>
     </div>
 
-    <!-- Mobile tab bar -->
-    <div class="flex shrink-0 border-b border-default sm:hidden">
+    <div class="pg-switch" role="tablist">
       <button
-        v-for="tab in [
-          { id: 'editor', label: 'Editor', icon: 'i-lucide-code-2' },
-          { id: 'results', label: 'Results', icon: 'i-lucide-table-2' },
-        ]"
-        :key="tab.id"
-        class="flex flex-1 items-center justify-center gap-1.5 px-4 py-2.5 text-sm font-medium transition-colors"
-        :class="
-          mobileTab === tab.id
-            ? 'border-b-2 border-primary text-primary'
-            : 'text-toned hover:text-default'
-        "
-        @click="mobileTab = tab.id as 'editor' | 'results'"
+        type="button"
+        role="tab"
+        :aria-selected="mobileView === 'app'"
+        @click="mobileView = 'app'"
       >
-        <UIcon :name="tab.icon" class="size-4" />
-        {{ tab.label }}
+        The table
+      </button>
+      <button
+        type="button"
+        role="tab"
+        :aria-selected="mobileView === 'hood'"
+        @click="mobileView = 'hood'"
+      >
+        Under the hood
+        <sup v-if="result && !runError">{{ result.statements.length }}</sup>
       </button>
     </div>
 
-    <!-- Split body -->
-    <div class="flex min-h-0 flex-1">
-      <!-- Editor panel -->
-      <div
-        :class="[
-          'flex flex-col border-r border-default',
-          mobileTab !== 'editor' ? 'hidden sm:flex' : 'flex',
-          'w-full sm:w-[400px] lg:w-[460px] xl:w-[500px] shrink-0',
-        ]"
-      >
-        <div class="flex min-h-0 flex-1 flex-col">
-          <div
-            class="grid shrink-0 grid-cols-3 border-b border-default bg-muted/20"
-            role="tablist"
-            aria-label="Playground editor sections"
-          >
-            <button
-              v-for="tab in editorTabs"
-              :key="tab.value"
-              type="button"
-              :id="`playground-editor-${tab.value}-tab`"
-              class="inline-flex items-center justify-center gap-1.5 px-4 py-3 text-sm font-medium transition-colors"
-              :class="
-                editorTab === tab.value
-                  ? 'bg-inverted text-inverted'
-                  : 'text-toned hover:bg-default/60 hover:text-default'
-              "
-              :aria-selected="editorTab === tab.value"
-              :aria-controls="`playground-editor-${tab.value}`"
-              @click="editorTab = tab.value"
-            >
-              <UIcon :name="tab.icon" class="size-4" />
-              {{ tab.label }}
-            </button>
-          </div>
-
-          <section
-            id="playground-editor-request"
-            v-show="editorTab === 'request'"
-            class="flex h-full min-h-0 flex-1 flex-col"
-            role="tabpanel"
-            aria-labelledby="playground-editor-request-tab"
-          >
-            <div
-              class="grid shrink-0 grid-cols-[minmax(0,1fr)_auto] gap-3 border-b border-default p-4"
-            >
-              <USelectMenu
-                v-model="selectedExample"
-                value-key="value"
-                label-key="label"
-                :items="sampleOptions"
-                :search-input="false"
-                size="sm"
-                class="w-full"
-                @update:model-value="setExample"
-              />
-              <UButton
-                color="neutral"
-                icon="i-lucide-rotate-ccw"
-                size="sm"
-                @click="setExample(selectedExample)"
-              >
-                Reset
-              </UButton>
-            </div>
-
-            <div class="min-h-0 flex-1 overflow-hidden">
-              <PlaygroundJsonEditor
-                v-model="requestText"
-                :invalid="Boolean(validationError)"
-                placeholder="Paste a QueryRequest payload here"
-              />
-            </div>
-
-            <div v-if="validationError" class="shrink-0 border-t border-default">
-              <UAlert
-                color="error"
-                variant="soft"
-                title="Invalid request"
-                :description="validationError"
-                size="sm"
-                class="w-full rounded-none"
-              />
-            </div>
-
-            <div v-if="bootstrapError" class="shrink-0 border-t border-default">
-              <UAlert
-                color="error"
-                variant="soft"
-                title="Playground failed to boot"
-                :description="bootstrapError"
-                size="sm"
-                class="w-full rounded-none"
-              />
-            </div>
-          </section>
-
-          <section
-            id="playground-editor-contract"
-            v-if="editorTab === 'contract'"
-            class="flex h-full min-h-0 flex-1 flex-col"
-            role="tabpanel"
-            aria-labelledby="playground-editor-contract-tab"
-          >
-            <div class="border-b border-default px-4 py-3 text-xs text-toned">
-              Resource contract used by the live playground query.
-            </div>
-            <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
-              <article class="prose prose-sm max-w-none [&_pre]:mt-0">
-                <MDC :value="contractMarkdown" tag="div" />
-              </article>
-            </div>
-          </section>
-
-          <section
-            id="playground-editor-tables"
-            v-if="editorTab === 'tables'"
-            class="flex h-full min-h-0 flex-1 flex-col"
-            role="tabpanel"
-            aria-labelledby="playground-editor-tables-tab"
-          >
-            <div class="border-b border-default px-4 py-3 text-xs text-toned">
-              Drizzle tables and relations loaded into the pre-seeded SQLite file.
-            </div>
-            <div class="min-h-0 flex-1 overflow-auto px-4 pb-4">
-              <article class="prose prose-sm max-w-none [&_pre]:mt-0">
-                <MDC :value="tablesMarkdown" tag="div" />
-              </article>
-            </div>
-          </section>
-
-          <UAlert
-            v-if="editorTab !== 'request' && (isBooting || bootstrapError)"
-            class="m-4 mt-0"
-            :color="bootstrapError ? 'warning' : 'neutral'"
-            variant="soft"
-            :title="bootstrapError ? 'Playground boot issue' : 'Live query still booting'"
-            :description="
-              bootstrapError
-                ? 'The static contract and table definitions are still visible, but the live query engine failed to start.'
-                : 'The contract and table panels are pre-rendered. Results will appear once the in-browser engine is ready.'
-            "
-          />
+    <div class="pg-main">
+      <!-- ======== the app ======== -->
+      <section class="pg-app" aria-label="Orders table">
+        <div class="pg-app-h">
+          <span class="pg-kicker">What your users see</span>
+          <span class="pg-scope" title="Set on the server from the session, not sent by the client">
+            <svg viewBox="0 0 12 12" aria-hidden="true">
+              <rect x="2" y="5.5" width="8" height="5.5" rx="1" />
+              <path d="M4 5.5V4a2 2 0 0 1 4 0v1.5" fill="none" />
+            </svg>
+            signed in to <b>acme</b>
+          </span>
         </div>
-      </div>
 
-      <!-- Results panel -->
-      <div
-        :class="[
-          'min-h-0 flex-1 overflow-y-auto',
-          mobileTab !== 'results' ? 'hidden sm:block' : 'block',
-        ]"
-      >
-        <div class="space-y-4 p-4">
-          <!-- Stats row -->
-          <div class="grid grid-cols-2 gap-3 lg:grid-cols-4">
-            <div
-              v-for="stat in [
-                { label: 'Matching rows', value: rowCount.toLocaleString() },
-                { label: 'Page size', value: rows.length.toLocaleString() },
-                { label: 'Active filters', value: activeFilterCount.toLocaleString() },
-                { label: 'Last run', value: lastRunAt ?? '--:--:--', mono: true },
-              ]"
-              :key="stat.label"
-              class="rounded-xl border border-default bg-default px-4 py-3"
-            >
-              <p class="text-xs text-toned">{{ stat.label }}</p>
-              <p
-                class="mt-1 text-xl font-semibold text-highlighted"
-                :class="stat.mono ? 'font-mono text-base' : ''"
-              >
-                {{ stat.value }}
-              </p>
-            </div>
-          </div>
-
-          <!-- Runtime error -->
-          <UAlert
-            v-if="runtimeError"
-            color="warning"
-            variant="soft"
-            title="Runtime constraint"
-            :description="runtimeError"
-          />
-
-          <UCard
-            v-if="isBooting"
-            class="border-primary/20 bg-primary/5"
-            :ui="{ body: 'p-5 sm:p-5' }"
+        <!-- toolbar -->
+        <div class="pg-tool">
+          <UInput
+            ref="searchInput"
+            :model-value="request.search.value"
+            type="search"
+            icon="i-lucide-search"
+            placeholder="Search orders"
+            aria-label="Search orders"
+            color="neutral"
+            class="pg-search"
+            :ui="{ trailing: 'pe-2' }"
+            @update:model-value="onSearch(String($event))"
           >
-            <div class="flex items-start gap-4">
-              <div
-                class="mt-0.5 flex size-10 shrink-0 items-center justify-center rounded-full bg-primary/10"
-              >
-                <UIcon name="i-lucide-database-zap" class="size-5 animate-pulse text-primary" />
-              </div>
-              <div class="space-y-1">
-                <p class="text-sm font-medium text-highlighted">Booting playground</p>
-                <p class="text-sm text-toned">{{ bootMessage }}</p>
-                <p class="text-xs text-toned">
-                  Loading the pre-seeded SQLite file and warming the real drizzle-resource query
-                  engine.
+            <template #trailing><UKbd value="/" /></template>
+          </UInput>
+          <UPopover :content="{ align: 'end', sideOffset: 6 }">
+            <UButton
+              color="neutral"
+              variant="outline"
+              trailing-icon="i-lucide-chevron-down"
+              class="pg-in"
+            >
+              <span class="pg-in-l">in</span>
+              <span class="pg-in-v">{{
+                searchFields.length > 2
+                  ? `${searchFields.length} fields`
+                  : searchFields.map((f) => shortKey(f)).join(", ")
+              }}</span>
+            </UButton>
+            <template #content>
+              <div class="pg-pop">
+                <p class="pg-pop-h">Search in</p>
+                <button
+                  v-for="f in SEARCH_ALLOWED"
+                  :key="f"
+                  type="button"
+                  class="pg-opt"
+                  :class="{ on: searchFields.includes(f) }"
+                  @click="toggleSearchField(f)"
+                >
+                  <span class="pg-check" /><code>{{ f }}</code>
+                  <small v-if="SEARCH_DEFAULTS.includes(f)">default</small>
+                </button>
+                <p class="pg-pop-f">
+                  Only fields in <code>search.allowed</code> can be picked. When the request names
+                  none, the resource's defaults are used.
                 </p>
               </div>
-            </div>
-          </UCard>
-
-          <!-- Rows table -->
-          <UCard :ui="{ body: 'p-0 sm:p-0' }">
-            <template #header>
-              <div class="flex items-center justify-between gap-3">
-                <div>
-                  <p class="text-sm font-medium text-highlighted">Rows</p>
-                  <p class="text-xs text-toned">
-                    Showing {{ rows.length }} row{{ rows.length === 1 ? "" : "s" }} from the current
-                    page
-                  </p>
-                </div>
-                <UBadge color="neutral" variant="subtle" size="sm">
-                  {{
-                    lastAppliedRequest ? "Last valid request applied" : "Waiting for valid request"
-                  }}
-                </UBadge>
-              </div>
             </template>
-
-            <div class="table-scroll max-h-[400px] overflow-y-auto">
-              <UTable
-                :data="rows"
-                :columns="tableColumns"
-                :loading="isBooting || isRunning"
-                empty="No rows match the current request."
-                :ui="{ thead: 'sticky top-0 z-10 bg-default' }"
-              >
-                <template #reference-cell="{ row }">
-                  <span class="font-mono text-xs text-highlighted">
-                    {{ row.original.reference }}
-                  </span>
-                </template>
-
-                <template #status-cell="{ row }">
-                  <UBadge
-                    :color="statusColor[row.original.status] ?? 'neutral'"
-                    variant="subtle"
-                    size="sm"
-                    class="capitalize"
-                  >
-                    {{ row.original.status }}
-                  </UBadge>
-                </template>
-
-                <template #orderLines-cell="{ row }">
-                  <div class="flex flex-wrap items-center gap-1">
-                    <UBadge
-                      v-for="line in row.original.orderLines.slice(0, PRODUCTS_VISIBLE)"
-                      :key="line.id"
-                      color="neutral"
-                      variant="subtle"
-                      size="sm"
-                      class="max-w-[140px] truncate"
-                    >
-                      {{ line.product.name }}
-                    </UBadge>
-
-                    <UTooltip
-                      v-if="row.original.orderLines.length > PRODUCTS_VISIBLE"
-                      :content="{
-                        align: 'start',
-                        side: 'top',
-                      }"
-                    >
-                      <UBadge color="neutral" variant="soft" size="sm">
-                        +{{ row.original.orderLines.length - PRODUCTS_VISIBLE }}
-                      </UBadge>
-                      <template #content>
-                        <ul class="space-y-0.5 text-xs">
-                          <li
-                            v-for="line in row.original.orderLines.slice(PRODUCTS_VISIBLE)"
-                            :key="line.id"
-                          >
-                            {{ line.product.name }}
-                          </li>
-                        </ul>
-                      </template>
-                    </UTooltip>
-
-                    <span v-if="row.original.orderLines.length === 0" class="text-xs text-toned"
-                      >—</span
-                    >
-                  </div>
-                </template>
-              </UTable>
-            </div>
-          </UCard>
-
-          <!-- Facets -->
-          <UCard :ui="{ body: 'p-0 sm:p-0' }">
-            <template #header>
-              <div class="flex items-center justify-between gap-3">
-                <div>
-                  <p class="text-sm font-medium text-highlighted">Facet buckets</p>
-                  <p class="text-xs text-toned">
-                    Live aggregation results returned alongside the current query.
-                  </p>
-                </div>
-                <UBadge color="neutral" variant="subtle" size="sm">
-                  {{ facets.length }} facet{{ facets.length === 1 ? "" : "s" }}
-                </UBadge>
-              </div>
-            </template>
-
-            <div
-              v-if="facets.length > 0"
-              class="grid auto-rows-fr gap-px sm:grid-cols-2"
-              style="background-color: var(--ui-border)"
-            >
-              <section
-                v-for="facet in facets"
-                :key="facet.key"
-                class="flex min-h-[180px] flex-col bg-default"
-              >
-                <div
-                  class="flex items-center justify-between gap-2 border-b border-default px-4 py-3"
-                >
-                  <p class="text-sm font-medium text-highlighted">{{ facet.key }}</p>
-                  <UBadge color="neutral" variant="subtle" size="sm">
-                    {{ facet.total ?? facet.options.length }} bucket{{
-                      (facet.total ?? facet.options.length) === 1 ? "" : "s"
-                    }}
-                  </UBadge>
-                </div>
-
-                <div class="flex flex-1 flex-col px-4 py-3">
-                  <div
-                    v-for="option in facet.options"
-                    :key="`${facet.key}-${String(option.value)}`"
-                    class="flex items-center justify-between gap-3 py-1.5"
-                  >
-                    <span class="truncate text-sm text-highlighted">{{ option.value }}</span>
-                    <UBadge color="neutral" variant="soft" size="sm">{{ option.count }}</UBadge>
-                  </div>
-
-                  <p v-if="facet.options.length === 0" class="text-sm text-toned">
-                    No options for the current request.
-                  </p>
-                </div>
-              </section>
-            </div>
-
-            <UAlert
-              v-else
-              color="neutral"
-              variant="soft"
-              title="No facets requested"
-              description="Add entries to request.facets to showcase live bucket counts in the playground."
-              class="rounded-none border-0"
-            />
-          </UCard>
-
-          <!-- Last applied request -->
-          <UCard>
-            <template #header>
-              <div class="flex items-center justify-between gap-3">
-                <div>
-                  <p class="text-sm font-medium text-highlighted">Last applied request</p>
-                  <p class="text-xs text-toned">The most recent valid payload that actually ran.</p>
-                </div>
-                <UBadge color="neutral" variant="subtle" size="sm">
-                  {{
-                    lastAppliedRequest?.pagination.pageSize ??
-                    basePlaygroundRequest.pagination.pageSize
-                  }}
-                  per page
-                </UBadge>
-              </div>
-            </template>
-
-            <pre
-              class="max-h-64 overflow-y-auto rounded-lg bg-muted text-xs leading-6 text-toned"
-              >{{ JSON.stringify(lastAppliedRequest ?? basePlaygroundRequest, null, 2) }}</pre>
-          </UCard>
+          </UPopover>
+          <USwitch
+            v-model="summary"
+            label="Totals"
+            class="pg-totals"
+            title="Pass summary: true to get totals over every matching order"
+          />
         </div>
-      </div>
+
+        <!-- filter chips -->
+        <div class="pg-chips">
+          <template v-for="(node, i) in filters" :key="i">
+            <span v-if="node.type === 'group'" class="pg-chip group">
+              <button
+                type="button"
+                class="pg-chip-b"
+                title="Groups are edited in the request JSON"
+                @click="editGroup"
+              >
+                <i>{{ (node as Group).combinator }}</i>
+                <span>{{ groupText(node as Group) }}</span>
+              </button>
+              <button
+                type="button"
+                class="pg-chip-x"
+                aria-label="Remove group"
+                @click="removeFilter(i)"
+              >
+                <UIcon name="i-lucide-x" />
+              </button>
+            </span>
+            <span v-else class="pg-chip">
+              <button type="button" class="pg-chip-b" @click="openEdit(i)">
+                <code>{{ node.key }}</code>
+                <i>{{ OP_LABEL[node.operator] ?? node.operator }}</i>
+                <b>{{ conditionText(node) }}</b>
+              </button>
+              <button
+                type="button"
+                class="pg-chip-x"
+                aria-label="Remove filter"
+                @click="removeFilter(i)"
+              >
+                <UIcon name="i-lucide-x" />
+              </button>
+            </span>
+          </template>
+          <UPopover v-model:open="editorOpen" :content="{ align: 'start', sideOffset: 6 }">
+            <UButton
+              color="neutral"
+              variant="outline"
+              size="sm"
+              icon="i-lucide-list-filter"
+              label="Filter"
+              class="pg-add"
+              @click="openNew"
+            />
+            <template #content>
+              <PlaygroundFilterEditor
+                v-if="editor"
+                :key="editor.index"
+                :initial="editor.draft"
+                :editing="editor.index >= 0"
+                @apply="applyFilter"
+                @remove="removeFilter(editor!.index)"
+                @cancel="editor = null"
+              />
+            </template>
+          </UPopover>
+          <UButton
+            color="neutral"
+            variant="outline"
+            size="sm"
+            icon="i-lucide-panel-left"
+            class="pg-facets-toggle"
+            :aria-expanded="facetsOpen"
+            @click="facetsOpen = !facetsOpen"
+          >
+            Facets <sup>{{ requestedFacets.length }}</sup>
+          </UButton>
+          <UButton
+            v-if="filters.length || request.search.value"
+            color="neutral"
+            variant="link"
+            size="sm"
+            label="Clear all"
+            class="pg-clear"
+            @click="clearAll"
+          />
+        </div>
+
+        <div v-if="runError" class="pg-err" role="alert">
+          <b>The engine rejected this request</b>
+          <code>{{ runError }}</code>
+          <span>
+            No SQL ran.
+            <button type="button" @click="showRule">See the rule</button>
+            ·
+            <button type="button" @click="reset">Reset</button>
+          </span>
+        </div>
+
+        <div class="pg-body" :class="{ 'facets-open': facetsOpen }">
+          <!-- facets -->
+          <aside class="pg-facets" :class="{ stale }" aria-label="Facets">
+            <div v-for="f in result?.facets ?? []" :key="f.key" class="pg-facet">
+              <h3 :title="f.key">
+                <span>{{ facetLabel(f.key) }}</span>
+                <button
+                  type="button"
+                  class="pg-facet-x"
+                  :aria-label="`Stop requesting the ${f.key} facet`"
+                  @click="toggleFacet(f.key)"
+                >
+                  <UIcon name="i-lucide-x" />
+                </button>
+              </h3>
+              <button
+                v-for="o in f.options"
+                :key="String(o.value)"
+                type="button"
+                class="pg-bucket"
+                :class="{ on: bucketOn(f.key, o.value) }"
+                :aria-pressed="bucketOn(f.key, o.value)"
+                @click="toggleBucket(f.key, o.value)"
+              >
+                <span class="pg-check" />
+                <span class="v">{{ o.value }}</span>
+                <span class="n">{{ num(o.count) }}</span>
+                <span class="bar"
+                  ><b :style="{ transform: `scaleX(${o.count / facetMax(f.options)})` }"
+                /></span>
+              </button>
+              <p v-if="!f.options.length" class="pg-facet-none">No values match.</p>
+              <p v-if="f.total && f.total > f.options.length" class="pg-facet-more">
+                {{ f.total - f.options.length }} more values
+              </p>
+            </div>
+            <div
+              v-if="FACETS_ALLOWED.some((x) => !requestedFacets.includes(x))"
+              class="pg-facet-add"
+            >
+              <span>Add a facet</span>
+              <button
+                v-for="k in FACETS_ALLOWED.filter((x) => !requestedFacets.includes(x))"
+                :key="k"
+                type="button"
+                @click="toggleFacet(k)"
+              >
+                <UIcon name="i-lucide-plus" /> {{ facetLabel(k) }}
+              </button>
+            </div>
+          </aside>
+
+          <!-- table -->
+          <div class="pg-tablebox">
+            <div class="pg-tablescroll" :class="{ stale }">
+              <table class="pg-table">
+                <thead>
+                  <tr>
+                    <th
+                      v-for="c in COLUMNS"
+                      :key="c.key"
+                      :class="c.cls"
+                      :aria-sort="
+                        sortState(c.key)
+                          ? sortState(c.key)!.dir === 'desc'
+                            ? 'descending'
+                            : 'ascending'
+                          : undefined
+                      "
+                    >
+                      <button
+                        type="button"
+                        :class="{ dis: c.disabled }"
+                        :title="
+                          c.disabled
+                            ? 'Sorting is disabled by the resource: click to see the engine reject it'
+                            : 'Click to sort. Shift-click to add a sort key.'
+                        "
+                        @click="sortBy(c.key, $event.shiftKey)"
+                      >
+                        <span>{{ c.label }}</span>
+                        <UIcon v-if="c.disabled" name="i-lucide-lock" class="pg-lock" />
+                        <span v-else-if="sortState(c.key)" class="pg-sort">
+                          <UIcon
+                            :name="
+                              sortState(c.key)!.dir === 'desc'
+                                ? 'i-lucide-arrow-down'
+                                : 'i-lucide-arrow-up'
+                            "
+                          />
+                          <sub v-if="request.sorting.length > 1">{{ sortState(c.key)!.rank }}</sub>
+                        </span>
+                      </button>
+                    </th>
+                  </tr>
+                </thead>
+                <tbody v-if="booting">
+                  <tr v-for="n in 10" :key="n" class="pg-skel">
+                    <td v-for="c in COLUMNS" :key="c.key" :class="c.cls"><i /></td>
+                  </tr>
+                </tbody>
+                <tbody v-else-if="result">
+                  <template v-for="r in result.rows" :key="r.id">
+                    <tr
+                      class="pg-row"
+                      :class="{ open: expanded === r.id }"
+                      tabindex="0"
+                      :aria-expanded="expanded === r.id"
+                      @click="expanded = expanded === r.id ? null : r.id"
+                      @keydown.enter="expanded = expanded === r.id ? null : r.id"
+                    >
+                      <td class="c-ref">
+                        <!-- eslint-disable vue/no-v-html -->
+                        <span class="pg-l1 pg-ref" v-html="marked(r.reference, 'reference')" />
+                        <span class="pg-l2 pg-status" :data-s="r.status"
+                          ><i class="pg-st" />{{ r.status }}</span
+                        >
+                      </td>
+                      <td class="c-cust">
+                        <span class="pg-l1" v-html="marked(r.customer.name, 'customer.name')" />
+                      </td>
+                      <td class="c-prod">
+                        <span
+                          class="pg-l1"
+                          v-html="
+                            marked(shownLine(r)?.product.name ?? '—', 'orderLines.product.name')
+                          "
+                        />
+                        <!-- eslint-enable vue/no-v-html -->
+                        <span class="pg-l2"
+                          >{{ shownLine(r)?.product.category
+                          }}<template v-if="r.orderLines.length > 1">
+                            · +{{ r.orderLines.length - 1 }} more</template
+                          ></span
+                        >
+                      </td>
+                      <td class="c-num">
+                        <span class="pg-l1">{{ money(r.totalAmount) }}</span>
+                        <span class="pg-l2"
+                          >{{ items(r) }} {{ items(r) === 1 ? "item" : "items" }}</span
+                        >
+                      </td>
+                      <td class="c-date">
+                        <span class="pg-l1">{{ dateText(r.createdAt) }}</span>
+                        <span class="pg-l2">{{ yearText(r.createdAt) }}</span>
+                      </td>
+                    </tr>
+                    <tr v-if="expanded === r.id" class="pg-detail">
+                      <td colspan="5">
+                        <div class="pg-detail-in">
+                          <div class="pg-detail-h">
+                            <span
+                              ><code>{{ r.reference }}</code> · {{ r.status }} ·
+                              {{ r.customer.name }}</span
+                            >
+                            <small>orderLines with product, loaded in the rows step</small>
+                          </div>
+                          <table>
+                            <tbody>
+                              <tr v-for="l in r.orderLines" :key="l.id">
+                                <!-- eslint-disable vue/no-v-html -->
+                                <td v-html="marked(l.product.name, 'orderLines.product.name')" />
+                                <td>
+                                  <code v-html="marked(l.product.sku, 'orderLines.product.sku')" />
+                                </td>
+                                <!-- eslint-enable vue/no-v-html -->
+                                <td>{{ l.product.category }}</td>
+                                <td class="c-num">× {{ l.quantity }}</td>
+                              </tr>
+                            </tbody>
+                          </table>
+                        </div>
+                      </td>
+                    </tr>
+                  </template>
+                  <tr v-if="!result.rows.length && !runError">
+                    <td colspan="5" class="pg-empty">
+                      <UIcon name="i-lucide-search-x" class="pg-empty-i" />
+                      <b>No orders match.</b>
+                      <span v-if="rowCount > 0">This page is past the last one.</span>
+                      <span v-else>Remove a filter or change the search.</span>
+                      <UButton
+                        color="neutral"
+                        variant="outline"
+                        size="sm"
+                        icon="i-lucide-x"
+                        label="Clear filters"
+                        @click="clearAll"
+                      />
+                    </td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+
+            <footer class="pg-foot">
+              <div class="pg-count">
+                <template v-if="result">
+                  <span class="pg-stat"
+                    ><b class="pg-pix">{{ num(rowCount) }}</b> orders</span
+                  >
+                  <span v-if="summary && result.summary" class="pg-stat" :title="money(revenue)"
+                    ><b class="pg-pix">{{ compactMoney(revenue) }}</b> revenue</span
+                  >
+                </template>
+              </div>
+              <div class="pg-pager">
+                <USelect
+                  :model-value="request.pagination.pageSize"
+                  :items="PAGE_SIZES.map((n) => ({ label: `${n} rows`, value: n }))"
+                  size="sm"
+                  color="neutral"
+                  variant="ghost"
+                  aria-label="Rows per page"
+                  class="pg-size"
+                  @update:model-value="setPageSize(Number($event))"
+                />
+                <UPagination
+                  :page="request.pagination.pageIndex"
+                  :total="rowCount"
+                  :items-per-page="request.pagination.pageSize"
+                  :sibling-count="0"
+                  show-edges
+                  :show-controls="false"
+                  size="sm"
+                  color="neutral"
+                  variant="ghost"
+                  active-color="neutral"
+                  active-variant="outline"
+                  class="pg-pages"
+                  @update:page="go"
+                />
+                <span class="pg-pageof"
+                  >{{ num(request.pagination.pageIndex) }} / {{ num(pageCount) }}</span
+                >
+                <div class="pg-arrows">
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    icon="i-lucide-chevron-left"
+                    aria-label="Previous page"
+                    :disabled="request.pagination.pageIndex <= 1"
+                    @click="go(request.pagination.pageIndex - 1)"
+                  />
+                  <UButton
+                    color="neutral"
+                    variant="ghost"
+                    size="sm"
+                    icon="i-lucide-chevron-right"
+                    aria-label="Next page"
+                    :disabled="!result?.pageInfo.hasNextPage"
+                    @click="go(request.pagination.pageIndex + 1)"
+                  />
+                </div>
+              </div>
+            </footer>
+          </div>
+        </div>
+        <p class="pg-tip">
+          <UIcon name="i-lucide-mouse-pointer-click" />
+          <span>
+            Click a row for its order lines. <UKbd value="shift" size="sm" /> click a header to sort
+            by a second key. <b>Products</b> is locked: the resource disables sorting on it.
+          </span>
+        </p>
+      </section>
+
+      <!-- ======== under the hood ======== -->
+      <PlaygroundHood
+        v-model:tab="hoodTab"
+        v-model:json="jsonText"
+        v-model:editing="editingJson"
+        :request="request"
+        :result="result"
+        :error="runError"
+        :running="running"
+        :summary="summary"
+        :run-id="runId"
+        :json-error="jsonError"
+      />
     </div>
   </div>
 </template>
