@@ -7,12 +7,12 @@ defineProps<{ bare?: boolean }>();
 /* Benchmark medians drawn in pixels: dim pixels are 2.4.1, bright pixels are today.
    When the chart enters the screen, the pixels above today's time fall away. */
 const ROWS = [
-  { name: "Page, no count", stmts: "1 → 1 statement", before: 39.95, after: 0.51 },
-  { name: "Page + exact count", stmts: "2 → 2", before: 62.46, after: 4.17 },
-  { name: "Relation search", stmts: "2 → 2", before: 79.46, after: 16.8 },
-  { name: "3 root facets", stmts: "3 → 1", before: 90.03, after: 24.76 },
-  { name: "5 mixed facets", stmts: "5 → 2", before: 195.04, after: 57.38 },
-  { name: "Exclude-self facets", stmts: "5 → 3", before: 138.22, after: 35.84 },
+  { name: "Page, no count", stmts: "statements: 1 → 1", before: 39.95, after: 0.51 },
+  { name: "Page + exact count", stmts: "statements: 2 → 2", before: 62.46, after: 4.17 },
+  { name: "Relation search", stmts: "statements: 2 → 2", before: 79.46, after: 16.8 },
+  { name: "3 root facets", stmts: "statements: 3 → 1", before: 90.03, after: 24.76 },
+  { name: "5 mixed facets", stmts: "statements: 5 → 2", before: 195.04, after: 57.38 },
+  { name: "Exclude-self facets", stmts: "statements: 5 → 3", before: 138.22, after: 35.84 },
 ];
 const CELL = 6;
 const MS_PER_ROW = 5;
@@ -20,6 +20,8 @@ const HEIGHT = 260;
 
 const canvas = ref<HTMLCanvasElement | null>(null);
 const shown = reactive(ROWS.map((r) => ({ ms: r.before, ratio: 1 })));
+/* today's time leads; the pixel font's dot reads as a plus, so the point is drawn apart */
+const split = (ms: number) => (ms < 10 ? ms.toFixed(2) : ms.toFixed(1)).split(".");
 let ctx: CanvasRenderingContext2D | null = null;
 let colors: Colors | undefined;
 let width = 0;
@@ -112,21 +114,22 @@ useFrame((now) => {
       <h2><span class="px-acc">Benchmarks</span></h2>
       <p class="px-lede">
         Median timings from the repository's PostgreSQL benchmark: 200,000 rows, PostgreSQL 18, one
-        client. Dim pixels show version 2.4.1, bright pixels the current version.
+        client. Bright pixels are today's time; dim pixels show what version 2.4.1 took.
       </p>
     </div>
     <div class="px-panel px-bench">
       <div class="px-win-h">
-        <i />Median latency<small>200,000 rows · PostgreSQL 18 · 1 client</small>
+        <i />Median latency, ms<small>200,000 rows · PostgreSQL 18 · 1 client</small>
       </div>
       <button type="button" class="px-btn px-btn-o px-replay" @click="replay">↻ replay</button>
       <canvas ref="canvas" aria-label="Benchmark chart: median times before and after" role="img" />
       <div class="px-blabels">
         <div v-for="(r, i) in ROWS" :key="r.name">
-          <b class="px-pix">{{ shown[i]!.ratio.toFixed(1) }}×</b>{{ r.name }}
-          <small
-            >{{ shown[i]!.ms < 10 ? shown[i]!.ms.toFixed(2) : shown[i]!.ms.toFixed(1) }} ms</small
-          >
+          <b class="px-pix"
+            >{{ split(shown[i]!.ms)[0] }}<span class="px-bdot">.</span>{{ split(shown[i]!.ms)[1]
+            }}<em>ms</em></b
+          >{{ r.name }}
+          <small>2.4.1: {{ r.before }} ms</small>
           <small>{{ r.stmts }}</small>
         </div>
       </div>

@@ -3,6 +3,8 @@
   "outputDirectory": ".output/public",
   "installCommand": "bun install",
   "framework": null,
+  "cleanUrls": true,
+  "trailingSlash": false,
   "redirects": [
     {
       "source": "/getting-started/introduction",

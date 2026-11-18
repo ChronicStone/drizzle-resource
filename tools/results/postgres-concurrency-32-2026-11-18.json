@@ -1,0 +1,166 @@
+{
+  "measurements": [
+    {
+      "scenario": "page-without-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 1.841874999999959,
+          "p95Ms": 4.25141700000006,
+          "requestsPerSecond": 9322.487085733437,
+          "maxMs": 13.380625000000009,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 1.7067500000000564,
+          "p95Ms": 3.48433399999999,
+          "requestsPerSecond": 11562.538300908045,
+          "maxMs": 5.173541,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "deep-cursor-id-asc",
+      "variants": {
+        "baseline": {
+          "medianMs": 39.80554099999995,
+          "p95Ms": 86.44800000000009,
+          "requestsPerSecond": 419.5909068773584,
+          "maxMs": 92.34237500000017,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 3.488750000000209,
+          "p95Ms": 8.25366699999995,
+          "requestsPerSecond": 5746.2105828696185,
+          "maxMs": 9.844000000000051,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "id-selection-1000",
+      "variants": {
+        "baseline": {
+          "medianMs": 51.3181669999999,
+          "p95Ms": 76.66262499999993,
+          "requestsPerSecond": 500.4791857513943,
+          "maxMs": 96.78891699999986,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 14.655833000000257,
+          "p95Ms": 23.150750000000016,
+          "requestsPerSecond": 1741.3125975725081,
+          "maxMs": 26.46199999999999,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "page-exact-count",
+      "variants": {
+        "baseline": {
+          "medianMs": 26.457458000000088,
+          "p95Ms": 67.14566699999978,
+          "requestsPerSecond": 796.0494365058963,
+          "maxMs": 71.0039999999999,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 26.74116600000002,
+          "p95Ms": 66.88791700000002,
+          "requestsPerSecond": 728.5091554949879,
+          "maxMs": 69.625583,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "relation-search-page",
+      "variants": {
+        "baseline": {
+          "medianMs": 220.4279170000009,
+          "p95Ms": 374.1569579999996,
+          "requestsPerSecond": 122.78884646408049,
+          "maxMs": 397.4659589999992,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 224.45541600000024,
+          "p95Ms": 286.55816700000014,
+          "requestsPerSecond": 124.04521532837097,
+          "maxMs": 296.48004200000105,
+          "statementsPerRequest": 2
+        }
+      }
+    },
+    {
+      "scenario": "three-root-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 272.7444170000008,
+          "p95Ms": 480.05833299999995,
+          "requestsPerSecond": 73.02640681424741,
+          "maxMs": 870.0975829999988,
+          "statementsPerRequest": 1
+        },
+        "optimized": {
+          "medianMs": 269.77816600000006,
+          "p95Ms": 476.007834,
+          "requestsPerSecond": 73.89765660760243,
+          "maxMs": 529.4444169999988,
+          "statementsPerRequest": 1
+        }
+      }
+    },
+    {
+      "scenario": "filtered-exclude-self-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 570.5135829999999,
+          "p95Ms": 969.9421249999978,
+          "requestsPerSecond": 33.66513590283762,
+          "maxMs": 1072.9361249999984,
+          "statementsPerRequest": 3
+        },
+        "optimized": {
+          "medianMs": 590.6329590000023,
+          "p95Ms": 1043.9390830000002,
+          "requestsPerSecond": 32.37535405486746,
+          "maxMs": 1206.6251669999983,
+          "statementsPerRequest": 3
+        }
+      }
+    },
+    {
+      "scenario": "five-mixed-facets",
+      "variants": {
+        "baseline": {
+          "medianMs": 1001.8836249999949,
+          "p95Ms": 2386.6500830000004,
+          "requestsPerSecond": 18.2304569892745,
+          "maxMs": 2874.7043339999946,
+          "statementsPerRequest": 2
+        },
+        "optimized": {
+          "medianMs": 963.3382500000007,
+          "p95Ms": 2094.917500000003,
+          "requestsPerSecond": 18.961702501346323,
+          "maxMs": 2664.853000000003,
+          "statementsPerRequest": 2
+        }
+      }
+    }
+  ],
+  "timestamp": "2026-11-18T19:47:33.253Z",
+  "baseline": "provided module",
+  "rows": 200000,
+  "iterations": 20,
+  "concurrency": 32,
+  "environment": {
+    "version": "PostgreSQL 18.6 on aarch64-unknown-linux-musl, compiled by gcc (Alpine 15.2.0) 15.2.0, 64-bit",
+    "work_mem": "4MB"
+  },
+  "note": "32 concurrent callers, 10 pooled connections, PostgreSQL container limited to 4 CPUs; one scenario per process, 20 rounds"
+}
