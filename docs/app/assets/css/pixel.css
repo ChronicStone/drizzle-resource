@@ -1359,6 +1359,9 @@
   .px-bench {
     padding: 14px 12px 12px;
   }
+  .px-replay {
+    display: none;
+  }
   .px-blabels {
     gap: 4px;
   }

@@ -454,7 +454,7 @@ onBeforeUnmount(() => {
         <div class="pl-cards">
           <article
             v-for="(st, k) in STEPS"
-            :key="`${runId}-${st.id}`"
+            :key="st.id"
             class="pl-card"
             :data-state="stateOf(k)"
             @click="jump(k)"
@@ -469,7 +469,7 @@ onBeforeUnmount(() => {
               </svg>
             </header>
 
-            <svg class="pl-viz" viewBox="0 0 168 92" aria-hidden="true">
+            <svg :key="`${runId}-${k}`" class="pl-viz" viewBox="0 0 168 92" aria-hidden="true">
               <!-- 1. validate: each key gets a verdict -->
               <g v-if="st.id === 'validate'" transform="translate(0 8)">
                 <g
