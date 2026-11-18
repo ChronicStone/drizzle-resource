@@ -100,8 +100,11 @@ import { requestSchema } from "drizzle-resource/zod";
 const parseOrdersRequest = requestSchema(ordersResource);
 
 app.post("/orders/query", async (c) => {
-  const request = parseOrdersRequest.parse(await c.req.json()); // unknown fields are a 400
-  return c.json(await ordersResource.query({ request, context: { orgId: c.get("orgId") } }));
+  const parsed = parseOrdersRequest.safeParse(await c.req.json());
+  if (!parsed.success) return c.json({ issues: parsed.error.issues }, 400); // e.g. an unknown field
+  return c.json(
+    await ordersResource.query({ request: parsed.data, context: { orgId: c.get("orgId") } }),
+  );
 });
 ```
 
@@ -147,13 +150,15 @@ Single-client engine timings, not HTTP or production latency. [Full results](htt
 
 ## Methods
 
-| Method                      | Use it when                                                    |
-| --------------------------- | -------------------------------------------------------------- |
-| `resource.query(...)`       | You want a page: ids, rows, and facets or totals if requested. |
-| `resource.findById(...)`    | You need one row by id, with the scope applied.                |
-| `resource.queryIds(...)`    | You only need the ids of a page and its page information.      |
-| `resource.queryRows(...)`   | You already have ordered ids and need the rows.                |
-| `resource.queryFacets(...)` | You need facet counts without the page.                        |
+| Method                       | Use it when                                                      |
+| ---------------------------- | ---------------------------------------------------------------- |
+| `resource.query(...)`        | You want a page: ids, rows, and facets or totals if requested.   |
+| `resource.findById(...)`     | You need one row by id, with the scope applied.                  |
+| `resource.queryIds(...)`     | You only need the ids of a page and its page information.        |
+| `resource.queryRows(...)`    | You already have ordered ids and need the rows.                  |
+| `resource.queryFacets(...)`  | You need facet counts without the page.                          |
+| `resource.querySummary(...)` | You need the totals without the page.                            |
+| `resource.scan(...)`         | You need every matching row, in batches, for an export or a job. |
 
 ## Contributing
 
