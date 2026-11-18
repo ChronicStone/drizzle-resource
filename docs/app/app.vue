@@ -1,6 +1,8 @@
 <script setup lang="ts">
 import type { ContentNavigationItem, PageCollections } from "@nuxt/content";
 import * as nuxtUiLocales from "@nuxt/ui/locale";
+// eslint-disable-next-line import/no-unassigned-import
+import "~/assets/css/docs-theme.css";
 import { useSubNavigation } from "../layer/app/composables/useSubNavigation";
 import { transformNavigation } from "../layer/app/utils/navigation";
 
@@ -18,7 +20,15 @@ const faviconHref = computed(() => appConfig.header?.logo?.favicon || "/favicon.
 
 useHead({
   meta: [{ name: "viewport", content: "width=device-width, initial-scale=1" }],
-  link: [{ rel: "icon", href: faviconHref }],
+  link: [
+    { rel: "icon", href: faviconHref },
+    { rel: "preconnect", href: "https://fonts.googleapis.com" },
+    { rel: "preconnect", href: "https://fonts.gstatic.com", crossorigin: "" },
+    {
+      rel: "stylesheet",
+      href: "https://fonts.googleapis.com/css2?family=Doto:ROND,wght@0..100,300..900&family=Geist:wght@400..800&family=Geist+Mono:wght@400..600&display=swap",
+    },
+  ],
   htmlAttrs: {
     lang,
     dir,
@@ -101,238 +111,6 @@ const { subNavigationMode } = useSubNavigation(navigation);
   }
 }
 
-.dot-grid {
-  background-image: radial-gradient(circle, rgba(0, 0, 0, 0.06) 1px, transparent 1px);
-  background-size: 32px 32px;
-}
-
-.dark .dot-grid {
-  background-image: radial-gradient(circle, rgba(255, 255, 255, 0.07) 1px, transparent 1px);
-}
-
-.landing-badge {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.5rem;
-  border-radius: 999px;
-  border: 1px solid color-mix(in oklab, var(--ui-primary) 22%, var(--ui-border) 78%);
-  background: color-mix(in oklab, var(--ui-primary) 7%, var(--ui-bg) 93%);
-  padding: 0.24rem 0.55rem;
-  font-size: 0.64rem;
-  font-weight: 700;
-  letter-spacing: 0.08em;
-  text-transform: uppercase;
-  color: color-mix(in oklab, var(--ui-primary) 75%, var(--ui-text) 25%);
-}
-
-.landing-hero-title {
-  margin: 0;
-  font-size: clamp(3rem, 6vw, 3.875rem);
-  font-weight: 700;
-  line-height: 1.08;
-  letter-spacing: -0.04em;
-  color: var(--ui-text-highlighted);
-}
-
-.landing-code-panel :deep(pre) {
-  margin-top: 0;
-  width: 100%;
-}
-
-.landing-code-panel {
-  width: 100%;
-}
-
-.landing-code-panel :deep(.relative.group) {
-  width: 100%;
-}
-
-.landing-code-panel :deep(.group.font-mono),
-.landing-code-panel :deep(.vp-code-group) {
-  width: 100%;
-  margin-inline: 0;
-}
-
-.landing-two-col {
-  display: flex;
-  flex-direction: column;
-  gap: 1.5rem;
-}
-
-.landing-two-col > * {
-  min-width: 0;
-}
-
-.landing-install {
-  display: inline-flex;
-  align-items: center;
-  gap: 0.6rem;
-  border-radius: 0.75rem;
-  border: 1px dashed color-mix(in oklab, var(--ui-border) 95%, transparent);
-  background: color-mix(in oklab, var(--ui-bg) 96%, white 4%);
-  padding: 0.5rem 0.95rem;
-}
-
-.landing-install-prompt {
-  font-family: var(--vp-font-family-mono);
-  font-size: 0.82rem;
-  font-weight: 700;
-  color: var(--ui-primary);
-}
-
-.landing-install code {
-  background: none;
-  padding: 0;
-  font-size: 0.82rem;
-  color: var(--ui-text-toned);
-}
-
-.landing-ticks {
-  margin: 0;
-  padding: 0;
-  list-style: none;
-  display: flex;
-  flex-direction: column;
-  gap: 0.7rem;
-  max-width: 30rem;
-}
-
-.landing-ticks li {
-  position: relative;
-  padding-left: 1.9rem;
-  font-size: 0.95rem;
-  line-height: 1.55;
-  color: var(--ui-text-toned);
-}
-
-.landing-ticks li::before {
-  content: "✓";
-  position: absolute;
-  left: 0;
-  top: 0.12rem;
-  display: flex;
-  height: 1.15rem;
-  width: 1.15rem;
-  align-items: center;
-  justify-content: center;
-  border-radius: 999px;
-  background: color-mix(in oklab, var(--ui-primary) 12%, var(--ui-bg) 88%);
-  color: var(--ui-primary);
-  font-size: 0.68rem;
-  font-weight: 800;
-}
-
-.landing-spec {
-  counter-reset: spec;
-  border-top: 1px solid color-mix(in oklab, var(--ui-border) 80%, transparent);
-}
-
-.landing-spec-row {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 0.35rem 2.5rem;
-  padding: 1.05rem 0.15rem;
-  border-bottom: 1px solid color-mix(in oklab, var(--ui-border) 80%, transparent);
-  transition: background 140ms ease;
-}
-
-.landing-spec-row:hover {
-  background: color-mix(in oklab, var(--ui-primary) 3%, transparent);
-}
-
-.landing-spec-term {
-  display: flex;
-  align-items: baseline;
-  gap: 0.65rem;
-  font-size: 0.98rem;
-  font-weight: 650;
-  color: var(--ui-text-highlighted);
-}
-
-.landing-spec-term::before {
-  counter-increment: spec;
-  content: counter(spec, decimal-leading-zero);
-  font-size: 0.68rem;
-  font-weight: 700;
-  letter-spacing: 0.06em;
-  color: var(--ui-primary);
-}
-
-.landing-spec-def {
-  font-size: 0.92rem;
-  line-height: 1.6;
-  color: var(--ui-text-toned);
-}
-
-.landing-spec-def code {
-  border-radius: 0.35rem;
-  background: color-mix(in oklab, var(--ui-text) 6%, transparent);
-  padding: 0.1rem 0.35rem;
-  font-size: 0.8rem;
-  color: var(--ui-text-toned);
-}
-
-.landing-methods {
-  display: grid;
-  grid-template-columns: 1fr;
-  gap: 1px;
-  overflow: hidden;
-  border-radius: 1.25rem;
-  border: 1px solid color-mix(in oklab, var(--ui-border) 88%, transparent);
-  background: color-mix(in oklab, var(--ui-border) 88%, transparent);
-}
-
-.landing-method {
-  background: color-mix(in oklab, var(--ui-bg) 96%, white 4%);
-  padding: 1.15rem 1.25rem;
-  transition: background 140ms ease;
-}
-
-.landing-method:hover {
-  background: color-mix(in oklab, var(--ui-primary) 4%, var(--ui-bg) 96%);
-}
-
-.landing-method-name {
-  display: inline-block;
-  background: none;
-  padding: 0;
-  font-size: 0.86rem;
-  font-weight: 650;
-  color: color-mix(in oklab, var(--ui-primary) 70%, var(--ui-text) 30%);
-}
-
-.landing-method-desc {
-  margin: 0.35rem 0 0;
-  font-size: 0.88rem;
-  line-height: 1.55;
-  color: var(--ui-text-toned);
-}
-
-.landing-cta {
-  margin: 0 auto;
-  max-width: 42rem;
-  border-radius: 1.75rem;
-  border: 1px solid rgb(253 230 138 / 0.9);
-  background: rgb(255 251 235 / 0.98);
-  padding: 3rem;
-  text-align: center;
-}
-
-.landing-cta [data-slot="body"] {
-  padding: 0;
-}
-
-.dark .landing-cta {
-  border-color: color-mix(in oklab, var(--ui-primary) 18%, transparent);
-  background: color-mix(in oklab, var(--ui-primary) 6%, var(--ui-bg) 94%);
-}
-
-.landing-section-pad {
-  max-width: 80rem;
-  margin-inline: auto;
-  padding-inline: 1rem;
-}
-
 :root {
   --vp-c-bg: var(--ui-bg);
   --vp-c-text-1: var(--ui-text-highlighted);
@@ -341,8 +119,7 @@ const { subNavigationMode } = useSubNavigation(navigation);
   --vp-c-border: color-mix(in oklab, var(--ui-border) 72%, transparent);
   --vp-c-brand: var(--ui-primary);
   --vp-font-family-base: inherit;
-  --vp-font-family-mono:
-    ui-monospace, SFMono-Regular, SF Mono, Menlo, Monaco, Consolas, Liberation Mono, monospace;
+  --vp-font-family-mono: var(--font-mono);
   --vp-code-font-size: 0.85rem;
   --vp-code-line-height: 1.6;
   --vp-code-block-bg: color-mix(in oklab, var(--ui-bg) 97%, white 3%);
@@ -529,62 +306,5 @@ const { subNavigationMode } = useSubNavigation(navigation);
 
 .twoslash .twoslash-hover {
   border-bottom-color: color-mix(in oklab, var(--ui-primary) 55%, transparent) !important;
-}
-
-@media (max-width: 767px) {
-  .landing-code-panel,
-  .landing-cta {
-    margin-inline: 0.25rem;
-  }
-
-  .landing-page .grid {
-    padding-inline: 0.25rem;
-  }
-
-  .landing-cta {
-    padding: 2rem 1.5rem;
-  }
-}
-
-@media (min-width: 640px) {
-  .landing-section-pad {
-    padding-inline: 1.5rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .landing-section-pad {
-    padding-inline: 2rem;
-  }
-}
-
-@media (min-width: 640px) {
-  .landing-methods {
-    grid-template-columns: repeat(2, minmax(0, 1fr));
-  }
-}
-
-@media (min-width: 768px) {
-  .landing-spec-row {
-    grid-template-columns: 15rem minmax(0, 1fr);
-    padding: 1.15rem 0.25rem;
-  }
-}
-
-@media (min-width: 1024px) {
-  .landing-two-col {
-    display: grid;
-    grid-template-columns: minmax(0, 0.94fr) minmax(0, 1.08fr);
-    align-items: center;
-    column-gap: 2rem;
-  }
-
-  .landing-two-col--hero {
-    column-gap: 2.5rem;
-  }
-
-  .landing-methods {
-    grid-template-columns: repeat(4, minmax(0, 1fr));
-  }
 }
 </style>

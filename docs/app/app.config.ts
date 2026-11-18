@@ -17,7 +17,7 @@ export default defineAppConfig({
       alt: "Drizzle Resource",
       light: "/logo-light.svg",
       dark: "/logo-dark.svg",
-      class: "h-8 md:h-9 w-auto",
+      class: "h-5 md:h-7 w-auto",
       wordmark: {
         light: "/wordmark-light.svg",
         dark: "/wordmark-dark.svg",
@@ -28,8 +28,8 @@ export default defineAppConfig({
   },
   ui: {
     colors: {
-      primary: "amber",
-      neutral: "stone",
+      primary: "yellow",
+      neutral: "zinc",
     },
     contentNavigation: {
       slots: {

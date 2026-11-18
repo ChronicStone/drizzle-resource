@@ -2,5 +2,137 @@
   "buildCommand": "cd .. && bun run build && cd docs && bun run generate",
   "outputDirectory": ".output/public",
   "installCommand": "bun install",
-  "framework": null
+  "framework": null,
+  "redirects": [
+    {
+      "source": "/getting-started/introduction",
+      "destination": "/start/introduction",
+      "permanent": true
+    },
+    {
+      "source": "/getting-started/installation",
+      "destination": "/start/installation",
+      "permanent": true
+    },
+    {
+      "source": "/getting-started/quick-start",
+      "destination": "/start/quick-start",
+      "permanent": true
+    },
+    {
+      "source": "/getting-started/type-safety",
+      "destination": "/serve/typed-clients",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/request-shape",
+      "destination": "/query/request-shape",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/filters",
+      "destination": "/query/filters",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/search",
+      "destination": "/query/search",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/sorting",
+      "destination": "/query/sorting",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/facets",
+      "destination": "/query/facets",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract/pagination",
+      "destination": "/query/pagination",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/engine",
+      "destination": "/resource/engine",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/defining-a-resource",
+      "destination": "/resource/define-a-resource",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/scope",
+      "destination": "/resource/scope",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/relations",
+      "destination": "/resource/relations",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/field-policy",
+      "destination": "/resource/field-policy",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/strategies",
+      "destination": "/scale/strategies",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/validation",
+      "destination": "/serve/validation",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup/models-views-summaries",
+      "destination": "/resource/models",
+      "permanent": true
+    },
+    {
+      "source": "/performance/overview",
+      "destination": "/start/how-it-works",
+      "permanent": true
+    },
+    {
+      "source": "/performance/benchmarks",
+      "destination": "/scale/benchmarks",
+      "permanent": true
+    },
+    {
+      "source": "/performance/optimization",
+      "destination": "/scale/performance",
+      "permanent": true
+    },
+    {
+      "source": "/performance/bulk-scans",
+      "destination": "/scale/bulk-scans",
+      "permanent": true
+    },
+    {
+      "source": "/getting-started",
+      "destination": "/start/introduction",
+      "permanent": true
+    },
+    {
+      "source": "/query-contract",
+      "destination": "/query/request-shape",
+      "permanent": true
+    },
+    {
+      "source": "/resource-setup",
+      "destination": "/resource/engine",
+      "permanent": true
+    },
+    {
+      "source": "/performance",
+      "destination": "/scale/performance",
+      "permanent": true
+    }
+  ]
 }

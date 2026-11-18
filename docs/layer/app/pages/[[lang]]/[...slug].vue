@@ -55,6 +55,8 @@ watch(
 
 defineOgImageComponent("Docs", {
   headline: headline.value,
+  pageTitle: title,
+  pageDescription: description,
 });
 
 const github = computed(() => (appConfig.github ? appConfig.github : null));
