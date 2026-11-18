@@ -218,6 +218,143 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     },
   );
 
+  it("uses one indexed cursor boundary and retains ties on mixed sort directions", async () => {
+    const lookup = engine.defineResource("keys", {
+      query: { pagination: { modes: ["offset", "cursor"] } },
+    });
+    for (const direction of ["asc", "desc"] as const) {
+      const sorting = [
+        { key: "code", dir: direction },
+        { key: "id", dir: direction },
+      ];
+      const pagination = { mode: "cursor" as const, count: "none" as const, pageSize: 1 };
+      const first = await lookup.queryIds({ request: { ...request, pagination, sorting } });
+      if (first.pageInfo.mode !== "cursor") throw new Error("Expected cursor");
+      const next = await lookup.queryIds({
+        request: {
+          ...request,
+          sorting,
+          pagination: { ...pagination, cursor: first.pageInfo.nextCursor },
+        },
+      });
+      expect([...first.ids, ...next.ids]).toEqual(direction === "asc" ? [1, 2] : [2, 1]);
+      expect(statements.at(-1)).toContain(direction === "asc" ? ") > (" : ") < (");
+    }
+    const sorting = [
+      { key: "code", dir: "desc" as const },
+      { key: "id", dir: "asc" as const },
+    ];
+    const pagination = { mode: "cursor" as const, count: "none" as const, pageSize: 1 };
+    const first = await lookup.queryIds({ request: { ...request, sorting, pagination } });
+    if (first.pageInfo.mode !== "cursor") throw new Error("Expected cursor");
+    const second = await lookup.queryIds({
+      request: {
+        ...request,
+        sorting,
+        pagination: { ...pagination, cursor: first.pageInfo.nextCursor },
+      },
+    });
+    expect([...first.ids, ...second.ids]).toEqual([1, 2]);
+    expect(statements.at(-1)).toContain(") <= (");
+  });
+
+  it("infers an exact first-page count only when a unique-key lookup is bounded by the page", async () => {
+    for (const [values, expected, queries] of [
+      [[], 0, 1],
+      [[1, 6], 1, 1],
+      [[1, 2], 2, 1],
+      [[1, 2, 6], 2, 2],
+      [[1, 2, 3, 6], 3, 2],
+    ] as const) {
+      const start = statements.length;
+      const result = await resource.queryIds({
+        request: {
+          ...request,
+          filters: [{ type: "condition", key: "id", operator: "isAnyOf", value: values }],
+        },
+      });
+      expect(result.pageInfo).toMatchObject({ rowCount: expected, hasNextPage: expected > 2 });
+      expect(statements.slice(start)).toHaveLength(queries);
+      expect(statements.slice(start).some((q) => q.includes("count(*)"))).toBe(queries === 2);
+    }
+  });
+
+  it("searches alternative columns on the same to-many path in one EXISTS", async () => {
+    const result = await resource.queryIds({
+      request: {
+        ...request,
+        search: { value: "red", fields: ["tags.label", "tags.id"] },
+        pagination: { mode: "offset", pageIndex: 1, pageSize: 20, count: "none" },
+      },
+    });
+    expect(result.ids).toEqual([1, 2]);
+    expect(statements.at(-1)?.match(/exists \(/gu)).toHaveLength(1);
+  });
+
+  it("skips impossible missing counts, including when option search or a cursor hides the buckets", async () => {
+    const start = statements.length;
+    const result = await resource.queryFacets({
+      request,
+      facets: [{ key: "active", missing: true, limit: 1, cursor: "9", search: "true" }],
+    });
+    expect(result.facets[0]).toMatchObject({ options: [], missing: 0 });
+    expect(statements.slice(start)).toHaveLength(1);
+  });
+
+  it("weights repeated keys before joining, preserves duplicate labels and ignores absent relations", async () => {
+    const report = engine.defineResource("items", {
+      relations: { category: true },
+      summary: (t) => ({ rows: sql<number>`count(${t.id})`.mapWith(Number) }),
+    });
+    await expect(
+      db.transaction(async (tx) => {
+        await tx.execute(sql`insert into ${categories} values (3,'Alpha')`);
+        await tx.execute(
+          sql`insert into ${items} select n,'a','extra',1,true,case n%4 when 0 then null when 1 then 99 when 2 then 1 else 3 end from generate_series(100, 10099) n`,
+        );
+        await tx.execute(sql`analyze ${items}`);
+        const input = { ...request, facets: [{ key: "category.name", missing: true, limit: 1 }] };
+        const ordinary = await report.query({ db: tx, request: input });
+        const start = statements.length;
+        const weighted = await report.query({ db: tx, request: input, summary: true });
+        expect(weighted.facets).toEqual(ordinary.facets);
+        expect(weighted.facets?.[0]).toMatchObject({
+          options: [{ value: "Alpha", count: 5003 }],
+          missing: 5001,
+          total: 2,
+          nextCursor: "1",
+        });
+        expect(statements.slice(start).some((q) => q.includes("facet_weights"))).toBe(true);
+        const filtered = await report.query({
+          db: tx,
+          request: {
+            ...input,
+            filters: [{ type: "condition", key: "id", operator: "gte", value: 100 }],
+          },
+          summary: true,
+        });
+        expect(filtered.facets?.[0]).toMatchObject({ missing: 5000 });
+        const grouped = { ...input, facets: [...input.facets, { key: "category.id", limit: 2 }] };
+        const reference = await report.query({ db: tx, request: grouped });
+        const groupStart = statements.length;
+        expect((await report.query({ db: tx, request: grouped, summary: true })).facets).toEqual(
+          reference.facets,
+        );
+        expect(
+          statements
+            .slice(groupStart)
+            .some((q) => q.includes("facet_weights") && q.includes("grouping sets")),
+        ).toBe(true);
+        await tx.execute(sql`update ${items} set "categoryId"=id`);
+        await tx.execute(sql`analyze ${items}`);
+        const uniqueStart = statements.length;
+        await report.query({ db: tx, request: grouped, summary: true });
+        expect(statements.slice(uniqueStart).some((q) => q.includes("facet_weights"))).toBe(false);
+        tx.rollback();
+      }),
+    ).rejects.toThrow("Rollback");
+  });
+
   describe("isEmpty / isNotEmpty", () => {
     async function ids(filters: QueryRequestInput["filters"]) {
       const result = await resource.queryIds({

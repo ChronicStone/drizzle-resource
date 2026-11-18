@@ -7,12 +7,27 @@ import type { QueryEngineDb } from "./types.js";
 const searchIndexes = new WeakMap<object, WeakMap<PgTable, Promise<Set<string>>>>();
 const dialect = new PgDialect();
 
-export async function estimatePostgresQuery(database: QueryEngineDb, query: SQL) {
+export async function estimatePostgresQuery(
+  database: QueryEngineDb,
+  query: SQL,
+  metric: "Total Cost" | "Plan Rows" = "Total Cost",
+) {
   if (!isPostgresDatabase(database)) return undefined;
-  const rows = await database.execute<{
-    "QUERY PLAN": Array<{ Plan: { "Total Cost": number } }>;
-  }>(sql`explain (format json) ${query}`, "objects");
-  return rows[0]?.["QUERY PLAN"][0]?.Plan["Total Cost"];
+  /* an estimate only picks between equivalent plans, so any failure keeps the ordinary one */
+  try {
+    const rows = await database.execute<{ "QUERY PLAN": unknown }>(
+      sql`explain (format json) ${query}`,
+      "objects",
+    );
+    const raw = rows[0]?.["QUERY PLAN"];
+    const plans = (typeof raw === "string" ? JSON.parse(raw) : raw) as
+      | Array<{ Plan?: Record<string, unknown> }>
+      | undefined;
+    const value = Array.isArray(plans) ? plans[0]?.Plan?.[metric] : undefined;
+    return typeof value === "number" && Number.isFinite(value) ? value : undefined;
+  } catch {
+    return undefined;
+  }
 }
 
 export async function probePostgresSearch(database: QueryEngineDb, table: PgTable) {
