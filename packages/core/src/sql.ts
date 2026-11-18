@@ -18,7 +18,7 @@ import {
   is,
   inArray,
 } from "drizzle-orm";
-import { getColumns } from "drizzle-orm";
+import { getColumns, getTableName } from "drizzle-orm";
 import { getTableConfig, IndexedColumn, PgColumn, PgDialect, PgTable } from "drizzle-orm/pg-core";
 import type { SQLWrapper } from "drizzle-orm";
 
@@ -45,7 +45,12 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
-import { estimatePostgresQuery, probePostgresSearch, scanPostgresCursor } from "./postgres.js";
+import {
+  estimatePostgresQuery,
+  isPostgresDatabase,
+  probePostgresSearch,
+  scanPostgresCursor,
+} from "./postgres.js";
 
 const utilsCache = new WeakMap<object, unknown>();
 const scopeFilterNodes = new WeakSet<QueryFilterNode>();
@@ -335,15 +340,14 @@ function buildExistsCondition(
   db: QueryEngineConfig["db"],
   schema: QueryEngineConfig["schema"],
   entry: FieldRegistryEntry,
-  condition: QueryFilterCondition,
-  scalarBuilder: (column: any, condition: QueryFilterCondition) => SQL,
+  predicate: SQL,
   firstRelationIndex = entry.firstManyIndex,
 ) {
-  if (firstRelationIndex < 0) return scalarBuilder(entry.column, condition);
+  if (firstRelationIndex < 0) return predicate;
 
   const firstStep = entry.relationPath[firstRelationIndex];
   if (!firstStep) {
-    throw new Error(`Invalid relation path for field "${condition.key}"`);
+    throw new Error(`Invalid relation path for field "${entry.path}"`);
   }
 
   let query: any = (db as any)
@@ -355,7 +359,7 @@ function buildExistsCondition(
   for (let index = firstRelationIndex + 1; index < entry.relationPath.length; index++) {
     const step = entry.relationPath[index];
     if (!step) {
-      throw new Error(`Invalid relation step while resolving field "${condition.key}"`);
+      throw new Error(`Invalid relation step while resolving field "${entry.path}"`);
     }
 
     query = query.innerJoin(
@@ -364,7 +368,7 @@ function buildExistsCondition(
     );
   }
 
-  query = query.where(and(correlationCondition, scalarBuilder(entry.column, condition)));
+  query = query.where(and(correlationCondition, predicate));
   return exists(query);
 }
 
@@ -546,6 +550,26 @@ export function createQueryResourceUtils<
     const text = isTextColumn(column) || resolveField(condition.key)?.virtual?.kind === "text";
     const caseSensitiveFields: ReadonlySet<string> = resource.queryConfig.filters.caseSensitive;
     const caseSensitive = caseSensitiveFields.has(condition.key);
+    function matchValues(values: unknown[]): SQL {
+      if (values.length > 1 && values.every((value) => typeof value === "string")) {
+        return text && !caseSensitive
+          ? inArray(sql`lower(${column})`, values.map(normalizeString))
+          : inArray(column, values);
+      }
+      if (values.length > 1 && values.every((value) => typeof value === "number"))
+        return inArray(column, values);
+      return (
+        or(
+          ...values.map((value) => {
+            if (typeof value === "boolean")
+              return sql`${column} = ${value ? sql`true` : sql`false`}`;
+            if (typeof value === "string" && text && !caseSensitive)
+              return eq(sql`lower(${column})`, normalizeString(value));
+            return eq(column, value);
+          }),
+        ) ?? sql`false`
+      );
+    }
     switch (condition.operator) {
       case "contains":
         return text
@@ -563,42 +587,14 @@ export function createQueryResourceUtils<
           : eq(column, scalar as any);
       }
       case "isAnyOf":
-        return Array.isArray(condition.value)
-          ? (or(
-              ...condition.value.map((value) =>
-                typeof value === "boolean"
-                  ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
-                  : typeof value === "string"
-                    ? text && !caseSensitive
-                      ? eq(sql`lower(${column})`, normalizeString(value))
-                      : eq(column, value as any)
-                    : eq(column, value as any),
-              ),
-            ) ?? sql`false`)
-          : typeof condition.value === "boolean"
-            ? sql`${column} = ${condition.value ? sql.raw("true") : sql.raw("false")}`
-            : typeof condition.value === "string"
-              ? text && !caseSensitive
-                ? eq(sql`lower(${column})`, normalizeString(condition.value))
-                : eq(column, condition.value as any)
-              : eq(column, condition.value as any);
+        return matchValues(Array.isArray(condition.value) ? condition.value : [condition.value]);
       case "isNot": {
         // Every listed value is excluded; a listed null also excludes empty rows.
         const values = Array.isArray(condition.value) ? condition.value : [condition.value];
         const listed = values.filter((value) => value !== null && value !== undefined);
         const excludesNull = listed.length < values.length;
         if (!listed.length) return isNotNull(column as any);
-        const matches = or(
-          ...listed.map((value) =>
-            typeof value === "boolean"
-              ? sql`${column} = ${value ? sql.raw("true") : sql.raw("false")}`
-              : typeof value === "string"
-                ? text && !caseSensitive
-                  ? eq(sql`lower(${column})`, normalizeString(value))
-                  : eq(column, value as any)
-                : eq(column, value as any),
-          ),
-        );
+        const matches = matchValues(listed);
         const excluded = sql`not (${matches})`;
         return excludesNull ? (and(isNotNull(column as any), excluded) as SQL) : excluded;
       }
@@ -650,8 +646,7 @@ export function createQueryResourceUtils<
         database,
         config.schema,
         entry,
-        { ...condition, operator: "isAnyOf" },
-        buildScalarCondition,
+        buildScalarCondition(entry.column, { ...condition, operator: "isAnyOf" }),
         readsThroughExists(entry, emptiness) ? 0 : entry.firstManyIndex,
       );
       return sql`not ${holdsValue}`;
@@ -663,8 +658,7 @@ export function createQueryResourceUtils<
           database,
           config.schema,
           entry,
-          condition,
-          buildScalarCondition,
+          buildScalarCondition(entry.column, condition),
           0,
         );
       }
@@ -672,13 +666,17 @@ export function createQueryResourceUtils<
         database,
         config.schema,
         entry,
-        { ...condition, operator: "isNotEmpty" },
-        buildScalarCondition,
+        buildScalarCondition(entry.column, { ...condition, operator: "isNotEmpty" }),
         0,
       );
       return condition.operator === "isEmpty" ? sql`not ${holdsValue}` : holdsValue;
     }
-    return buildExistsCondition(database, config.schema, entry, condition, buildScalarCondition);
+    return buildExistsCondition(
+      database,
+      config.schema,
+      entry,
+      buildScalarCondition(entry.column, condition),
+    );
   }
 
   function compileFilterNode(
@@ -711,7 +709,12 @@ export function createQueryResourceUtils<
         ? [entry]
         : [];
     });
-    if (new Set(search.fields.map((field) => resolveField(field)?.tableName)).size < 2) return;
+    if (
+      entries.length !== search.fields.length ||
+      !entries.some((entry) => entry.source === "root") ||
+      new Set(entries.map((entry) => entry.tableName)).size < 2
+    )
+      return;
     const tables = new Set(
       entries.map((entry) => config.schema[entry.tableName]).filter((table) => is(table, PgTable)),
     );
@@ -760,21 +763,33 @@ export function createQueryResourceUtils<
   function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
     if (search.value.length === 0) return undefined;
     if (request && indexedSearchRequests.has(request)) return compileIndexedSearch(request);
-    const predicates = search.fields.map((field) => compileSearchField(field, search.value));
-    return predicates.length > 0 ? (or(...predicates) ?? undefined) : undefined;
+    const predicates: SQL[] = [];
+    const related = new Map<string, { entry: FieldRegistryEntry; predicates: SQL[] }>();
+    for (const field of search.fields) {
+      const entry = resolveField(field);
+      if (!entry) return sql`true`;
+      const predicate = buildSearchCondition(entry, search.value);
+      const path = entry.relationPath.at(-1)?.path;
+      if (path === undefined) predicates.push(predicate);
+      else {
+        const group = related.get(path);
+        if (group) group.predicates.push(predicate);
+        else related.set(path, { entry, predicates: [predicate] });
+      }
+    }
+    for (const { entry, predicates: conditions } of related.values()) {
+      predicates.push(buildExistsCondition(database, config.schema, entry, or(...conditions)!, 0));
+    }
+    return or(...predicates);
   }
 
-  function compileSearchField(field: string, value: string) {
-    const entry = resolveField(field);
-    if (!entry) return sql`true`;
-    return buildExistsCondition(
-      database,
-      config.schema,
-      entry,
-      { type: "condition", key: field, operator: "contains", value },
-      buildScalarCondition,
-      entry.relationPath.length > 0 ? 0 : -1,
-    );
+  function buildSearchCondition(entry: FieldRegistryEntry, value: string) {
+    return buildScalarCondition(entry.column, {
+      type: "condition",
+      key: entry.path,
+      operator: "contains",
+      value,
+    });
   }
 
   function compileIndexedSearch(request: QueryRequest) {
@@ -805,7 +820,18 @@ export function createQueryResourceUtils<
         (database as any).select({ id: rootTable.id }).from(rootTable),
         config.schema,
         joins,
-      ).where(and(filter, compileSearchField(entry!.path, search.value)));
+      ).where(
+        and(
+          filter,
+          buildExistsCondition(
+            database,
+            config.schema,
+            entry!,
+            buildSearchCondition(entry!, search.value),
+            entry!.relationPath.length ? 0 : -1,
+          ),
+        ),
+      );
       return sql`(${query})`;
     });
     return inArray(rootTable.id, sql`(${sql.join(branches, sql` union `)})`);
@@ -870,6 +896,117 @@ export function createQueryResourceUtils<
     return matchingIdsQuery;
   }
 
+  let lookupKeys: Set<string> | undefined;
+  // An AND condition on one unique key bounds the entire result, including tenant scope.
+  // Case-folded text, NULL equality and to-many joins do not have that property.
+  function fitsUniqueLookup(node: QueryFilterNode, pageSize: number): boolean {
+    if (node.type === "group")
+      return (
+        node.combinator === "and" &&
+        node.children.some((child) => fitsUniqueLookup(child, pageSize))
+      );
+    if (node.operator !== "is" && node.operator !== "isAnyOf") return false;
+    const field = resolveField(node.key);
+    if (field?.source !== "root" || field.virtual || !is(field.column, PgColumn)) return false;
+    const caseSensitive: ReadonlySet<string> = resource.queryConfig.filters.caseSensitive;
+    if (isTextColumn(field.column) && !caseSensitive.has(node.key)) return false;
+    const values = Array.isArray(node.value) ? node.value : [node.value];
+    return (
+      values.length <= pageSize &&
+      values.every(
+        (value) =>
+          typeof value === "string" ||
+          typeof value === "number" ||
+          typeof value === "boolean" ||
+          typeof value === "bigint",
+      ) &&
+      columnsAreUnique(rootTable, [field.column])
+    );
+  }
+
+  function startsLookupIndex(column: PgColumn) {
+    lookupKeys ??= new Set([
+      ...getUniqueKeys(rootTable).map((key) => key[0]!),
+      ...getTableConfig(rootTable).indexes.flatMap(({ config: index }) => {
+        const first = index.columns[0];
+        return !index.where && index.method === "btree" && is(first, IndexedColumn)
+          ? [first.name]
+          : [];
+      }),
+    ]);
+    return lookupKeys.has(column.name);
+  }
+
+  function buildCountQuery(request: QueryRequest) {
+    const countPlan = buildAggregatePlan(request);
+    return preservesRootCardinality(countPlan.joins)
+      ? joinRelationSteps(
+          (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
+          config.schema,
+          countPlan.joins,
+        ).where(countPlan.where)
+      : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
+          joinRelationSteps(
+            (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+            config.schema,
+            countPlan.joins,
+          )
+            .where(countPlan.where)
+            .as("count_matching_ids"),
+        );
+  }
+
+  function buildCursorBoundary(request: QueryRequest, cursor: string) {
+    const cursorValues = decodeCursor(cursor, String(resource.key), request.sorting);
+    const fields = request.sorting.map(({ key }) => resolveField(key));
+    const direction = request.sorting[0]?.dir;
+    // A same-direction, non-null prefix can seek in one B-tree range. A LEFT JOIN
+    // can introduce NULL even when the related column itself is declared NOT NULL.
+    const prefix: PgColumn[] = [];
+    for (const [index, field] of fields.entries()) {
+      if (
+        request.sorting[index]?.dir !== direction ||
+        cursorValues[index] === null ||
+        field?.source !== "root" ||
+        field.virtual ||
+        !is(field.column, PgColumn) ||
+        !field.column.notNull ||
+        field.column.columnType === "PgCustomColumn"
+      )
+        break;
+      prefix.push(field.column);
+    }
+    let range: SQL | undefined;
+    if (prefix.length && (prefix.length === fields.length || startsLookupIndex(prefix[0]!))) {
+      const values = prefix.map((column, index) => sql.param(cursorValues[index], column));
+      const left = sql`(${sql.join(prefix, sql`, `)})`;
+      const right = sql`(${sql.join(values, sql`, `)})`;
+      if (prefix.length === fields.length)
+        return direction === "asc" ? sql`${left} > ${right}` : sql`${left} < ${right}`;
+      // Keep ties on the prefix until the remaining sort keys decide which side they fall on.
+      range = direction === "asc" ? sql`${left} >= ${right}` : sql`${left} <= ${right}`;
+    }
+    const branches = request.sorting.map((rule, index) => {
+      const previousEqualities = request.sorting.slice(0, index).map((_, priorIndex) => {
+        const column = fields[priorIndex]?.column;
+        const value = cursorValues[priorIndex];
+        return value === null ? isNull(column as any) : eq(column as any, value as any);
+      });
+      const column = fields[index]?.column;
+      const value = cursorValues[index];
+      const comparison =
+        rule.dir === "asc"
+          ? value === null
+            ? sql`false`
+            : or(gt(column as any, value as any), isNull(column as any))
+          : value === null
+            ? isNotNull(column as any)
+            : lt(column as any, value as any);
+      return and(...previousEqualities, comparison);
+    });
+    return and(range, or(...branches) ?? sql`false`);
+  }
+
   async function executeIdsQuery({
     request,
     rowCount: knownRowCount,
@@ -879,35 +1016,27 @@ export function createQueryResourceUtils<
   }) {
     await prepareSearch(request);
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
-    const orderBy = compileOrderBy(request.sorting);
+    const sorting = compileOrderBy(request.sorting);
+    const orderBy = sorting.length ? sorting : [asc(rootTable.id)];
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
     const whereClause = buildWhereClause(request);
 
-    let rowCount: number | null = null;
-    if (request.pagination.count === "exact") {
-      if (knownRowCount !== undefined) {
-        rowCount = knownRowCount;
-      } else {
-        const countPlan = buildAggregatePlan(request);
-        const countQuery = preservesRootCardinality(countPlan.joins)
-          ? joinRelationSteps(
-              (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
-              config.schema,
-              countPlan.joins,
-            ).where(countPlan.where)
-          : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
-              joinRelationSteps(
-                (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
-                config.schema,
-                countPlan.joins,
-              )
-                .where(countPlan.where)
-                .as("count_matching_ids"),
-            );
-        const [countResult] = await countQuery;
-        rowCount = Number(countResult?.rowCount ?? 0);
+    const firstPage =
+      request.pagination.mode === "cursor"
+        ? !request.pagination.cursor
+        : request.pagination.pageIndex === 1;
+    const inferCount =
+      request.pagination.count === "exact" &&
+      knownRowCount === undefined &&
+      firstPage &&
+      direct &&
+      request.filters.some((node) => fitsUniqueLookup(node, pageSize));
+    let rowCount = knownRowCount ?? null;
+    if (request.pagination.count === "exact" && !inferCount) {
+      if (rowCount === null) {
+        const [total] = await buildCountQuery(request);
+        rowCount = Number(total?.rowCount ?? 0);
       }
-
       if (rowCount === 0) {
         return {
           ids: [],
@@ -932,9 +1061,15 @@ export function createQueryResourceUtils<
       }
     }
 
-    const cursorSelection = Object.fromEntries(
-      request.sorting.map((rule, index) => [`__cursor_${index}`, resolveField(rule.key)?.column]),
-    );
+    const cursorSelection =
+      request.pagination.mode === "cursor"
+        ? Object.fromEntries(
+            request.sorting.map((rule, index) => [
+              `__cursor_${index}`,
+              resolveField(rule.key)?.column,
+            ]),
+          )
+        : {};
 
     let idsQuery: any;
     if (direct) {
@@ -952,35 +1087,10 @@ export function createQueryResourceUtils<
 
     idsQuery = applyOuterJoins(idsQuery, request);
 
-    let cursorPredicate: SQL | undefined;
-    if (request.pagination.mode === "cursor" && request.pagination.cursor) {
-      const cursorValues = decodeCursor(
-        request.pagination.cursor,
-        String(resource.key),
-        request.sorting,
-      );
-      const branches = request.sorting.map((rule, index) => {
-        const previousEqualities = request.sorting
-          .slice(0, index)
-          .map((previousRule, priorIndex) => {
-            const column = resolveField(previousRule.key)?.column;
-            const value = cursorValues[priorIndex];
-            return value === null ? isNull(column as any) : eq(column as any, value as any);
-          });
-        const column = resolveField(rule.key)?.column;
-        const value = cursorValues[index];
-        const comparison =
-          rule.dir === "asc"
-            ? value === null
-              ? sql`false`
-              : or(gt(column as any, value as any), isNull(column as any))
-            : value === null
-              ? isNotNull(column as any)
-              : lt(column as any, value as any);
-        return and(...previousEqualities, comparison);
-      });
-      cursorPredicate = or(...branches) ?? sql`false`;
-    }
+    const cursorPredicate =
+      request.pagination.mode === "cursor" && request.pagination.cursor
+        ? buildCursorBoundary(request, request.pagination.cursor)
+        : undefined;
     idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
 
     const offset =
@@ -990,11 +1100,12 @@ export function createQueryResourceUtils<
     const needsLookahead =
       request.pagination.mode === "cursor" || request.pagination.count === "none";
     idsQuery = idsQuery
-      .orderBy(...(orderBy.length > 0 ? orderBy : [asc(rootTable.id)]))
+      .orderBy(...orderBy)
       .limit(pageSize + (needsLookahead ? 1 : 0))
       .offset(offset);
 
     const queriedRows = await idsQuery;
+    if (inferCount) rowCount = queriedRows.length;
     const hasNextPage =
       request.pagination.count === "exact" && request.pagination.mode === "offset"
         ? offset + Math.min(queriedRows.length, pageSize) < (rowCount ?? 0)
@@ -1192,6 +1303,7 @@ export function createQueryResourceUtils<
       ? await resolveAggregates({
           request,
           facets: request.facets,
+          knownRowCount: rowCount,
           includeCount: request.pagination.count === "exact" && rowCount === undefined,
         })
       : undefined;
@@ -1207,10 +1319,12 @@ export function createQueryResourceUtils<
   async function resolveAggregates({
     request,
     facets,
+    knownRowCount,
     includeCount = false,
   }: {
     request: QueryRequest;
     facets: QueryFacetRequest[];
+    knownRowCount?: number;
     includeCount?: boolean;
   }): Promise<QueryFacetsResponse & { rowCount?: number }> {
     await prepareSearch(request);
@@ -1279,22 +1393,87 @@ export function createQueryResourceUtils<
       };
     }
 
+    // Only broad reports with an existing exact total pay for a plan estimate. An EXPLAIN
+    // never reads the fact rows. Facets sharing the same foreign key share that estimate.
+    const distinctEstimates = new Map<PgColumn, Promise<number | undefined>>();
+    async function facetSource(plan: (typeof plans)[number]) {
+      const ordinary = {
+        count: plan.unique ? sql<number>`count(*)` : sql<number>`count(distinct ${rootTable.id})`,
+        from: (query: any, inner: ReadonlySet<string>) =>
+          joinRelationSteps(query.from(rootTable), config.schema, plan.joins, inner),
+      };
+      const { entry } = plan;
+      const [head, ...tail] = entry.relationPath;
+      if (
+        knownRowCount === undefined ||
+        knownRowCount < 8_192 ||
+        !isPostgresDatabase(database) ||
+        request.filters.length ||
+        request.search.value ||
+        !head ||
+        !plan.unique ||
+        entry.isManyPath ||
+        !is(entry.column, PgColumn) ||
+        entry.virtual ||
+        plan.facet.search ||
+        head.sourceColumns.length !== 1 ||
+        head.targetColumns.length !== 1
+      )
+        return ordinary;
+      const key = head.sourceColumns[0];
+      const target = head.targetColumns[0];
+      if (!is(key, PgColumn) || !is(target, PgColumn)) return ordinary;
+      let estimate = distinctEstimates.get(key);
+      if (!estimate) {
+        const distinct = (database as any).select({ key }).from(rootTable).groupBy(key);
+        estimate = estimatePostgresQuery(database, distinct.getSQL(), "Plan Rows");
+        distinctEstimates.set(key, estimate);
+      }
+      const groups = await estimate;
+      if (groups === undefined || groups <= 0 || groups * 8 > knownRowCount) return ordinary;
+      if (
+        entry.relationPath.some(
+          (step) =>
+            getTableName(config.schema[step.targetTableName] as PgTable) === "facet_weights",
+        )
+      )
+        return ordinary;
+      const weights = (database as any)
+        .select({
+          key: sql`${key}`.as("facet_key"),
+          weight: sql`count(*)`.as("weight"),
+        })
+        .from(rootTable)
+        .groupBy(key)
+        .as("facet_weights");
+      return {
+        count: sql<number>`sum(${weights.weight})`,
+        from: (query: any, inner: ReadonlySet<string>) =>
+          joinRelationSteps(
+            query
+              .from(weights)
+              .innerJoin(config.schema[head.targetTableName], eq(weights.key, target)),
+            config.schema,
+            tail,
+            inner,
+          ),
+      };
+    }
+
     async function resolveSingle(plan: (typeof plans)[number]) {
       const { entry, index, limit, offset, facet } = plan;
       const column = is(entry.column, PgColumn);
-      let bucketsQuery: any = (database as any)
-        .select({
-          value: column ? entry.column : (entry.column as SQL).as("value"),
-          count: (plan.unique
-            ? sql<number>`count(*)`
-            : sql<number>`count(distinct ${rootTable.id})`
-          ).as("count"),
-        })
-        .from(rootTable);
-      bucketsQuery = joinRelationSteps(bucketsQuery, config.schema, plan.joins, plan.inner)
+      const source = await facetSource(plan);
+      const bucketsQuery = source
+        .from(
+          (database as any).select({
+            value: column ? entry.column : (entry.column as SQL).as("value"),
+            count: source.count.as("count"),
+          }),
+          plan.inner,
+        )
         .where(and(plan.where, buildFacetValuePredicate(entry.column, facet.search)))
         .groupBy(column ? (entry.column as any) : sql`1`);
-
       const facetBuckets = (database as any).$with(`facet_buckets_${index}`).as(bucketsQuery);
       let facetQuery: any = (database as any)
         .with(facetBuckets)
@@ -1325,18 +1504,16 @@ export function createQueryResourceUtils<
           sql`${column}`.mapWith(column).as(`value_${index}`),
         ]),
       );
-      const aggregate = joinRelationSteps(
-        (database as any)
-          .select({
+      const source = await facetSource(first);
+      const aggregate = source
+        .from(
+          (database as any).select({
             ...selections,
             mask: sql<number>`grouping(${sql.join(columns, sql`, `)})`.as("mask"),
-            count: sql<number>`count(*)`.as("count"),
-          })
-          .from(rootTable),
-        config.schema,
-        first.joins,
-        new Set(group.flatMap((plan) => [...plan.inner])),
-      )
+            count: source.count.as("count"),
+          }),
+          new Set(group.flatMap((plan) => [...plan.inner])),
+        )
         .where(first.where)
         .groupBy(
           sql`grouping sets (${sql.join(
@@ -1451,6 +1628,16 @@ export function createQueryResourceUtils<
       );
     /** `missing`: one count of the facet's own scope with the field empty, as `isEmpty` reads it. */
     async function resolveMissing(plan: (typeof plans)[number]) {
+      const { entry } = plan;
+      if (
+        entry.source === "root" &&
+        !entry.virtual &&
+        is(entry.column, PgColumn) &&
+        entry.column.notNull &&
+        !isArrayColumn(entry.column) &&
+        !isTextColumn(entry.column)
+      )
+        return 0;
       const scoped = applyFacetMode(request, {
         ...plan.facet,
         mode: plan.facet.mode ?? "exclude-self",

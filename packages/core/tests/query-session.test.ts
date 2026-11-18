@@ -167,7 +167,7 @@ describe("null filter SQL", () => {
     expect(isNotTextQuery.sql).toContain('not (lower("items"."name") = $1)');
     expect(isNotTextQuery.params).toEqual(["ada"]);
     const isAnyOfTextQuery = dialect.sqlToQuery(compiled[3]!);
-    expect(isAnyOfTextQuery.sql).toContain('lower("items"."name") = $1');
+    expect(isAnyOfTextQuery.sql).toContain('lower("items"."name") in ($1, $2)');
     expect(isAnyOfTextQuery.params).toEqual(["ada", "grace"]);
   });
 });

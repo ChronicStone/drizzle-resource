@@ -7,12 +7,16 @@ import type { QueryEngineDb } from "./types.js";
 const searchIndexes = new WeakMap<object, WeakMap<PgTable, Promise<Set<string>>>>();
 const dialect = new PgDialect();
 
-export async function estimatePostgresQuery(database: QueryEngineDb, query: SQL) {
+export async function estimatePostgresQuery(
+  database: QueryEngineDb,
+  query: SQL,
+  metric: "Total Cost" | "Plan Rows" = "Total Cost",
+) {
   if (!isPostgresDatabase(database)) return undefined;
   const rows = await database.execute<{
-    "QUERY PLAN": Array<{ Plan: { "Total Cost": number } }>;
+    "QUERY PLAN": Array<{ Plan: { "Total Cost": number; "Plan Rows": number } }>;
   }>(sql`explain (format json) ${query}`, "objects");
-  return rows[0]?.["QUERY PLAN"][0]?.Plan["Total Cost"];
+  return rows[0]?.["QUERY PLAN"][0]?.Plan[metric];
 }
 
 export async function probePostgresSearch(database: QueryEngineDb, table: PgTable) {

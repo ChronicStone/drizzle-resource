@@ -8,6 +8,7 @@ import { drizzle } from "drizzle-orm/node-postgres";
 import { boolean, index, integer, pgSchema, text } from "drizzle-orm/pg-core";
 import { Pool } from "pg";
 import { createQueryEngine } from "../packages/core/index.ts";
+import { encodeCursor } from "../packages/core/src/cursor.ts";
 import type { QueryRequestInput } from "../packages/core/index.ts";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -21,6 +22,8 @@ const baseline = (await import(pathToFileURL(resolve(baselineModule)).href)) as 
 };
 const rows = Number(process.env.BENCH_ROWS ?? 200_000);
 const iterations = Number(process.env.BENCH_ITERATIONS ?? 10);
+const concurrency = Number(process.env.BENCH_CONCURRENCY ?? 1);
+assert(Number.isSafeInteger(concurrency) && concurrency > 0);
 assert(Number.isSafeInteger(rows) && rows > 0);
 assert(Number.isSafeInteger(iterations) && iterations > 0);
 const namespace = pgSchema(`resource_bench_${randomUUID().replaceAll("-", "")}`);
@@ -59,6 +62,7 @@ const db = drizzle({
 function makeResource(factory: typeof createQueryEngine) {
   return factory({ db, schema, relations }).defineResource("consumption", {
     relations: { account: true },
+    summary: (fields) => ({ total: sql<number>`sum(${fields.month})`.mapWith(Number) }),
     query: {
       pagination: { modes: ["offset", "cursor"] },
       facets: { allowed: ["year", "month", "billed", "account.name", "account.type"] },
@@ -143,6 +147,36 @@ const scenarios = [
     })),
   ),
   {
+    name: "related-facets-with-summary",
+    execute: (resource: ReturnType<typeof makeResource>) =>
+      resource.query({ request: { ...request, facets: allFacets }, summary: true }),
+  },
+  {
+    name: "root-facets-with-missing",
+    execute: (resource: ReturnType<typeof makeResource>) =>
+      resource.queryFacets({
+        request,
+        facets: rootFacets.map((facet) => ({ ...facet, missing: true })),
+      }),
+  },
+  ...[10, 1000].map((size) => ({
+    name: `id-selection-${size}`,
+    execute: (resource: ReturnType<typeof makeResource>) =>
+      resource.queryIds({
+        request: {
+          ...request,
+          filters: [
+            {
+              type: "condition",
+              key: "id",
+              operator: "isAnyOf",
+              value: Array.from({ length: size }, (_, i) => i * 17 + 1),
+            },
+          ],
+        },
+      }),
+  })),
+  {
     name: "page-without-count",
     execute: (resource: ReturnType<typeof makeResource>) =>
       resource.queryIds({
@@ -213,6 +247,31 @@ try {
   await db.execute(sql`create index on ${accounts} using gin (lower(name) gin_trgm_ops)`);
   await db.execute(sql`vacuum analyze ${consumption}`);
   await db.execute(sql`vacuum analyze ${accounts}`);
+  for (const direction of ["asc", "desc"] as const) {
+    const sorting = [
+      { key: "year", dir: "desc" as const },
+      { key: "month", dir: "desc" as const },
+      { key: "id", dir: direction },
+    ];
+    const [anchor] = await db.execute<{ year: number; month: number; id: number }>(
+      sql`select year,month,id from ${consumption}
+      order by year desc, month desc, id ${direction === "asc" ? sql`asc` : sql`desc`} offset ${Math.floor(rows * 0.9)} limit 1`,
+      "objects",
+    );
+    if (!anchor) throw new Error("Missing cursor anchor");
+    const cursor = encodeCursor("consumption", sorting, [anchor.year, anchor.month, anchor.id]);
+    scenarios.push({
+      name: `deep-cursor-id-${direction}`,
+      execute: (resource) =>
+        resource.queryIds({
+          request: {
+            ...request,
+            sorting,
+            pagination: { mode: "cursor", count: "none", pageSize: 50, cursor },
+          },
+        }),
+    });
+  }
   const environment = await db.execute(
     sql`select version(), current_setting('work_mem') as work_mem`,
   );
@@ -226,14 +285,21 @@ try {
     );
     const durations = { baseline: [] as number[], optimized: [] as number[] };
     const statements = { baseline: 0, optimized: 0 };
+    const elapsed = { baseline: 0, optimized: 0 };
     for (let iteration = 0; iteration < iterations; iteration += 1) {
       for (const variant of iteration % 2 === 0
         ? (["baseline", "optimized"] as const)
         : (["optimized", "baseline"] as const)) {
         statementCount = 0;
         const start = performance.now();
-        await scenario.execute(resources[variant]);
-        durations[variant].push(performance.now() - start);
+        await Promise.all(
+          Array.from({ length: concurrency }, async () => {
+            const sent = performance.now();
+            await scenario.execute(resources[variant]);
+            durations[variant].push(performance.now() - sent);
+          }),
+        );
+        elapsed[variant] += performance.now() - start;
         statements[variant] += statementCount;
       }
     }
@@ -246,8 +312,10 @@ try {
             name,
             {
               medianMs: samples[Math.floor(samples.length / 2)],
+              p95Ms: samples[Math.ceil(samples.length * 0.95) - 1],
+              requestsPerSecond: (samples.length * 1000) / elapsed[name as keyof typeof elapsed],
               maxMs: samples.at(-1),
-              statementsPerRequest: statements[name as keyof typeof statements] / iterations,
+              statementsPerRequest: statements[name as keyof typeof statements] / samples.length,
             },
           ];
         }),
@@ -347,6 +415,7 @@ try {
       baseline: process.env.BENCH_BASELINE_LABEL ?? "provided module",
       rows,
       iterations,
+      concurrency,
       environment: environment.rows[0],
       measurements,
       scans,
