@@ -39,7 +39,7 @@ export default defineConfig({
       ],
     },
     dts: {
-      oxc: true,
+      oxc: {},
     },
     entry: ["./index.ts", "./core.ts", "./zod.ts", "./valibot.ts", "./vine.ts"],
     fixedExtension: false,

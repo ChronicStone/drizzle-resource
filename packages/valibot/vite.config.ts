@@ -10,7 +10,7 @@ export default defineConfig({
       neverBundle: ["drizzle-orm", "drizzle-orm/valibot", "valibot"],
     },
     dts: {
-      oxc: true,
+      oxc: {},
     },
     entry: ["./index.ts"],
     fixedExtension: false,

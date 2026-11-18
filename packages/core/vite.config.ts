@@ -31,7 +31,7 @@ export default defineConfig({
   pack: {
     clean: true,
     dts: {
-      oxc: true,
+      oxc: {},
     },
     entry: ["./index.ts"],
     fixedExtension: false,

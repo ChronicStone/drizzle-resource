@@ -10,7 +10,7 @@ export default defineConfig({
       neverBundle: ["@drizzle-resource/core", "@vinejs/vine"],
     },
     dts: {
-      oxc: true,
+      oxc: {},
     },
     entry: ["./index.ts"],
     fixedExtension: false,

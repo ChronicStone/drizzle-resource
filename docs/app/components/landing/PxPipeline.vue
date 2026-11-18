@@ -340,8 +340,7 @@ onBeforeUnmount(() => {
           :class="{ on: i === current }"
           @click="choose(i)"
         >
-          <span class="px-pix">0{{ i + 1 }}</span
-          ><span class="full">{{ s.name }}</span
+          <span class="px-pix">0{{ i + 1 }}</span><span class="full">{{ s.name }}</span
           ><span class="short">{{ s.short }}</span>
         </button>
       </div>
@@ -442,9 +441,7 @@ onBeforeUnmount(() => {
             <code>{{ S.request }}</code>
           </div>
           <div class="pl-end res" :class="{ show: done, bad: done && S.status === '400' }">
-            <b
-              >Response <span v-if="done" class="px-pix">{{ S.status }}</span></b
-            >
+            <b>Response <span v-if="done" class="px-pix">{{ S.status }}</span></b>
             <code>{{ done ? S.response : "rows · count · facets" }}</code>
           </div>
         </div>

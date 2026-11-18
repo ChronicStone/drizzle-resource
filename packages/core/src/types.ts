@@ -431,13 +431,10 @@ type QueryRelationResultShape<
   ? TRelationConfig extends { relationType: "many" }
     ? RelationResultRowShape<TDb, TSchema, TRelations, TRoot, TRelation, TSelection>[]
     : TRelationConfig extends { relationType: "one" }
-      ?
-          | RelationResultRowShape<TDb, TSchema, TRelations, TRoot, TRelation, TSelection>
-          | (true extends (
-              TRelationConfig extends { optional?: infer TOptional } ? TOptional : false
-            )
-              ? null
-              : never)
+      ? | RelationResultRowShape<TDb, TSchema, TRelations, TRoot, TRelation, TSelection>
+        | (true extends (TRelationConfig extends { optional?: infer TOptional } ? TOptional : false)
+            ? null
+            : never)
       : never
   : never;
 

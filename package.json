@@ -29,15 +29,15 @@
     "release:publish": "changeset publish"
   },
   "devDependencies": {
-    "@changesets/changelog-github": "^0.7.0",
-    "@changesets/cli": "^2.31.1",
+    "@changesets/changelog-github": "^1.0.1",
+    "@changesets/cli": "^3.0.3",
     "@types/pg": "^8.23.1",
     "@vinejs/vine": "4.4.0",
     "drizzle-orm": "1.0.0-rc.5",
     "pg": "^8.23.1",
-    "typescript": "5.9.3",
+    "typescript": "6.0.3",
     "valibot": "^1.5.0",
-    "vite-plus": "^0.2.7",
+    "vite-plus": "^1.7.0",
     "zod": "^4.6.7",
     "zod-to-json-schema": "^3.25.2"
   },

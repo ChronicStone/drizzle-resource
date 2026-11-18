@@ -343,12 +343,8 @@ function cell(o: Order, key: string) {
         </div>
         <div class="px-app-foot">
           <div class="px-sum" @mouseenter="act('summary', $event.currentTarget as Element)">
-            <div>
-              <span>rows · count()</span><b class="px-pix">{{ fmt(rows.length) }}</b>
-            </div>
-            <div>
-              <span>revenue · sum()</span><b class="px-pix">${{ fmt(revenue) }}</b>
-            </div>
+            <div><span>rows · count()</span><b class="px-pix">{{ fmt(rows.length) }}</b></div>
+            <div><span>revenue · sum()</span><b class="px-pix">${{ fmt(revenue) }}</b></div>
           </div>
           <div class="px-pager">
             <span>{{ state.page === 0 ? "first page" : `cursor ${cursor}` }}</span>
