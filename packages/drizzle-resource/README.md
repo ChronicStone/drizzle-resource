@@ -1,5 +1,5 @@
 <p align="center">
-  <a href="https://drizzle-resource.vercel.app">
+  <a href="https://drizzle-resource.chronicstone.dev">
     <picture>
       <source media="(prefers-color-scheme: dark)" srcset="https://raw.githubusercontent.com/ChronicStone/drizzle-resource/main/.github/assets/banner-dark.png" />
       <img alt="drizzle-resource: typed list endpoints for Drizzle ORM. Define a resource on a Drizzle table and get validated filters, search, sorting, pagination, facets and totals, scoped to the tenant on the server." src="https://raw.githubusercontent.com/ChronicStone/drizzle-resource/main/.github/assets/banner-light.png" width="100%" />
@@ -15,13 +15,13 @@
 </p>
 
 <p align="center">
-  <a href="https://drizzle-resource.vercel.app/start/quick-start"><b>Quick start</b></a>
+  <a href="https://drizzle-resource.chronicstone.dev/start/quick-start"><b>Quick start</b></a>
   &nbsp;·&nbsp;
-  <a href="https://drizzle-resource.vercel.app/playground">Playground</a>
+  <a href="https://drizzle-resource.chronicstone.dev/playground">Playground</a>
   &nbsp;·&nbsp;
-  <a href="https://drizzle-resource.vercel.app/scale/benchmarks">Benchmarks</a>
+  <a href="https://drizzle-resource.chronicstone.dev/scale/benchmarks">Benchmarks</a>
   &nbsp;·&nbsp;
-  <a href="https://drizzle-resource.vercel.app">Docs</a>
+  <a href="https://drizzle-resource.chronicstone.dev">Docs</a>
 </p>
 
 <br />
@@ -119,7 +119,7 @@ Every request runs the same stages, in this order:
 5. **Rows**: those ids load the full rows with their relations, in the shape of the view you ask for.
 6. **Facets**: bucket counts per value for filter sidebars. Facets that can share a statement do.
 
-Each stage can be replaced with your own implementation through `strategy.*`. [See it run in the playground](https://drizzle-resource.vercel.app/playground), against 10,000 sample orders in your browser.
+Each stage can be replaced with your own implementation through `strategy.*`. [See it run in the playground](https://drizzle-resource.chronicstone.dev/playground), against 10,000 sample orders in your browser.
 
 ## Features
 
@@ -147,7 +147,7 @@ Median timings from the repository's PostgreSQL benchmark: 200,000 rows, Postgre
 | 5 mixed facets        | 195.04 ms         | 57.38 ms |
 | Exclude-self facets   | 138.22 ms         | 35.84 ms |
 
-Single-client engine timings, not HTTP or production latency. [Full results](https://drizzle-resource.vercel.app/scale/benchmarks).
+Single-client engine timings, not HTTP or production latency. [Full results](https://drizzle-resource.chronicstone.dev/scale/benchmarks).
 
 ## Methods
 
