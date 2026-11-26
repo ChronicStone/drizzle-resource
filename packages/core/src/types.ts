@@ -1005,8 +1005,8 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
    * rows it matches, so a narrow request keeps the cheaper shared statement; a filter through a
    * relation has no estimate, and the table size decides. `0` always runs facets separately and
    * `Infinity` always shares one statement. The engine shares one statement when PostgreSQL has no
-   * estimate. At most four statements of a request run at once, one after the other in a
-   * transaction the caller passed in, which makes splitting worth less below about 200,000 rows.
+   * estimate. When facets are split, at most four statements of a request run at once (the cap is
+   * per request, not per pool), one after the other in a transaction the caller passed in, which makes splitting worth less below about 200,000 rows.
    * A split exact count is timed by `timeouts.count`, and a request whose facets queue behind each
    * other can take up to `ceil(n / 4)` times `timeouts.facets`.
    */

@@ -117,7 +117,7 @@ Every request runs the same stages, in this order:
 3. **Count** the matching rows, or compute your own totals with `summary: true`.
 4. **Page ids**: filters, search and sorting select the ids of one page, joining only the relations they touch.
 5. **Rows**: those ids load the full rows with their relations, in the shape of the view you ask for.
-6. **Facets**: bucket counts per value for filter sidebars. Facets that can share a statement do.
+6. **Facets**: bucket counts per value for filter sidebars. Facets that can share a statement do on small tables; above 100,000 estimated rows each facet runs as its own statement, which PostgreSQL can parallelise (`facets.splitAbove`).
 
 Each stage can be replaced with your own implementation through `strategy.*`. [See it run in the playground](https://drizzle-resource.chronicstone.dev/playground), against 10,000 sample orders in your browser.
 
