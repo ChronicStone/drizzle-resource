@@ -925,7 +925,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
 
     it("picks the plan from costs in a caller's transaction, with no budget and no timeout", async () => {
       await planDb.transaction(async (tx) => {
-        await tx.execute(sql`select set_config('statement_timeout', '20', true)`);
+        await tx.execute(sql`select set_config('statement_timeout', '20000', true)`);
         planStatements.length = 0;
         const rare = await search.queryIds({
           db: tx as never,
@@ -935,7 +935,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
         expect(planStatements.some((query) => query.startsWith("explain"))).toBe(true);
         expect(planStatements.some((query) => query.includes("set_config"))).toBe(false);
         const [row] = await tx.execute(sql`show statement_timeout`, "objects");
-        expect(row).toEqual({ statement_timeout: "20ms" });
+        expect(row).toEqual({ statement_timeout: "20s" });
       });
     });
 
