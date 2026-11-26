@@ -6,7 +6,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
-import { isOurTimeout, withStatementTimeout } from "../src/postgres.js";
+import { isOurTimeout, parseDurationMilliseconds, withStatementTimeout } from "../src/postgres.js";
 import type { QueryPageInfo, QueryRequestInput } from "../index.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -692,6 +692,15 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       });
     });
 
+    it("reads the timeout in force as PostgreSQL prints it", () => {
+      expect(parseDurationMilliseconds("25")).toBe(25);
+      expect(parseDurationMilliseconds("25ms")).toBe(25);
+      expect(parseDurationMilliseconds("3s")).toBe(3000);
+      expect(parseDurationMilliseconds("1min")).toBe(60_000);
+      expect(parseDurationMilliseconds("0")).toBe(0);
+      expect(parseDurationMilliseconds("soon")).toBeUndefined();
+    });
+
     it("measures a timeout by elapsed time, not by the server's message", () => {
       const french = Object.assign(new Error("annulation de la requête à cause du délai écoulé"), {
         code: "57014",
@@ -807,12 +816,24 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       notes: { owner: r.one.owners({ from: r.notes.ownerId, to: r.owners.id }) },
     }));
     const planStatements: string[] = [];
+    // What the engine did, in order: `t<ms>` is a budgeted `statement_timeout`, `T<ms>` a
+    // resource timeout, `C:`/`P:` the count and the page statement, then `O` for the ordinary
+    // plan or `U` for the indexed one.
+    const events: string[] = [];
     const planDb = drizzle({
       client,
       relations: planRelations,
       logger: {
-        logQuery(query) {
+        logQuery(query, params) {
           planStatements.push(query);
+          if (query.includes("set_config('statement_timeout'")) {
+            events.push(`${query.includes("least(") ? "t" : "T"}${String(params[0])}`);
+          } else if (query.includes('"notes"') && !query.startsWith("explain")) {
+            if (query.includes("count(*)"))
+              events.push(`C:${query.includes(" union ") ? "U" : "O"}`);
+            else if (query.includes('"notes"."id"'))
+              events.push(`P:${query.includes(" union ") ? "U" : "O"}`);
+          }
         },
       },
     });
@@ -854,6 +875,27 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       query: { search: { allowed: ["body", "owner.name"], planBudget: 100 } },
     });
 
+    // A budget of 300 ms gives the indexed attempt 1,200 ms; these tests need room between them.
+    const midSearch = createQueryEngine({
+      db: planDb,
+      schema: planSchema,
+      relations: planRelations,
+    }).defineResource("notes", {
+      relations: { owner: true },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 300 } },
+    });
+    const countCut = createQueryEngine({
+      db: planDb,
+      schema: planSchema,
+      relations: planRelations,
+    }).defineResource("notes", {
+      relations: { owner: true },
+      query: {
+        search: { allowed: ["body", "owner.name"], planBudget: 300 },
+        timeouts: { count: 150 },
+      },
+    });
+
     beforeAll(async () => {
       await ensureTrigramExtension();
       await db.execute(sql`create schema ${sql.identifier(plansNamespace.schemaName)}`);
@@ -882,7 +924,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       );
     });
 
-    function searching(value: string, count: "none" | "capped" | "exact") {
+    function searching(value: string, count: "none" | "capped" | "estimated" | "exact") {
       return {
         pagination: { mode: "offset" as const, pageIndex: 1, pageSize: 5, count },
         filters: [],
@@ -891,82 +933,105 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       };
     }
 
-    it("keeps the ordinary plan for a common term without extra statements", async () => {
+    const wait = (ms: number) => new Promise((resolve) => setTimeout(resolve, ms));
+
+    /** Every statement on `notes` waits for `locker`; resolves once a statement is waiting. */
+    async function lockNotes() {
+      const locker = await client.connect();
+      await locker.query("begin");
+      await locker.query(`lock table ${blockedNotes()} in access exclusive mode`);
+      return locker;
+    }
+
+    it("keeps the ordinary plan for a common term, one budgeted statement", async () => {
       planStatements.length = 0;
+      events.length = 0;
       const result = await roomySearch.queryIds({ request: searching("common", "none") });
       expect(result.ids).toEqual([1, 2, 3, 4, 5]);
       expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: true });
-      expect(planStatements.some((query) => query.includes(" union "))).toBe(false);
+      expect(events).toEqual(["t30000", "P:O"]);
       expect(planStatements.some((query) => query.startsWith("explain"))).toBe(false);
-      expect(planStatements.filter((query) => query.includes('"notes"."id"'))).toHaveLength(1);
     });
 
-    it("retries with the indexed plan when the ordinary plan runs out of budget", async () => {
-      planStatements.length = 0;
+    it.each(["capped", "estimated"] as const)(
+      "budgets the count and the page on their own, with a %s count",
+      async (count) => {
+        events.length = 0;
+        const result = await roomySearch.query({ request: searching("common", count) });
+        expect(result.rows.map((row) => row.id)).toEqual([1, 2, 3, 4, 5]);
+        expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+        expect(events).toEqual(["t30000", "C:O", "t30000", "P:O"]);
+      },
+    );
+
+    it("retries with the indexed plan, under a larger budget, when the ordinary plan runs out", async () => {
+      events.length = 0;
       const result = (await afterBlocked(() =>
         search.queryIds({ request: searching("zebra", "none") }),
       )) as Awaited<ReturnType<typeof search.queryIds>>;
       expect(result.ids).toEqual([5, 600, 12000]);
       expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: false });
-      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
-      expect(pages).toHaveLength(2);
-      expect(pages[0]).not.toContain(" union ");
-      expect(pages[1]).toContain(" union ");
+      expect(events).toEqual(["t300", "P:O", "t1200", "P:U"]);
     });
 
-    it("goes back to the ordinary plan when the indexed attempt misses its budget too", async () => {
-      // A busy server: every statement waits for the table past both budgets (100 ms, then 400 ms).
-      planStatements.length = 0;
-      const started = performance.now();
+    it("goes back to the ordinary plan with no budget when the indexed attempt misses too", async () => {
+      // A busy server: the statement waits past the first budget (100 ms) and the second (400 ms).
+      events.length = 0;
       const result = (await afterBlocked(
         () => tightSearch.queryIds({ request: searching("common", "none") }),
         1500,
       )) as Awaited<ReturnType<typeof tightSearch.queryIds>>;
       expect(result.ids).toEqual([1, 2, 3, 4, 5]);
       expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: true });
-      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
-      expect(pages).toHaveLength(3);
-      expect(pages[0]).not.toContain(" union ");
-      expect(pages[1]).toContain(" union ");
-      expect(pages[2]).not.toContain(" union ");
-      // Bounded: the two budgets plus the wait for the table, not an unbounded indexed plan.
-      expect(performance.now() - started).toBeLessThan(10_000);
+      expect(events).toEqual(["t100", "P:O", "t400", "P:U", "P:O"]);
     });
 
     it("keeps the indexed plan when the indexed attempt fits its larger budget", async () => {
-      planStatements.length = 0;
+      events.length = 0;
       const result = (await afterBlocked(
         () => tightSearch.queryIds({ request: searching("zebra", "none") }),
         250,
         0,
       )) as Awaited<ReturnType<typeof tightSearch.queryIds>>;
       expect(result.ids).toEqual([5, 600, 12000]);
-      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
-      expect(pages).toHaveLength(2);
-      expect(pages[1]).toContain(" union ");
+      expect(events).toEqual(["t100", "P:O", "t400", "P:U"]);
     });
 
-    it("decides once per request: later statements reuse the indexed plan", async () => {
-      planStatements.length = 0;
-      const result = (await afterBlocked(() =>
-        search.query({
-          request: searching("zebra", "capped"),
-        }),
-      )) as Awaited<ReturnType<typeof search.query>>;
-      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 3, exact: true });
-      expect(result.rows.map((row) => row.id)).toEqual([5, 600, 12000]);
-      const counts = planStatements.filter(
-        (query) => query.includes("count(*)") && query.includes('"notes"'),
-      );
-      expect(counts).toHaveLength(2);
-      expect(counts[0]).not.toContain(" union ");
-      expect(counts[1]).toContain(" union ");
-      // The page statement decided nothing: it already found the indexed plan.
-      const pages = planStatements.filter(
-        (query) => query.includes('"notes"."id"') && !query.includes("count(*)"),
-      );
-      expect(pages).toHaveLength(1);
-      expect(pages[0]).toContain(" union ");
+    it("gives the page its own budgeted attempts after a count that went indexed", async () => {
+      events.length = 0;
+      // The count waits on the first lock and finishes on the indexed plan within its larger
+      // budget. A second lock, queued behind the count, then holds up the page.
+      const first = await lockNotes();
+      const pending = midSearch.query({ request: searching("common", "capped") });
+      await waitForLockWaiters(1, 5000);
+      await wait(600); // the count's ordinary attempt (300 ms) has missed; its indexed one waits
+      const second = await client.connect();
+      await second.query("begin");
+      const acquiring = second.query(`lock table ${blockedNotes()} in access exclusive mode`);
+      await waitForLockWaiters(2, 5000); // the count's statement and this request
+      await first.query("rollback"); // the count is first in line; this lock is granted after it
+      first.release();
+      await acquiring;
+      await wait(2200); // past both of the page's budgets (300 ms, then 1,200 ms)
+      await second.query("rollback");
+      second.release();
+      const result = await pending;
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+      expect(result.rows.map((row) => row.id)).toEqual([1, 2, 3, 4, 5]);
+      expect(events).toEqual(["t300", "C:O", "t1200", "C:U", "t300", "P:O", "t1200", "P:U", "P:O"]);
+    });
+
+    it("does not let a smaller count timeout leak the indexed plan into the page", async () => {
+      events.length = 0;
+      const result = (await afterBlocked(
+        () => countCut.query({ request: searching("common", "capped") }),
+        1500,
+        0,
+      )) as Awaited<ReturnType<typeof countCut.query>>;
+      expect(result.pageInfo).toMatchObject({ count: "none", rowCount: null, reason: "timeout" });
+      expect(result.rows.map((row) => row.id)).toEqual([1, 2, 3, 4, 5]);
+      const firstPage = events.findIndex((event) => event.startsWith("P:"));
+      expect(events.slice(firstPage - 1, firstPage + 3)).toEqual(["t300", "P:O", "t1200", "P:U"]);
     });
 
     it("picks the plan from costs in a caller's transaction, with no budget and no timeout", async () => {

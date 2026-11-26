@@ -167,6 +167,14 @@ export function isOurTimeout(error: unknown, elapsedMilliseconds: number, timeou
   return isQueryCanceled(error) && elapsedMilliseconds >= timeout - Math.min(5, timeout * 0.1);
 }
 
+/** `statement_timeout` as PostgreSQL reports it: `25ms`, `3s`, `1min`, or a bare number of ms. */
+export function parseDurationMilliseconds(value: unknown): number | undefined {
+  const match = /^\s*(\d+(?:\.\d+)?)\s*(ms|s|min|h|d)?\s*$/.exec(String(value));
+  if (!match) return undefined;
+  const unit = { ms: 1, s: 1000, min: 60_000, h: 3_600_000, d: 86_400_000 }[match[2] ?? "ms"]!;
+  return Number(match[1]) * unit;
+}
+
 // Transactions the engine opened for a timed stage. Nothing but the engine runs on them.
 const ownedTransactions = new WeakSet<object>();
 
@@ -201,7 +209,10 @@ export async function withStatementTimeout<TResult>(
     return { timedOut: false, value: await run(database) };
   }
   const nested = is(database, PgAsyncTransaction);
-  const started = performance.now();
+  // The timeout that is really in force can be smaller than `milliseconds` (`capToCurrent`), and
+  // the clock must not count the time spent waiting for a pooled connection or setting it up.
+  let effective = milliseconds;
+  let started = performance.now();
   try {
     const value = await (database as any).transaction(async (transaction: any) => {
       ownedTransactions.add(transaction);
@@ -214,11 +225,15 @@ export async function withStatementTimeout<TResult>(
         previous = String(row?.value ?? "0");
       }
       const limit = String(Math.ceil(milliseconds));
-      await transaction.execute(
+      const [applied] = await transaction.execute(
         options.capToCurrent
-          ? sql`select set_config('statement_timeout', least(${limit}::numeric, coalesce(nullif(extract(epoch from current_setting('statement_timeout')::interval) * 1000, 0), ${limit}::numeric))::bigint::text, true)`
-          : sql`select set_config('statement_timeout', ${limit}, true)`,
+          ? sql`select set_config('statement_timeout', least(${limit}::numeric, coalesce(nullif(extract(epoch from current_setting('statement_timeout')::interval) * 1000, 0), ${limit}::numeric))::bigint::text, true) as value`
+          : sql`select set_config('statement_timeout', ${limit}, true) as value`,
+        "objects",
       );
+      const parsed = parseDurationMilliseconds((applied as { value?: unknown } | undefined)?.value);
+      if (parsed !== undefined && parsed > 0) effective = parsed;
+      started = performance.now();
       const result = await run(transaction);
       // RELEASE SAVEPOINT keeps a SET LOCAL until the enclosing transaction ends.
       if (previous !== undefined) {
@@ -228,7 +243,7 @@ export async function withStatementTimeout<TResult>(
     });
     return { timedOut: false, value };
   } catch (error) {
-    if (isOurTimeout(error, performance.now() - started, milliseconds)) return { timedOut: true };
+    if (isOurTimeout(error, performance.now() - started, effective)) return { timedOut: true };
     throw error;
   }
 }

@@ -552,7 +552,7 @@ export function createQueryResourceUtils<
   const indexedSearchColumns = new Set<PgColumn>();
   const searchPlans = new WeakMap<QueryRequest, Promise<void>>();
   const indexedSearchRequests = new WeakSet<QueryRequest>();
-  const undecidedSearches = new WeakSet<QueryRequest>();
+  const budgetedSearches = new WeakSet<QueryRequest>();
 
   function resolveField(path: string) {
     return resource.fields.get(path);
@@ -745,9 +745,9 @@ export function createQueryResourceUtils<
     if (request.pagination.count !== "exact" && !isCallerTransaction(database)) {
       // Without an exact count PostgreSQL's estimate cannot tell a rare term from a common one
       // (it assumes millions of matches for both), so it walks the sort index for a rare term.
-      // The first statement of the request runs the ordinary plan with a time budget instead,
-      // and `plannedSearch` switches to the indexed plan only when the budget runs out.
-      undecidedSearches.add(request);
+      // The count and the page of the request each run the ordinary plan with a time budget
+      // instead, and `plannedSearch` tries the indexed plan only when the budget runs out.
+      budgetedSearches.add(request);
       return;
     }
     const filter = compileFilterNode(normalizeFilters(request.filters));
@@ -781,32 +781,40 @@ export function createQueryResourceUtils<
   }
 
   /**
-   * Run the first statement of a search that has no exact count. The ordinary plan gets
-   * `search.planBudget` milliseconds: a common term finishes within it and costs what it always
-   * cost. A rare term makes PostgreSQL walk the whole sort index, runs out of budget and is retried
-   * with the indexed plan, which then holds for every later statement of the request.
+   * Run one statement of a search that has no exact count (the count, or the page). Each such
+   * statement makes its own choice, because what one statement learns says nothing about the
+   * next: a capped count stops at its cap, and the page behind it still has to sort every match.
    *
-   * A busy server can also make a common term miss the budget, and the indexed plan is the wrong
-   * plan for a common term. So the indexed attempt is budgeted too, a few times larger. If it
-   * misses as well, the request goes back to the ordinary plan with no budget, which bounds the
-   * worst case to both budgets plus the ordinary time.
+   * 1. The ordinary plan gets `search.planBudget` milliseconds. A common term finishes within it
+   *    and costs what it always cost. A rare term makes PostgreSQL walk the whole sort index.
+   * 2. On a miss, the indexed plan gets `indexedBudgetFactor` times the budget. A busy server can
+   *    make a common term miss the first budget, and the indexed plan is the wrong plan for it.
+   * 3. If that misses too, the ordinary plan runs with no budget.
+   *
+   * The worst case for one statement is both budgets plus the ordinary time. The indexed attempt
+   * runs on a copy of the request, so no other statement of the request sees its plan.
    */
   async function plannedSearch<TResult>(
     request: QueryRequest,
     db: QueryEngineDb,
-    run: (db: QueryEngineDb) => Promise<TResult>,
+    run: (db: QueryEngineDb, planned: QueryRequest) => Promise<TResult>,
   ): Promise<TResult> {
-    if (!undecidedSearches.delete(request)) return run(db);
+    if (!budgetedSearches.has(request)) return run(db, request);
     const budget = resource.queryConfig.search.planBudget;
-    const ordinary = await withStatementTimeout(db, budget, run, { capToCurrent: true });
-    if (!ordinary.timedOut) return ordinary.value;
-    indexedSearchRequests.add(request);
-    const indexed = await withStatementTimeout(db, budget * indexedBudgetFactor, run, {
+    const ordinary = await withStatementTimeout(db, budget, (d) => run(d, request), {
       capToCurrent: true,
     });
+    if (!ordinary.timedOut) return ordinary.value;
+    const indexedRequest = { ...request };
+    indexedSearchRequests.add(indexedRequest);
+    const indexed = await withStatementTimeout(
+      db,
+      budget * indexedBudgetFactor,
+      (d) => run(d, indexedRequest),
+      { capToCurrent: true },
+    );
     if (!indexed.timedOut) return indexed.value;
-    indexedSearchRequests.delete(request);
-    return run(db);
+    return run(db, request);
   }
 
   function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
@@ -1071,8 +1079,10 @@ export function createQueryResourceUtils<
           const [total] = await buildCountQuery(request, db);
           return { count: "exact", rowCount: Number(total?.rowCount ?? 0) };
         }
-        const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(request, db, (planned) =>
-          buildCappedCountQuery(request, planned),
+        const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(
+          request,
+          db,
+          (planned, plannedRequest) => buildCappedCountQuery(plannedRequest, planned),
         );
         const found = Number(total?.rowCount ?? 0);
         return { count: "capped", rowCount: Math.min(found, cap), exact: found <= cap };
@@ -1199,21 +1209,21 @@ export function createQueryResourceUtils<
     // Only a count that is exact tells whether a next page exists; every other page looks ahead.
     const needsLookahead =
       request.pagination.mode === "cursor" || (!isExactCount(count) && !inferCount);
-    // The search plan is read while the query is built, so a retry builds it again.
-    const fetchPage = async (db: QueryEngineDb) => {
-      const whereClause = buildWhereClause(request);
+    // The search plan is read while the query is built, so each attempt builds it again.
+    const fetchPage = async (db: QueryEngineDb, planned: QueryRequest) => {
+      const whereClause = buildWhereClause(planned);
       let idsQuery: any;
       if (direct) {
         idsQuery = (db as any).select({ id: rootTable.id, ...cursorSelection }).from(rootTable);
       } else {
-        const matchingIds = (db as any).$with("matching_ids").as(buildMatchingIdsSelect(request));
+        const matchingIds = (db as any).$with("matching_ids").as(buildMatchingIdsSelect(planned));
         idsQuery = (db as any)
           .with(matchingIds)
           .select({ id: matchingIds.id, ...cursorSelection })
           .from(matchingIds)
           .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
       }
-      idsQuery = applyOuterJoins(idsQuery, request);
+      idsQuery = applyOuterJoins(idsQuery, planned);
       const cursorPredicate =
         request.pagination.mode === "cursor" && request.pagination.cursor
           ? buildCursorBoundary(request, request.pagination.cursor)
