@@ -2619,6 +2619,11 @@ html:not(.dark) .px-land :is(h1, h2) .px-acc {
 .px-tb .val {
   font: 600 11px var(--font-mono);
   fill: var(--ink);
+  /* a halo in the panel colour keeps the value readable over the dim "before" columns */
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
 }
 .px-tb .hv {
   font: 600 10.5px var(--font-mono);

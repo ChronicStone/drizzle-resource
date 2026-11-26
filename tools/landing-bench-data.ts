@@ -19,15 +19,36 @@ type Profiles = {
   setup?: { chosenRuns?: Record<string, Record<string, { label?: string }>> };
 };
 
-/** landing request → scenario in profiles.json, per profile */
-const SCENARIOS: Record<string, { outOfTheBox: string; tuned: string }> = {
-  page: { outOfTheBox: "page-without-count", tuned: "page-without-count" },
-  cursor: { outOfTheBox: "deep-cursor-id-desc", tuned: "deep-cursor-id-desc" },
-  // page + exact count out of the box, page + capped count tuned (assembled by the benchmark)
-  count: { outOfTheBox: "page-plus-count", tuned: "page-plus-count" },
-  relationSort: { outOfTheBox: "relation-sorted-count", tuned: "relation-sorted-count" },
-  facets: { outOfTheBox: "four-mixed-facets", tuned: "four-mixed-facets" },
-  search: { outOfTheBox: "cross-table-search-ord", tuned: "cross-table-search-ord" },
+/**
+ * landing request → scenario in profiles.json, per profile. The `landing/*` scenarios are measured
+ * for this chart: out of the box with an exact count, tuned as the engine page with the tuned
+ * indexes plus a count capped at 10,001 rows. `credited` requests are the ones a tool brings down;
+ * they must carry a verdict. Page and cursor are not tuned, so they default to "unchanged".
+ */
+const SCENARIOS: Record<string, { outOfTheBox: string; tuned: string; credited: boolean }> = {
+  page: { outOfTheBox: "page-without-count", tuned: "page-without-count", credited: false },
+  cursor: { outOfTheBox: "deep-cursor-id-desc", tuned: "deep-cursor-id-desc", credited: false },
+  count: {
+    outOfTheBox: "landing/page-plus-count",
+    tuned: "landing/page-plus-count",
+    credited: true,
+  },
+  // checkIndexes recommends copying customer.name onto orders, so the tuned run sorts the copy
+  relationSort: {
+    outOfTheBox: "landing/sort-customer-name-plus-count",
+    tuned: "landing/sort-customer-name-denormalized-plus-count",
+    credited: true,
+  },
+  facets: {
+    outOfTheBox: "landing/four-mixed-facets",
+    tuned: "landing/four-mixed-facets",
+    credited: true,
+  },
+  search: {
+    outOfTheBox: "landing/search-ord-plus-count",
+    tuned: "landing/search-ord-plus-count",
+    credited: true,
+  },
 };
 const SIZES = [200_000, 1_000_000, 10_000_000];
 
@@ -57,7 +78,7 @@ const median = (profile: "out-of-the-box" | "tuned", scenario: string) =>
 
 const VERDICTS: Verdict[] = ["improved", "unchanged", "worse"];
 /** The benchmark decides whether tuning helped; this script never infers it from the numbers. */
-const verdict = (scenario: string): Verdict => {
+const verdict = (scenario: string, credited: boolean): Verdict => {
   const tuned = data.profiles.tuned?.[scenario] as
     | (Record<string, Cell> & { verdict?: Verdict })
     | undefined;
@@ -65,6 +86,7 @@ const verdict = (scenario: string): Verdict => {
     data.verdicts?.[scenario] ??
     tuned?.verdict ??
     tuned?.[String(SIZES[SIZES.length - 1])]?.verdict;
+  if (!v && !credited) return "unchanged";
   if (!v || !VERDICTS.includes(v))
     throw new Error(`tuned / ${scenario}: no verdict (improved, unchanged or worse) in ${source}`);
   return v;
@@ -76,13 +98,13 @@ const requests = Object.fromEntries(
     {
       outOfTheBox: median("out-of-the-box", s.outOfTheBox),
       tuned: median("tuned", s.tuned),
-      verdict: verdict(s.tuned),
+      verdict: verdict(s.tuned, s.credited),
     },
   ]),
 );
 
 /** requests the landing credits to a tool (see PxBenchTuning REQUESTS[].drop) must get faster */
-const CREDITED = ["count", "relationSort", "facets", "search"];
+const CREDITED = Object.keys(SCENARIOS).filter((k) => SCENARIOS[k]!.credited);
 for (const key of CREDITED) {
   const r = requests[key]!;
   const last = SIZES.length - 1;

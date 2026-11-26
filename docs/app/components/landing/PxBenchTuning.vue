@@ -207,12 +207,17 @@ const consoleFor = computed(() => {
         ],
         say: (() => {
           const credited = rows.filter((r) => !r.flat);
-          const faster = credited.filter((r) => r.drop === 4 && r.improved);
+          const capped = credited.filter((r) => r.drop === 4 && r.improved && r.key !== "facets");
+          const facets = rows.find((r) => r.key === "facets")!;
           const not = credited.filter((r) => !r.improved);
+          // the tuned facets are measured as separate statements; whenCapped: "skip" goes further
           return (
-            `A capped count and facet limits bring the rest down. This is the tuned state: ${faster
-              .map((r) => `${r.label} ${fmt(r.tuned[LAST]!)} ms`)
-              .join(", ")} at 10M.` +
+            `A capped count brings ${capped
+              .map((r) => `${r.label} to ${fmt(r.tuned[LAST]!)} ms`)
+              .join(" and ")} at 10M.` +
+            (facets.improved
+              ? ` Facets run as separate statements: ${atLast(facets, "outOfTheBox")} → ${fmt(facets.tuned[LAST]!)} ms, and whenCapped: "skip" drops them once the count passes the cap.`
+              : "") +
             (not.length
               ? ` ${not.map((r) => r.label).join(" and ")} did not get faster on this run.`
               : "")
@@ -250,7 +255,8 @@ const vert = computed(() => {
         const gh = hOf(r.outOfTheBox[s]!);
         return { x, w: ws[s]!, y: base - h, h, gy: base - gh, gh, cx: x + ws[s]! / 2 };
       });
-      const top = base - hOf(valueAt(i, LAST)) - 8;
+      // above the tallest column of the group, so the label never sits on a neighbour
+      const top = base - Math.max(...[0, 1, 2].map((s) => hOf(valueAt(i, s)))) - 8;
       const ring = {
         x: gx - 6,
         y: base - hOf(r.outOfTheBox[LAST]!) - 24,
