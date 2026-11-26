@@ -51,6 +51,9 @@ const variants = {
   contradicted: "(org_id, created_at desc, id desc) where deleted_at is not null",
   unverifiedlegit: "(org_id, created_at desc, id desc) where tenant = 't1'",
   uniquenullable: undefined,
+  // the same equalities, listed in either order, served by either one
+  orderflip: "(org_id, created_at desc, id desc)",
+  tenantindex: "(tenant, created_at desc, id desc)",
 } as const;
 type Variant = keyof typeof variants;
 const variantNames = Object.keys(variants) as Variant[];
@@ -103,6 +106,8 @@ const caseSensitive: Partial<Record<Variant, string[]>> = {
   extraeqvalue: ["tenant"],
   unverifiedlegit: ["tenant"],
   uniquenullable: ["slug"],
+  orderflip: ["tenant"],
+  tenantindex: ["tenant"],
 };
 const scopes: Partial<Record<Variant, (f: any, ctx: any) => any>> = {
   lowerplain: (f) => f.is("tenant", "t1"),
@@ -117,6 +122,8 @@ const scopes: Partial<Record<Variant, (f: any, ctx: any) => any>> = {
   contradicted: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
   unverifiedlegit: (f, ctx) => f.and([f.is("orgId", 1), f.is("tenant", ctx.tenant)]),
   // at most one row matches: the unique key is complete once slug has a value
+  orderflip: (f) => f.and([f.is("tenant", "t1"), f.is("orgId", 1)]),
+  tenantindex: (f) => f.and([f.is("orgId", 1), f.is("tenant", "t1")]),
   uniquenullable: (f) => f.and([f.is("orgId", 1), f.is("slug", "s1")]),
 };
 const resources = Object.fromEntries(
@@ -259,7 +266,7 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
   });
 
   it("agrees with the plan PostgreSQL picks for the page query", async () => {
-    const findings = await engine.checkIndexes({ live: true });
+    const findings = await engine.checkIndexes({ live: true, context: { tenant: "t1" } });
     const observed: Record<string, { verdict: string; sorts: string[] }> = {};
     for (const name of variantNames) {
       observed[name] = {
@@ -287,7 +294,10 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       nullprefix: { verdict: "none", sorts: ["Sort"] },
       unrelatedpartial: { verdict: "none", sorts: ["Sort"] },
       contradicted: { verdict: "none", sorts: ["Sort"] },
-      unverifiedlegit: { verdict: "partial", sorts: [] },
+      // the context gives the value, so the scope does state the partial index's condition
+      unverifiedlegit: { verdict: "served", sorts: [] },
+      orderflip: { verdict: "filtered", sorts: [] },
+      tenantindex: { verdict: "filtered", sorts: [] },
       uniquenullable: { verdict: "served", sorts: [] },
       partialimplied: { verdict: "served", sorts: [] },
       partialunverified: { verdict: "none", sorts: ["Sort"] },
@@ -364,6 +374,29 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       },
     });
     expect(find(await cursor.checkIndexes({ live: true, largeTable: { count: 10 } }))).toEqual([]);
+  });
+
+  it("says EXPLAIN confirmed a verdict, and still reads a partial index it cannot confirm", async () => {
+    const findings = await engine.checkIndexes({ live: true, context: { tenant: "t1" } });
+    const own = (name: string) =>
+      findings.find(
+        (finding) => finding.resource === name && finding.rule === "default-sort-unindexed",
+      );
+    expect(own("none")?.message).toContain(
+      "Confirmed by EXPLAIN: PostgreSQL sorts every matching row",
+    );
+    expect(own("noid")?.message).toContain(
+      "Confirmed by EXPLAIN: PostgreSQL uses an incremental sort",
+    );
+    expect(own("orderflip")?.message).toContain(
+      "Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+    );
+    const noContext = (await resources.unverifiedlegit.checkIndexes({
+      live: true,
+    })) as IndexFinding[];
+    expect(
+      noContext.find((finding) => finding.rule === "default-sort-unindexed")?.message,
+    ).toContain("cannot confirm");
   });
 
   it("explains a missing table", async () => {

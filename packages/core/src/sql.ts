@@ -46,6 +46,7 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { pageQueryHooks } from "./plan-hook.js";
 import {
   estimatePostgresQuery,
   estimatePostgresTableRows,
@@ -1340,15 +1341,14 @@ export function createQueryResourceUtils<
           ? buildCursorBoundary(request, request.pagination.cursor)
           : undefined;
       idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
-      return (await observer.run(
-        "ids",
-        request,
-        idsQuery
-          .orderBy(...orderBy)
-          .limit(pageSize + (needsLookahead ? 1 : 0))
-          .offset(offset),
-        observer.dry ? { dry: [] } : undefined,
-      )) as any[];
+      const pageQuery = idsQuery
+        .orderBy(...orderBy)
+        .limit(pageSize + (needsLookahead ? 1 : 0))
+        .offset(offset);
+      // `checkIndexes({ live: true })` reads the page query of a probe database instead of running it.
+      const intercepted = pageQueryHooks.get(database)?.(pageQuery);
+      return (await (intercepted ??
+        observer.run("ids", request, pageQuery, observer.dry ? { dry: [] } : undefined))) as any[];
     };
     // A capped count that fits under its cap is exact and small, so the indexed plan reads at most
     // that many matches. A count that hit the cap says the matches are common: walk the sort index.
