@@ -10,6 +10,13 @@ export type {
 } from "./src/model-types.js";
 export { createQueryEngine } from "./src/engine.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
+export { formatIndexFindings } from "./src/index-check.js";
+export type {
+  CheckIndexesOptions,
+  IndexFinding,
+  IndexFindingLevel,
+  IndexFindingRule,
+} from "./src/index-check.js";
 export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contracts.js";
 export type {
   DefineResourceOptions,
@@ -17,6 +24,7 @@ export type {
   GenericObject,
   FieldRegistryEntry,
   FieldRegistryRelationStep,
+  CheckIndexes,
   QueryEngine,
   QueryEngineConfig,
   QueryEngineDb,

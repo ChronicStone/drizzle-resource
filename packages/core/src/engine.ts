@@ -30,6 +30,8 @@ import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from 
 import { createQueryFilterBuilder } from "./filters.js";
 import { defaultQueryValidation } from "./contracts.js";
 import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
+import { runIndexChecks } from "./index-check.js";
+import type { CheckIndexesOptions, IndexCheckTarget } from "./index-check.js";
 
 function normalizeRequest(
   request: QueryRequestInput,
@@ -324,6 +326,8 @@ export function createQueryEngine<
       : undefined,
   } as QueryEngineConfig<TDb, TSchema, TRelations>;
   validateModels(config.schema, config.models ?? {}, config.relations);
+  // Shared by every engine that `withContext()` derives, so one call checks every resource.
+  const indexCheckTargets: IndexCheckTarget[] = [];
   function buildEngine<TEngineContext extends GenericObject>(): QueryEngine<
     TDb,
     TSchema,
@@ -512,6 +516,31 @@ export function createQueryEngine<
 
       const filterBuilder = createQueryFilterBuilder<any>();
 
+      const indexCheckTarget: IndexCheckTarget = {
+        key: String(root),
+        table: config.schema[root] as IndexCheckTarget["table"],
+        schema: config.schema as Record<string, unknown>,
+        db: config.db,
+        fields: fieldRegistry,
+        trustedFields: trustedFieldRegistry,
+        scope: options.query?.scope,
+        sortDefaults: options.query?.sort?.defaults ?? [],
+        search: {
+          explicit: options.query?.search?.allowed !== undefined,
+          allowed: Array.from(allowedSearchFields),
+          defaults: defaultFields as string[],
+        },
+        facets: {
+          explicit: options.query?.facets?.allowed !== undefined,
+          allowed: Array.from(allowedFacetFields),
+        },
+        caseSensitive: caseSensitiveFilterFields,
+        defaultPagination: options.query?.defaults?.pagination,
+        customQuery: Boolean(options.strategy?.query || options.strategy?.ids),
+        customFacets: Boolean(options.strategy?.facets),
+      };
+      indexCheckTargets.push(indexCheckTarget);
+
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
       let summaryShape: ReturnType<typeof resolveSummaryShape> | undefined;
       const resource = {
@@ -535,6 +564,8 @@ export function createQueryEngine<
           ));
         },
         fields: fieldRegistry,
+        checkIndexes: (checkOptions?: CheckIndexesOptions) =>
+          runIndexChecks([indexCheckTarget], checkOptions),
         queryConfig: {
           search: {
             allowed: allowedSearchFields,
@@ -1097,6 +1128,8 @@ export function createQueryEngine<
       withContext<TContext extends GenericObject>() {
         return buildEngine<TContext>();
       },
+      checkIndexes: (checkOptions?: CheckIndexesOptions) =>
+        runIndexChecks(indexCheckTargets, checkOptions),
       defineScope,
       defineResource,
       defineQueryResource,
