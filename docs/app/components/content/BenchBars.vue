@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // eslint-disable-next-line import/no-unassigned-import
 import "~/assets/css/pixel.css";
+import { benchScale, formatMs } from "~/utils/bench-scale";
 
 /**
  * Horizontal bars for benchmark results, drawn in SVG.
@@ -15,17 +16,45 @@ interface Row {
   /** draw a single value in the accent colour */
   hot?: boolean;
 }
-const props = withDefaults(
+const input = withDefaults(
   defineProps<{
     title: string;
     unit?: "ms" | "s" | "rps";
-    rows: Row[];
+    rows?: Row[];
+    /** read the rows from data/bench-scale.json instead: throughput under load, or full scans */
+    source?: "load" | "scans";
     /** labels for the two bars of a pair */
     legend?: [string, string];
     caption?: string;
   }>(),
-  { unit: "ms", legend: undefined, caption: undefined },
+  { unit: "ms", rows: () => [], source: undefined, legend: undefined, caption: undefined },
 );
+const props = computed(() => {
+  if (input.source === "load") {
+    return {
+      ...input,
+      unit: "rps" as const,
+      rows: benchScale.load.requests.map((r) => ({
+        label: r.label,
+        note: [r.note, `p95 ${formatMs(r.p95)}`].filter(Boolean).join(" · "),
+        value: r.rps,
+        hot: ["page", "cursor", "ids"].includes(r.key),
+      })),
+    };
+  }
+  if (input.source === "scans") {
+    return {
+      ...input,
+      unit: "s" as const,
+      rows: benchScale.scans.requests.map((r) => ({
+        label: r.label,
+        before: r.pages / 1000,
+        after: r.scan / 1000,
+      })),
+    };
+  }
+  return input;
+});
 
 /* draw at the real width, so text keeps its size; under 520px labels go above the bars */
 const root = ref<HTMLElement>();
@@ -42,34 +71,42 @@ const narrow = computed(() => W.value < 520);
 const L = computed(() => (narrow.value ? 0 : 200));
 const R = computed(() => W.value - (narrow.value ? 64 : 90));
 const top = computed(() => (narrow.value ? 20 : 0));
-const paired = computed(() => props.rows.some((r) => r.before !== undefined));
+const paired = computed(() => props.value.rows.some((r) => r.before !== undefined));
 const rowH = computed(() => (paired.value ? 52 : 40) + top.value);
 /* a round step, then an axis that ends on a multiple of it */
 const step = computed(() => {
-  const m = Math.max(...props.rows.flatMap((r) => [r.value ?? 0, r.before ?? 0, r.after ?? 0]));
+  const m = Math.max(
+    ...props.value.rows.flatMap((r) => [r.value ?? 0, r.before ?? 0, r.after ?? 0]),
+  );
   const raw = m / 4;
   const p = 10 ** Math.floor(Math.log10(raw));
   return [1, 2, 2.5, 5, 10].map((k) => k * p).find((k) => k >= raw) ?? p * 10;
 });
 const max = computed(() => {
-  const m = Math.max(...props.rows.flatMap((r) => [r.value ?? 0, r.before ?? 0, r.after ?? 0]));
+  const m = Math.max(
+    ...props.value.rows.flatMap((r) => [r.value ?? 0, r.before ?? 0, r.after ?? 0]),
+  );
   return Math.ceil(m / step.value) * step.value;
 });
 const ticks = computed(() =>
   Array.from({ length: Math.round(max.value / step.value) + 1 }, (_, i) => i * step.value),
 );
-const H = computed(() => props.rows.length * rowH.value + 28);
+const H = computed(() => props.value.rows.length * rowH.value + 28);
 const x = (v: number) => L.value + (v / max.value) * (R.value - L.value);
 const fmt = (v: number) =>
-  props.unit === "rps"
+  props.value.unit === "rps"
     ? `${Math.round(v).toLocaleString("en")}/s`
-    : props.unit === "s"
+    : props.value.unit === "s"
       ? `${v.toFixed(2)} s`
       : v >= 10
         ? `${Math.round(v)} ms`
         : `${v.toFixed(v < 1 ? 2 : 1)} ms`;
 const unitName = computed(() =>
-  props.unit === "rps" ? "requests per second" : props.unit === "s" ? "seconds" : "milliseconds",
+  props.value.unit === "rps"
+    ? "requests per second"
+    : props.value.unit === "s"
+      ? "seconds"
+      : "milliseconds",
 );
 const tick = (v: number) => (Math.round(v * 100) / 100).toLocaleString("en");
 </script>
@@ -78,13 +115,13 @@ const tick = (v: number) => (Math.round(v * 100) / 100).toLocaleString("en");
   <figure class="px-embed not-prose bb">
     <div ref="root" class="bb-measure" />
     <figcaption class="bb-cap">
-      <span><b>{{ title }}</b>, {{ unitName }}</span>
-      <span v-if="legend" class="bb-legend">
-        <span><i class="base" />{{ legend[0] }}</span>
-        <span><i class="hit" />{{ legend[1] }}</span>
+      <span><b>{{ props.title }}</b>, {{ unitName }}</span>
+      <span v-if="props.legend" class="bb-legend">
+        <span><i class="base" />{{ props.legend[0] }}</span>
+        <span><i class="hit" />{{ props.legend[1] }}</span>
       </span>
     </figcaption>
-    <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="title">
+    <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="props.title">
       <g v-for="t in ticks" :key="t">
         <line :x1="x(t)" :x2="x(t)" y1="0" :y2="H - 22" class="grid" />
         <text
@@ -96,7 +133,7 @@ const tick = (v: number) => (Math.round(v * 100) / 100).toLocaleString("en");
           {{ tick(t) }}
         </text>
       </g>
-      <g v-for="(r, i) in rows" :key="r.label" :transform="`translate(0 ${6 + i * rowH})`">
+      <g v-for="(r, i) in props.rows" :key="r.label" :transform="`translate(0 ${6 + i * rowH})`">
         <title>
           {{
             r.before !== undefined
@@ -145,7 +182,7 @@ const tick = (v: number) => (Math.round(v * 100) / 100).toLocaleString("en");
         </g>
       </g>
     </svg>
-    <p v-if="caption" class="bb-foot">{{ caption }}</p>
+    <p v-if="props.caption" class="bb-foot">{{ props.caption }}</p>
   </figure>
 </template>
 
