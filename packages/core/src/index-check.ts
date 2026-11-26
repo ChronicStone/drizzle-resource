@@ -393,6 +393,10 @@ interface Need {
   sort: SortStep[];
   /** Every condition the scope guarantees, such as `deleted_at is null`. */
   facts: ReadonlySet<string>;
+  /** Columns the scope requires to be null. PostgreSQL does not read `is null` as a constant when ordering. */
+  nullIds: ReadonlySet<string>;
+  /** Database names of the columns the scope has a condition on. */
+  scopeColumns: ReadonlySet<string>;
 }
 
 type Verdict =
@@ -409,6 +413,40 @@ interface MatchOptions {
   plainEquality?: boolean;
   /** Count a partial index even if the scope does not imply its condition. */
   assumePartial?: boolean;
+  /** Read `is null` columns as constants, to tell a near miss from a miss. */
+  nullAsConstant?: boolean;
+}
+
+/** `deleted_at is null`, `deleted_at is not null` or `status = 'open'`: the column it is about. */
+function predicateColumn(part: string) {
+  return /^([a-z_][a-z0-9_]*) (?:is null|is not null|= .+)$/.exec(part)?.[1];
+}
+
+function contradicts(part: string, facts: ReadonlySet<string>) {
+  const column = predicateColumn(part);
+  if (!column || facts.has(part)) return false;
+  const own = [...facts].filter((fact) => predicateColumn(fact) === column);
+  if (part.endsWith(" is not null")) return own.some((fact) => fact.endsWith(" is null"));
+  // `x is null` or `x = a` against a different fact about the same column
+  return own.length > 0;
+}
+
+/**
+ * A partial index can only be relied on for conditions the scope states. One about other
+ * columns is for requests to satisfy, and one the scope contradicts can never be used.
+ */
+function classifyPartial(index: IndexInfo, need: Need) {
+  const parts = index.predicate ? predicateParts(index.predicate) : undefined;
+  if (!parts) return { kind: "ignore" as const, parts: [] };
+  const columns = parts.map(predicateColumn);
+  if (columns.some((column) => !column || !need.scopeColumns.has(column))) {
+    return { kind: "ignore" as const, parts };
+  }
+  if (parts.every((part) => need.facts.has(part))) return { kind: "implied" as const, parts };
+  if (parts.some((part) => contradicts(part, need.facts))) {
+    return { kind: "ignore" as const, parts };
+  }
+  return { kind: "unverified" as const, parts };
 }
 
 const defaultNulls = (dir: "asc" | "desc") => (dir === "asc" ? "last" : "first");
@@ -423,26 +461,34 @@ function servedSteps(need: Need, index: IndexInfo, options: MatchOptions) {
   let covered = new Set<string>();
   let implied = !index.partial;
   if (index.partial) {
-    const parts = index.predicate ? predicateParts(index.predicate) : undefined;
-    implied = parts !== undefined && parts.every((part) => need.facts.has(part));
-    if (!implied && !options.assumePartial) return undefined;
-    covered = new Set(parts ?? []);
+    const partial = classifyPartial(index, need);
+    if (partial.kind === "ignore") return undefined;
+    if (partial.kind === "unverified" && !options.assumePartial) return undefined;
+    implied = partial.kind === "implied";
+    covered = new Set(partial.parts);
   }
+  const stepKey = (step: Step) => (options.plainEquality ? step.plainId : step.id);
   const wanted = new Map(
     need.eq
+      .filter((step) => !need.nullIds.has(step.plainId))
       .filter((step) => !step.facts.some((fact) => implied && covered.has(fact)))
-      .map((step) => [options.plainEquality ? step.plainId : step.id, step.field]),
+      .map((step) => [stepKey(step), step.field]),
   );
-  const total = wanted.size;
+  // The first equality the scope lists is its tenant: an index that does not narrow by it
+  // walks every tenant's rows, whatever else it filters.
+  const leading = wanted.keys().next().value;
   let position = 0;
-  while (wanted.size > 0 && position < index.keys.length) {
+  while (position < index.keys.length) {
     const key = index.keys[position]!;
-    if (!wanted.has(key.id)) break;
-    wanted.delete(key.id);
+    if (wanted.has(key.id)) {
+      wanted.delete(key.id);
+    } else if (need.nullIds.has(key.id) && need.sort.length > 0) {
+      // Ordering by what follows `is null` needs a sort: PostgreSQL does not see a constant.
+      if (!options.nullAsConstant) return undefined;
+    } else break;
     position += 1;
   }
-  // An index that starts with none of the scope columns would walk every tenant's rows.
-  if (wanted.size > 0 && wanted.size === total) return undefined;
+  if (leading !== undefined && wanted.has(leading)) return undefined;
   let forward = true;
   let backward = true;
   let served = 0;
@@ -473,11 +519,7 @@ function evaluate(need: Need, indexes: IndexInfo[], options: MatchOptions = {}):
     if (match.served === need.sort.length) {
       if (match.missing.length === 0) return { kind: "served", index: index.name };
       filtered ??= { kind: "filtered", index: index.name, missing: match.missing };
-    } else if (
-      match.served === need.sort.length - 1 &&
-      need.sort.at(-1)?.tieBreaker &&
-      match.missing.length === 0
-    ) {
+    } else if (match.served === need.sort.length - 1 && need.sort.at(-1)?.tieBreaker) {
       near ??= index.name;
     }
   }
@@ -537,8 +579,18 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
   const labels: string[] = [];
   const drizzle: string[] = [];
   const statements: string[] = [];
+  const conditions: Array<{ drizzle: string; sql: string }> = [];
   for (const step of [...need.eq, ...need.sort]) {
     const dbName = names.column(step.column);
+    // `is null` cannot lead an index that orders: say it as a partial index condition instead.
+    if (need.nullIds.has(step.plainId) && !("dir" in step)) {
+      const key = columnKey(need.table, step.column) ?? step.column.name;
+      conditions.push({
+        drizzle: `.where(sql\`\${t.${key}} is null\`)`,
+        sql: ` where ${quoteIdentifier(dbName)} is null`,
+      });
+      continue;
+    }
     const key = columnKey(need.table, step.column) ?? step.column.name;
     const dir = "dir" in step ? (step as SortStep).dir : "asc";
     labels.push(step.lower ? `lower_${dbName}` : dbName);
@@ -553,13 +605,13 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
     );
     statements.push(`${quoteIdentifier(dbName)}${dir === "desc" ? " desc" : ""}`);
   }
-  const indexName = `${tableName}_${labels.join("_")}_idx`
+  const indexName = `${tableName}_${labels.join("_")}${conditions.length > 0 ? "_partial" : ""}_idx`
     .replace(/([a-z0-9])([A-Z])/g, "$1_$2")
     .toLowerCase()
     .slice(0, 63);
   return {
-    drizzle: `index("${indexName}").on(${drizzle.join(", ")})`,
-    sql: `create index ${quoteIdentifier(indexName)} on ${qualifiedTable(source.names, need.table)} (${statements.join(", ")});`,
+    drizzle: `index("${indexName}").on(${drizzle.join(", ")})${conditions.map((c) => c.drizzle).join("")}`,
+    sql: `create index ${quoteIdentifier(indexName)} on ${qualifiedTable(source.names, need.table)} (${statements.join(", ")})${conditions.map((c) => c.sql).join("")};`,
   };
 }
 
@@ -656,6 +708,10 @@ interface Analysis {
   facts: Set<string>;
   /** Columns that can never be null, as index key ids. */
   notNull: Set<string>;
+  /** Columns the scope requires to be null, as index key ids. */
+  nullIds: Set<string>;
+  /** Database names of the columns the scope has a condition on. */
+  scopeColumns: Set<string>;
   findings: IndexFinding[];
 }
 
@@ -691,12 +747,14 @@ function sqlLiteral(value: unknown) {
 /** What each scope condition says about every row, in the words of a partial index condition. */
 function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
   const byField = new Map<string, string[]>();
+  const columns = new Set<string>();
   for (const condition of analysis.scope.conditions) {
-    if (!condition.conjunctive) continue;
     const entry = analysis.target.trustedFields.get(condition.field);
     if (!entry || entry.source !== "root" || entry.virtual || !is(entry.column, PgColumn)) continue;
     const column = entry.column as PgColumn;
     const name = analysis.source.names.column(column);
+    columns.add(name);
+    if (!condition.conjunctive) continue;
     const text = isTextEntry(entry);
     const exact = !text || analysis.target.caseSensitive.has(condition.field);
     let fact: string | undefined;
@@ -709,7 +767,7 @@ function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
     }
     if (fact) byField.set(condition.field, [...(byField.get(condition.field) ?? []), fact]);
   }
-  return byField;
+  return { byField, columns };
 }
 
 function describeSort(sort: readonly { field: string; dir: "asc" | "desc" }[]) {
@@ -785,15 +843,22 @@ function needFor(analysis: Analysis, sort: SortStep[]): Need {
   const equalityIds = new Set<string>();
   const eq = analysis.eq.filter((step) => !equalityIds.has(step.id) && equalityIds.add(step.id));
   const covered = new Set(eq.map((step) => step.column));
+  // A scope equality on a value, not on null, makes the column non-null for every row it matches.
+  const notNull = new Set([
+    ...analysis.notNull,
+    ...eq.filter((step) => !analysis.nullIds.has(step.plainId)).map((step) => step.plainId),
+  ]);
   return reduceNeed(
     {
       table: analysis.target.table,
       eq,
       sort: sort.filter((step) => !covered.has(step.column)),
       facts: analysis.facts,
+      nullIds: analysis.nullIds,
+      scopeColumns: analysis.scopeColumns,
     },
     analysis.indexes,
-    analysis.notNull,
+    notNull,
   );
 }
 
@@ -818,6 +883,14 @@ function hintsFor(need: Need, indexes: IndexInfo[]) {
       const fields = need.eq.filter((step) => step.lower).map((step) => step.field);
       hints.push(
         `index ${plain.index} has the columns but the scope compares lower(${fields.join(", ")}) because text filters ignore case: add ${fields.map((field) => `"${field}"`).join(", ")} to filters.caseSensitive`,
+      );
+    }
+  }
+  if (need.nullIds.size > 0) {
+    const constant = evaluate(need, indexes, { nullAsConstant: true });
+    if (constant.kind === "served" || constant.kind === "filtered") {
+      hints.push(
+        `index ${constant.index} has the columns, but PostgreSQL does not read "is null" as a constant when ordering, so a null column before the sort columns forces a sort: use a partial index with the null condition as its where`,
       );
     }
   }
@@ -989,6 +1062,8 @@ function manyFixes(analysis: Analysis, steps: readonly FieldRegistryRelationStep
         table,
         eq: [],
         facts: new Set<string>(),
+        nullIds: new Set<string>(),
+        scopeColumns: new Set<string>(),
         sort: columns.map((column) => ({
           id: columnId(analysis.source.names.column(column)),
           plainId: columnId(analysis.source.names.column(column)),
@@ -1163,15 +1238,23 @@ function analyze(
         .filter((column) => column.notNull || column.primary)
         .map((column) => columnId(source.names.column(column))),
     ),
+    nullIds: new Set<string>(),
+    scopeColumns: new Set<string>(),
     findings: [],
   };
   if (!target.customQuery) {
     analysis.scope = readScope(target, options);
-    const facts = scopeFacts(analysis);
-    analysis.facts = new Set([...facts.values()].flat());
+    const { byField, columns } = scopeFacts(analysis);
+    analysis.facts = new Set([...byField.values()].flat());
+    analysis.scopeColumns = columns;
+    analysis.nullIds = new Set(
+      [...analysis.facts]
+        .filter((fact) => fact.endsWith(" is null"))
+        .map((fact) => columnId(fact.slice(0, -" is null".length))),
+    );
     analysis.eq = analysis.scope.equalities.flatMap((field) => {
       const entry = target.trustedFields.get(field);
-      const step = entry ? makeStep(analysis, field, entry, true, facts.get(field)) : undefined;
+      const step = entry ? makeStep(analysis, field, entry, true, byField.get(field)) : undefined;
       return step ? [step] : [];
     });
     const defaultNeed = checkDefaultSort(analysis);
@@ -1208,7 +1291,8 @@ function tablesOf(target: IndexCheckTarget) {
 
 /**
  * The resources of an engine, held weakly: a resource defined per request or per tenant and then
- * dropped is collected, and no longer appears in `engine.checkIndexes()`.
+ * dropped is collected, and no longer appears in `engine.checkIndexes()`. The dead references
+ * themselves are only removed when `targets()` runs, that is on the next `checkIndexes()` call.
  */
 export function createIndexCheckRegistry() {
   const refs = new Set<WeakRef<object>>();
