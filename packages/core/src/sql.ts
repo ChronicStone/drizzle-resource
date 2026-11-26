@@ -48,6 +48,7 @@ import type {
 import { decodeCursor, encodeCursor } from "./cursor.js";
 import {
   estimatePostgresQuery,
+  estimatePostgresTableRows,
   isCallerTransaction,
   isPostgresDatabase,
   probePostgresSearch,
@@ -60,6 +61,24 @@ import type { CapturedStatement, QueryObserver } from "./observe.js";
 
 /** The indexed search plan gets this many times `search.planBudget` before the ordinary plan returns. */
 const indexedBudgetFactor = 4;
+
+/** Most statements of one request that run at the same time when facets are split. */
+const maxSplitStatements = 4;
+
+/** Runs the tasks `limit` at a time. The first failure stops the ones that have not started. */
+async function runLimited(tasks: Array<() => Promise<void>>, limit: number) {
+  const queue = [...tasks];
+  await Promise.all(
+    Array.from({ length: Math.min(limit, queue.length) }, async () => {
+      try {
+        for (let task = queue.shift(); task; task = queue.shift()) await task();
+      } catch (error) {
+        queue.length = 0;
+        throw error;
+      }
+    }),
+  );
+}
 
 function isExactCount(count: QueryPageCount) {
   return count.count === "exact" || (count.count === "capped" && count.exact);
@@ -1093,7 +1112,7 @@ export function createQueryResourceUtils<
    * PostgreSQL's row estimate for the request, or `undefined` when it is not trustworthy: filters
    * or search through relations or virtual fields, another database, or a failed EXPLAIN.
    */
-  async function estimateRowCount(request: QueryRequest) {
+  async function estimateMatchingRows(request: QueryRequest) {
     if (!isPostgresDatabase(database)) return undefined;
     const paths: string[] = [];
     collectConditionFieldsFromFilters(request.filters, paths);
@@ -1105,15 +1124,22 @@ export function createQueryResourceUtils<
     const plan = buildAggregatePlan(request);
     if (plan.joins.length > 0) return undefined;
     const query = (database as any).select({ id: rootTable.id }).from(rootTable).where(plan.where);
-    const estimate = await estimatePostgresQuery(database, query.getSQL(), "Plan Rows", {
-      observer,
-      request,
-    });
+    return {
+      statement: query.getSQL(),
+      estimate: await estimatePostgresQuery(database, query.getSQL(), "Plan Rows", {
+        observer,
+        request,
+      }),
+    };
+  }
+
+  async function estimateRowCount(request: QueryRequest) {
+    const { statement, estimate } = (await estimateMatchingRows(request)) ?? {};
     // The estimate is read from this statement's plan, so a dry run reports the statement itself.
-    if (estimate !== undefined && estimate > countCap()) {
+    if (statement && estimate !== undefined && estimate > countCap()) {
       observer.record({
         stage: "count",
-        statement: query.getSQL(),
+        statement,
         note: "the count is the planner's row estimate for this statement, nothing is counted",
       });
     }
@@ -1537,7 +1563,9 @@ export function createQueryResourceUtils<
     const approximate = mode === "capped" || mode === "estimated";
     const facets = request.facets ?? [];
     let pageCount: QueryPageCount | undefined;
-    let aggregates: (QueryFacetsResponse & { rowCount?: number }) | undefined;
+    let aggregates:
+      | (QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount })
+      | undefined;
     if (facets.length === 0) {
       aggregates = undefined;
     } else if (!approximate) {
@@ -1562,7 +1590,7 @@ export function createQueryResourceUtils<
     const { ids, pageInfo } = await executeIdsQuery({
       request,
       rowCount: rowCount ?? aggregates?.rowCount,
-      pageCount,
+      pageCount: pageCount ?? aggregates?.pageCount,
     });
     const rows =
       ids.length === 0 ? [] : await executeRowsQuery({ ids, request, relations, projection });
@@ -1579,7 +1607,7 @@ export function createQueryResourceUtils<
     facets: QueryFacetRequest[];
     knownRowCount?: number;
     includeCount?: boolean;
-  }): Promise<QueryFacetsResponse & { rowCount?: number }> {
+  }): Promise<QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount }> {
     await prepareSearch(request);
     let rowCount: number | undefined;
     const results: QueryFacetsResponse["facets"] = [];
@@ -1866,7 +1894,7 @@ export function createQueryResourceUtils<
       }
     }
 
-    const groups: Array<typeof plans> = [];
+    let groups: Array<typeof plans> = [];
     for (const plan of plans) {
       const predicate = plan.predicate;
       const group =
@@ -1893,7 +1921,7 @@ export function createQueryResourceUtils<
     const countPredicate = countPlan
       ? postgresDialect.sqlToQuery(countPlan.where ?? sql`true`)
       : undefined;
-    const countGroup =
+    let countGroup =
       countPredicate &&
       groups.find(
         ([first]) =>
@@ -1906,6 +1934,31 @@ export function createQueryResourceUtils<
           first.joins.length === countPlan!.joins.length &&
           first.joins.every((step) => countPlan!.joins.some((other) => step.path === other.path)),
       );
+    // Statements that share GROUPING SETS run on one CPU. On a big table every facet gets its own
+    // statement instead: it can use parallel workers, and the statements overlap.
+    async function splitsFacets() {
+      const { splitAbove } = resource.queryConfig.facets;
+      if (!isPostgresDatabase(database) || splitAbove === Infinity) return false;
+      if (splitAbove <= 0) return true;
+      const table = await estimatePostgresTableRows(
+        database,
+        rootTable,
+        { observer, request },
+        config.db,
+      );
+      if (table === undefined || table <= splitAbove) return false;
+      // A request that narrows the table makes the statements read the matching rows only.
+      if (request.filters.length === 0 && request.search.value.length === 0) return true;
+      const { estimate } = (await estimateMatchingRows(request)) ?? {};
+      return (estimate ?? table) > splitAbove;
+    }
+    const sharing = groups.some((group) => group.length > 1) || countGroup !== undefined;
+    const split = sharing && (await splitsFacets());
+    let pageCount: QueryPageCount | undefined;
+    if (split) {
+      groups = plans.map((plan) => [plan]);
+      countGroup = undefined;
+    }
     /** `missing`: one count of the facet's own scope with the field empty, as `isEmpty` reads it. */
     async function resolveMissing(plan: (typeof plans)[number], db: QueryEngineDb) {
       const { entry } = plan;
@@ -1957,24 +2010,40 @@ export function createQueryResourceUtils<
       if (outcome.timedOut) for (const member of members) timedOut.add(member.index);
     }
     const missing = new Map<number, number>();
-    await Promise.all([
-      ...groups.map((group) =>
-        timedFacets(group, (db) =>
-          group === countGroup
-            ? resolveGroupingSets(group, db, true)
-            : group.length === 1
-              ? resolveSingle(group[0]!, db)
-              : resolveGroupingSets(group, db),
-        ),
+    const tasks: Array<() => Promise<void>> = [
+      // Without a grouping statement to carry it, the exact count is a statement of its own.
+      ...(split && includeCount
+        ? [
+            async () => {
+              pageCount = await resolveCount(request);
+            },
+          ]
+        : []),
+      ...groups.map(
+        (group) => () =>
+          timedFacets(group, (db) =>
+            group === countGroup
+              ? resolveGroupingSets(group, db, true)
+              : group.length === 1
+                ? resolveSingle(group[0]!, db)
+                : resolveGroupingSets(group, db),
+          ),
       ),
       ...plans
         .filter((plan) => plan.facet.missing)
-        .map((plan) =>
-          timedFacets([plan], async (db) => {
-            missing.set(plan.index, await resolveMissing(plan, db));
-          }),
+        .map(
+          (plan) => () =>
+            timedFacets([plan], async (db) => {
+              missing.set(plan.index, await resolveMissing(plan, db));
+            }),
         ),
-    ]);
+    ];
+    if (split) {
+      // A transaction of the caller has one connection: its statements follow each other.
+      await runLimited(tasks, isCallerTransaction(database) ? 1 : maxSplitStatements);
+    } else {
+      await Promise.all(tasks.map((task) => task()));
+    }
     for (const [index, value] of missing) {
       if (results[index]) results[index] = { ...results[index]!, missing: value };
     }
@@ -1983,6 +2052,7 @@ export function createQueryResourceUtils<
     return {
       facets: results,
       rowCount,
+      ...(pageCount ? { pageCount } : {}),
     };
   }
 

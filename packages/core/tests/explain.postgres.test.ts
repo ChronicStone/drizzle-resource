@@ -8,7 +8,7 @@ import type { ExplainReport, QueryFilterNode, QueryRequestInput } from "../index
 import { createObserveFixture, pageRequest } from "./observe-fixture.js";
 
 const fixture = createObserveFixture({ rows: 300_000 });
-const { ordersResource } = fixture;
+const { ordersResource, groupedResource } = fixture;
 
 const is = (key: string, value: unknown): QueryFilterNode => ({
   type: "condition",
@@ -167,7 +167,7 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
   });
 
   it("finds facets that share one GROUPING SETS statement", async () => {
-    const report = await ordersResource.explain({
+    const report = await groupedResource.explain({
       request: pageRequest({
         pagination: { ...noCount, count: "capped" },
         facets: [{ key: "status" }, { key: "region" }, { key: "customer.country" }],
@@ -181,9 +181,26 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       code: "single-cpu-facets",
       message:
         "2 facets (status, region) share one GROUPING SETS statement, which PostgreSQL runs on one CPU while it reads 300,000 rows",
+      fix: "set query.facets.splitAbove to a number of rows: above it each facet runs as its own statement, which can use parallel workers",
     });
     expect(facets.find((stage) => stage !== shared)!.warnings).toEqual([]);
-    expect(formatExplain(report)).toContain("fix: request fewer facets at once");
+    expect(formatExplain(report)).toContain("fix: set query.facets.splitAbove");
+  });
+
+  it("runs the facets of a big table as separate statements, with nothing to warn about", async () => {
+    const report = await ordersResource.explain({
+      request: pageRequest({
+        pagination: { ...noCount, count: "exact" },
+        facets: [{ key: "status" }, { key: "region" }, { key: "customer.country" }],
+      }),
+      analyze: true,
+    });
+    const facets = report.stages.filter((stage) => stage.stage === "facets");
+    expect(facets.map((stage) => stage.label)).toEqual(["status", "region", "customer.country"]);
+    expect(facets.flatMap((stage) => stage.warnings.map((warning) => warning.code))).toEqual([]);
+    expect(report.stages.filter((stage) => stage.stage === "count")).toHaveLength(1);
+    // The row estimate the decision read is reported with the other planning statements.
+    expect(report.planning.some((entry) => entry.sql.includes("reltuples"))).toBe(true);
   });
 
   it("explains a summary and a facet with its empty-count statement", async () => {
@@ -280,7 +297,7 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
   });
 
   it("finds the full count in the facets statement that carries it", async () => {
-    const report = await ordersResource.explain({
+    const report = await groupedResource.explain({
       request: pageRequest({ facets: [{ key: "status" }, { key: "region" }] }),
       analyze: true,
     });
@@ -290,6 +307,22 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       "the exact count rides in this facets statement, which reads 300,000 rows to produce it",
     );
     expect(found.fix).toContain('count: "capped"');
+  });
+
+  it("finds the full count in a statement of its own when the facets are split", async () => {
+    const report = await ordersResource.explain({
+      request: pageRequest({ facets: [{ key: "status" }, { key: "region" }] }),
+      analyze: true,
+    });
+    expect(report.stages.map((stage) => stage.stage)).toEqual(["ids", "count", "facets", "facets"]);
+    const count = report.stages.find((stage) => stage.stage === "count")!;
+    expect(count.warnings.map((warning) => warning.code)).toEqual(["full-count"]);
+    expect(count.warnings[0]!.message).toMatch(/rows to return one number$/);
+    expect(
+      report.stages
+        .filter((stage) => stage.stage === "facets")
+        .flatMap((stage) => stage.warnings.map((warning) => warning.code)),
+    ).toEqual([]);
   });
 
   describe("a search without an exact count", () => {

@@ -35,7 +35,12 @@ import {
 import { explainCaptured } from "./explain.js";
 import type { CapturedStatement, QueryEvent, QueryObserver } from "./observe.js";
 import { createQueryFilterBuilder } from "./filters.js";
-import { defaultCountCap, defaultQueryValidation, defaultSearchPlanBudget } from "./contracts.js";
+import {
+  defaultCountCap,
+  defaultFacetSplitRows,
+  defaultQueryValidation,
+  defaultSearchPlanBudget,
+} from "./contracts.js";
 import { isCallerTransaction, isPostgresDatabase, withScanDatabase } from "./postgres.js";
 import { isAboveCap, skippedFacets, withFacetStatus } from "./capped.js";
 
@@ -170,6 +175,12 @@ function assertGuardOptions(root: unknown, query: any) {
   const whenCapped = query?.facets?.whenCapped;
   if (whenCapped !== undefined && whenCapped !== "skip" && whenCapped !== "run") {
     throw new Error(`Facets whenCapped for resource "${name}" must be "skip" or "run"`);
+  }
+  const splitAbove = query?.facets?.splitAbove;
+  if (splitAbove !== undefined && !(typeof splitAbove === "number" && splitAbove >= 0)) {
+    throw new Error(
+      `Facets splitAbove for resource "${name}" must be a number of rows, 0 or more (Infinity never splits)`,
+    );
   }
 }
 
@@ -597,6 +608,7 @@ export function createQueryEngine<
           facets: {
             allowed: allowedFacetFields,
             whenCapped: options.query?.facets?.whenCapped ?? "run",
+            splitAbove: options.query?.facets?.splitAbove ?? defaultFacetSplitRows,
           },
           pagination: {
             modes: paginationModes,
@@ -740,6 +752,7 @@ export function createQueryEngine<
             planning,
             analyze,
             countCap: resource.queryConfig.pagination.countCap,
+            facetSplitAbove: resource.queryConfig.facets.splitAbove,
             allowsCursor: paginationModes.has("cursor"),
             relationSorts: prepared.sorting
               .filter(({ key }) => (resource.fields.get(key)?.relationPath.length ?? 0) > 0)

@@ -14,7 +14,7 @@ const fixture = createObserveFixture({
     if (hookMode === "reject") return Promise.reject(new Error("hook rejected"));
   },
 });
-const { events, ordersResource } = fixture;
+const { events, ordersResource, groupedResource } = fixture;
 
 const stages = () => events.map((event) => event.stage);
 
@@ -136,7 +136,7 @@ describe.skipIf(!fixture.connectionString)("onQuery on PostgreSQL", () => {
   });
 
   it("reports facets, one statement per group of facets and one for a relation", async () => {
-    await ordersResource.query({
+    await groupedResource.query({
       request: pageRequest({
         facets: [{ key: "status" }, { key: "region" }, { key: "customer.country" }],
       }),
@@ -148,6 +148,29 @@ describe.skipIf(!fixture.connectionString)("onQuery on PostgreSQL", () => {
     expect(facets[0]!.shape).toContain(
       "facets customer.country:exclude-self,region:exclude-self,status:exclude-self",
     );
+  });
+
+  it("reports the row estimate that decides how facets run, and a statement per facet", async () => {
+    const split = fixture.engine.defineResource("orders", {
+      relations: { customer: true },
+      query: {
+        pagination: { modes: ["offset"] },
+        // The fixture table has 20,000 rows.
+        facets: { allowed: ["status", "region", "customer.country"], splitAbove: 10_000 },
+      },
+    });
+    await split.query({
+      request: pageRequest({
+        facets: [{ key: "status" }, { key: "region" }, { key: "customer.country" }],
+      }),
+    });
+    const facets = events.filter((event) => event.stage === "facets");
+    expect(facets).toHaveLength(3);
+    expect(facets.some((event) => event.sql.includes("grouping sets"))).toBe(false);
+    const planning = events.filter((event) => event.stage === "plan");
+    expect(planning).toHaveLength(1);
+    expect(planning[0]!.sql).toContain("reltuples");
+    expect(stages().filter((stage) => stage === "count")).toHaveLength(1);
   });
 
   it("reports a summary", async () => {

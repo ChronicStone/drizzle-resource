@@ -91,6 +91,15 @@ const resource = engine.defineResource("items", {
     scope: (filters) => filters.is("tenant", "a"),
   },
 });
+// The same resource, with every facet in a statement of its own.
+const splitResource = engine.defineResource("items", {
+  relations: { category: true, tags: true },
+  query: {
+    pagination: { modes: ["offset", "cursor"] },
+    facets: { allowed: ["tenant", "rank", "active", "category.name", "tags.label"], splitAbove: 0 },
+    scope: (filters) => filters.is("tenant", "a"),
+  },
+});
 const request: QueryRequestInput = {
   pagination: { mode: "offset", pageIndex: 1, pageSize: 2, count: "exact" },
   filters: [],
@@ -549,6 +558,55 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
       }
     }
     expect(statements.some((query) => query.includes("grouping sets"))).toBe(true);
+  });
+
+  it("answers facets the same whether they share a statement or run separately", async () => {
+    const requests: QueryRequestInput[] = [
+      request,
+      { ...request, filters: [{ type: "condition", key: "rank", operator: "is", value: 1 }] },
+      { ...request, search: { value: "o", fields: ["name"] } },
+      { ...request, pagination: { ...request.pagination, count: "none" } as never },
+      { ...request, pagination: { ...request.pagination, count: "capped" } as never },
+      { ...request, filters: [{ type: "condition", key: "id", operator: "is", value: -1 }] },
+    ];
+    const facetKeys = ["rank", "active", "tenant", "category.name", "tags.label"] as const;
+    const groupedSets = (start: number) =>
+      statements.slice(start).some((query) => query.includes("grouping sets"));
+    const sharedRuns = { count: 0 };
+    for (const current of requests) {
+      for (const mode of ["include-self", "exclude-self"] as const) {
+        for (const cursor of [undefined, "1", "99"]) {
+          for (const missing of [false, true]) {
+            const facets = facetKeys.map((key) => ({ key, mode, limit: 1, cursor, missing }));
+            const input = { request: current, facets };
+            const paged = { request: { ...current, facets } };
+            const before = statements.length;
+            const shared = await resource.query(paged);
+            if (groupedSets(before)) sharedRuns.count += 1;
+            const mid = statements.length;
+            const separate = await splitResource.query(paged);
+            expect(groupedSets(mid)).toBe(false);
+            expect(separate).toEqual(shared);
+            expect(await splitResource.queryFacets(input)).toEqual(
+              await resource.queryFacets(input),
+            );
+          }
+        }
+      }
+    }
+    // The comparison is only meaningful when the shared resource really shared statements.
+    expect(sharedRuns.count).toBeGreaterThan(0);
+  });
+
+  it("runs the exact count of a split request as a statement of its own", async () => {
+    const facets = [{ key: "rank" as const }, { key: "active" as const }];
+    const start = statements.length;
+    const separate = await splitResource.query({ request: { ...request, facets } });
+    const sent = statements.slice(start);
+    expect(sent.filter((query) => /^select count\(\*\)/.test(query))).toHaveLength(1);
+    expect(sent.some((query) => query.includes("grouping"))).toBe(false);
+    expect(separate.pageInfo).toMatchObject({ count: "exact", rowCount: 5 });
+    expect(separate).toEqual(await resource.query({ request: { ...request, facets } }));
   });
 
   it("keeps duplicate facets and facet searches independent", async () => {
