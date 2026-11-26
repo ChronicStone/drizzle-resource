@@ -26,7 +26,14 @@ import type {
   QueryScanBatch,
   QueryCountMode,
 } from "./types.js";
-import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
+import {
+  buildFieldRegistry,
+  createQueryResourceUtils,
+  isScopeFilterNode,
+  mergeScopeFilters,
+} from "./sql.js";
+import { explainCaptured } from "./explain.js";
+import type { CapturedStatement, QueryEvent, QueryObserver } from "./observe.js";
 import { createQueryFilterBuilder } from "./filters.js";
 import { defaultCountCap, defaultQueryValidation, defaultSearchPlanBudget } from "./contracts.js";
 import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
@@ -348,6 +355,8 @@ export function createQueryEngine<
   db: TDb;
   schema: TSchema;
   relations: TRelations;
+  /** Called for every statement the engine runs. See `QueryEngineConfig.onQuery`. */
+  onQuery?: QueryObserver;
   models?: ModelDefinitions<TSchema, TDb> &
     TModels &
     Record<Exclude<keyof TModels, keyof TSchema>, never>;
@@ -653,6 +662,78 @@ export function createQueryEngine<
           execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
         }): Promise<any> => executeQuery({ request, context, db, execution, load, view, summary }),
+        explain: async ({
+          request,
+          context,
+          db,
+          execution,
+          analyze = false,
+          summary,
+        }: {
+          request: QueryRequestInput;
+          context?: any;
+          db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
+          analyze?: boolean;
+          summary?: boolean;
+        }) => {
+          const database = db ?? config.db;
+          if (!isPostgresDatabase(database)) {
+            throw new Error(
+              "explain() needs a PostgreSQL database: it runs EXPLAIN on the statements the engine builds",
+            );
+          }
+          if (options.strategy?.query || options.strategy?.ids) {
+            throw new Error(
+              `explain() cannot explain resource "${String(root)}": its ${options.strategy.query ? "strategy.query" : "strategy.ids"} runs your own statements`,
+            );
+          }
+          const prepared = prepareRequest(request, context, { execution });
+          const captured: CapturedStatement[] = [];
+          const planning: QueryEvent[] = [];
+          const notes: string[] = [];
+          if (options.strategy?.facets && (prepared.facets?.length ?? 0) > 0) {
+            notes.push("facets come from strategy.facets, which explain() does not run");
+          }
+          if (
+            resource.queryConfig.facets.whenCapped === "skip" &&
+            (prepared.facets?.length ?? 0) > 0 &&
+            (prepared.pagination.count === "capped" || prepared.pagination.count === "estimated")
+          ) {
+            notes.push(
+              `facets.whenCapped is "skip": the facets above are skipped when the count passes ${resource.queryConfig.pagination.countCap.toLocaleString("en-US")}`,
+            );
+          }
+          await executeQuery({
+            request,
+            context,
+            db,
+            execution,
+            summary: summary && Boolean(options.summary),
+            prepared,
+            dry: {
+              capture: captured,
+              tap: (event) => {
+                planning.push(event);
+              },
+            },
+          });
+          return explainCaptured({
+            resource: String(root),
+            database,
+            request: prepared,
+            captured,
+            planning,
+            analyze,
+            countCap: resource.queryConfig.pagination.countCap,
+            allowsCursor: paginationModes.has("cursor"),
+            relationSorts: prepared.sorting
+              .filter(({ key }) => (resource.fields.get(key)?.relationPath.length ?? 0) > 0)
+              .map(({ key }) => key),
+            ignoreFilter: isScopeFilterNode,
+            notes,
+          });
+        },
         scan: executeScan,
         findById: async ({
           id,
@@ -940,10 +1021,16 @@ export function createQueryEngine<
         summary,
         operation = "query",
         trustedInput = false,
+        prepared,
+        dry,
       }: {
         view?: string;
         summary?: boolean;
         request: QueryRequestInput;
+        /** An already normalized request, so a caller that needed it does not prepare twice. */
+        prepared?: QueryRequest;
+        /** Capture the statements instead of running them, as `explain` does. */
+        dry?: { capture: CapturedStatement[]; tap: QueryObserver };
         context?: any;
         db?: QueryEngineDb;
         execution?: ResourceQueryExecutionOptions;
@@ -953,12 +1040,14 @@ export function createQueryEngine<
       }) {
         if (view !== undefined && load !== undefined)
           throw new Error("Use either view or load, not both");
-        const normalizedRequest = prepareRequest(request, context, { execution, trustedInput });
+        const normalizedRequest =
+          prepared ?? prepareRequest(request, context, { execution, trustedInput });
         const limits = resolveExecutionLimits(resource.queryConfig.validation, execution);
         const hydrationRelations = resolveHydrationRelations(operation, load);
         const utils = createQueryResourceUtils(config, {
           resource: trustedResource,
           db,
+          ...(dry ? { capture: dry.capture, tap: dry.tap } : {}),
         });
         const projection = resolveProjection(hydrationRelations, view);
         if (summary && !options.summary)
@@ -1024,7 +1113,9 @@ export function createQueryEngine<
         if (
           !normalizedRequest.facets ||
           normalizedRequest.facets.length === 0 ||
-          response.facets !== undefined
+          response.facets !== undefined ||
+          // a dry run never calls a strategy: its statements are the user's own
+          (dry && options.strategy?.facets)
         ) {
           return response;
         }

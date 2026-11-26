@@ -9,6 +9,16 @@ export type {
   SummaryResult,
 } from "./src/model-types.js";
 export { createQueryEngine } from "./src/engine.js";
+export { formatExplain } from "./src/explain.js";
+export type {
+  ExplainPlanNode,
+  ExplainReport,
+  ExplainStage,
+  ExplainStageName,
+  ExplainWarning,
+  ExplainWarningCode,
+} from "./src/explain.js";
+export type { QueryEvent, QueryObserver, QueryStage, RequestShape } from "./src/observe.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
 export {
   defaultCountCap,
