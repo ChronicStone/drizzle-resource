@@ -139,20 +139,43 @@ const methods = computed(() => {
   return [...seen].map((m) => METHOD_TEXT[m] ?? m);
 });
 
+/*
+ * Linear bars. Each row is scaled to its own slowest time, so a row reads as "how much of the
+ * worst case is left": 432 ms is a third of 1.31 s. The facet table compares four ways to run the
+ * same facets, so there each column is scaled to the slowest way at that table size.
+ */
+const byColumn = computed(() => props.source === "facets");
+const slowest = (c: Cell) => Math.max(c.a, c.b ?? 0);
+const scaleMax = computed(() => {
+  const all = rows.value;
+  if (byColumn.value) {
+    const columns = (all[0]?.cells ?? []).map((_, i) =>
+      Math.max(...all.map((r) => slowest(r.cells[i]!))),
+    );
+    return all.map(() => columns);
+  }
+  return all.map((r) => {
+    const max = Math.max(...r.cells.map(slowest));
+    return r.cells.map(() => max);
+  });
+});
+/* rounded so the server and the browser agree; 3px keeps a tiny value visible */
+const width = (ms: number, row: number, col: number) => {
+  const share = Math.round((ms / scaleMax.value[row]![col]!) * 10_000) / 100;
+  return `max(3px, ${Math.min(100, share)}%)`;
+};
 const footnote = computed(() =>
-  [props.caption, "Bars on a log scale, 0.1 ms to 20 s.", ...methods.value]
+  [
+    props.caption,
+    byColumn.value
+      ? "Bars are linear: each column is scaled to the slowest way at that table size."
+      : "Bars are linear: each row is scaled to that row's slowest time.",
+    ...methods.value,
+  ]
     .filter(Boolean)
     .join(" "),
 );
 
-/* log scale: 0.1 ms at the left edge, 20 s at the right */
-const LO = Math.log10(0.1);
-const HI = Math.log10(20_000);
-/* rounded, so the server and the browser, whose log10 can differ in the last digit, agree */
-const pct = (ms: number) => {
-  const share = ((Math.log10(ms) - LO) / (HI - LO)) * 100;
-  return `${Math.max(2, Math.min(100, Math.round(share * 100) / 100))}%`;
-};
 const verdictLabel = (c: Cell) =>
   c.verdict === "improved" && typeof c.ratio === "number"
     ? `${c.ratio >= 10 ? Math.round(c.ratio) : c.ratio.toFixed(1)}× faster`
@@ -178,21 +201,24 @@ const verdictLabel = (c: Cell) =>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="r in rows" :key="r.label + (r.sub ?? '')">
+        <tr v-for="(r, ri) in rows" :key="r.label + (r.sub ?? '')">
           <th scope="row" class="bsc-req">
             <span class="bsc-label">{{ r.label }}</span>
             <span v-if="r.sub" class="bsc-sub">{{ r.sub }}</span>
           </th>
           <td v-for="(c, i) in r.cells" :key="i">
             <span class="bsc-val" :class="{ dim: c.b !== undefined }">{{ formatMs(c.a) }}</span>
-            <span class="bsc-bar"><i class="a" :style="{ width: pct(c.a) }" /></span>
+            <span class="bsc-bar"><i class="a" :style="{ width: width(c.a, ri, i) }" /></span>
             <template v-if="c.b !== undefined">
               <span class="bsc-val" :class="c.verdict">
                 {{ formatMs(c.b) }}
                 <em v-if="c.verdict" :class="c.verdict">{{ verdictLabel(c) }}</em>
               </span>
               <span class="bsc-bar"
-                ><i class="b" :class="[c.verdict, { neutral }]" :style="{ width: pct(c.b) }"
+                ><i
+                  class="b"
+                  :class="[c.verdict, { neutral }]"
+                  :style="{ width: width(c.b, ri, i) }"
               /></span>
             </template>
             <span v-if="c.sub" class="bsc-sub">{{ c.sub }}</span>
