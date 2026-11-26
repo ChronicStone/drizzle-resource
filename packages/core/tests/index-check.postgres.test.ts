@@ -38,6 +38,9 @@ const variants = {
   nullsfirst: "(org_id, deleted_at desc, id desc)",
   lowerplain: "(tenant, created_at desc, id desc)",
   lowerexpr: "(lower(tenant), created_at desc, id desc)",
+  extraeq: "(org_id, created_at desc, id desc)",
+  partialimplied: "(org_id, created_at desc, id desc) where deleted_at is null",
+  partialunverified: "(org_id, created_at desc, id desc) where deleted_at is null",
 } as const;
 type Variant = keyof typeof variants;
 const variantNames = Object.keys(variants) as Variant[];
@@ -89,6 +92,9 @@ const sortDefaults: Partial<Record<Variant, Array<{ key: string; dir: "asc" | "d
 const scopes: Partial<Record<Variant, (f: any) => any>> = {
   lowerplain: (f) => f.is("tenant", "t1"),
   lowerexpr: (f) => f.is("tenant", "t1"),
+  // an index on the org and the sort serves this: the second equality only filters
+  extraeq: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  partialimplied: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
 };
 const resources = Object.fromEntries(
   variantNames.map((name) => [
@@ -167,6 +173,8 @@ function verdictOf(findings: IndexFinding[], resource: string) {
       (finding.rule === "default-sort-unindexed" || finding.rule === "mixed-direction-sort"),
   );
   if (own.length === 0) return "served";
+  if (own.some((finding) => finding.message.includes("row by row"))) return "filtered";
+  if (own.some((finding) => finding.message.includes("cannot confirm"))) return "partial";
   if (own.some((finding) => finding.rule === "mixed-direction-sort")) return "mixed";
   return own[0]!.level === "error" ? "none" : "near";
 }
@@ -240,6 +248,9 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       nullsfirst: { verdict: "served", sorts: [] },
       lowerplain: { verdict: "none", sorts: ["Sort"] },
       lowerexpr: { verdict: "served", sorts: [] },
+      extraeq: { verdict: "filtered", sorts: [] },
+      partialimplied: { verdict: "served", sorts: [] },
+      partialunverified: { verdict: "partial", sorts: ["Sort"] },
     });
   });
 

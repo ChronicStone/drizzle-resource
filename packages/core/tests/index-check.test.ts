@@ -151,17 +151,90 @@ describe("checkIndexes: default sort", () => {
     expect(finding?.message).toContain("id tie-breaker");
   });
 
-  it("does not count partial indexes or expressions for plain columns", () => {
+  it("does not count an expression for a plain column", () => {
     const { resource } = setup(
-      (t) => [
-        index("partial")
-          .on(t.orgId, t.createdAt.desc(), t.id.desc())
-          .where(sql`${t.deletedAt} is null`),
-        index("expression").on(t.orgId, sql`date(${t.createdAt}) desc`, t.id.desc()),
-      ],
+      (t) => [index("expression").on(t.orgId, sql`date(${t.createdAt}) desc`, t.id.desc())],
       { sort: { defaults: createdDesc } },
     );
     expect(byRule(resource.checkIndexes(), "default-sort-unindexed")[0]?.level).toBe("error");
+  });
+
+  it("only warns, without a fix, when the index serves the sort and a scope equality filters", () => {
+    for (const scope of [
+      (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("deletedAt", null)]),
+      (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("status", "open")]),
+    ]) {
+      const { resource } = setup((t) => [index("a").on(t.orgId, t.createdAt.desc(), t.id.desc())], {
+        scope,
+        filters: { caseSensitive: ["status"] },
+        sort: { defaults: createdDesc },
+      });
+      const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+      expect(finding?.level).toBe("warn");
+      expect(finding?.message).toContain("served by index a");
+      expect(finding?.message).toContain("filters row by row");
+      expect(finding?.fix).toBeUndefined();
+    }
+  });
+
+  it("still reports an error when the index starts with none of the scope columns", () => {
+    const { resource } = setup((t) => [index("a").on(t.createdAt.desc(), t.id.desc())], {
+      scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("deletedAt", null)]),
+      sort: { defaults: createdDesc },
+    });
+    expect(byRule(resource.checkIndexes(), "default-sort-unindexed")[0]?.level).toBe("error");
+  });
+
+  it("counts a partial index whose condition the scope states", () => {
+    const partial = (t: any, where: any) =>
+      index("a").on(t.orgId, t.createdAt.desc(), t.id.desc()).where(where);
+    const nullScope = (f: any, ctx: any) =>
+      f.and([f.is("orgId", ctx.orgId), f.is("deletedAt", null)]);
+    const isEmpty = (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.isEmpty("deletedAt")]);
+    for (const scope of [nullScope, isEmpty]) {
+      const { resource } = setup((t) => [partial(t, sql`${t.deletedAt} is null`)], {
+        scope,
+        sort: { defaults: createdDesc },
+      });
+      expect(byRule(resource.checkIndexes(), "default-sort-unindexed")).toEqual([]);
+    }
+    const equality = setup((t) => [partial(t, sql`${t.status} = 'open'`)], {
+      scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("status", "open")]),
+      filters: { caseSensitive: ["status"] },
+      sort: { defaults: createdDesc },
+    });
+    expect(byRule(equality.resource.checkIndexes(), "default-sort-unindexed")).toEqual([]);
+  });
+
+  it("warns when a partial index would serve the sort but the scope does not state its condition", () => {
+    const { resource } = setup(
+      (t) => [
+        index("a")
+          .on(t.orgId, t.createdAt.desc(), t.id.desc())
+          .where(sql`${t.deletedAt} is null`),
+      ],
+      { sort: { defaults: createdDesc } },
+    );
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.level).toBe("warn");
+    expect(finding?.message).toContain("cannot confirm the index is used");
+    expect(finding?.fix).toBeDefined();
+    // case differs: 'Open' is not 'open'
+    const other = setup(
+      (t) => [
+        index("a")
+          .on(t.orgId, t.createdAt.desc(), t.id.desc())
+          .where(sql`${t.status} = 'open'`),
+      ],
+      {
+        scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("status", "Open")]),
+        filters: { caseSensitive: ["status"] },
+        sort: { defaults: createdDesc },
+      },
+    );
+    expect(byRule(other.resource.checkIndexes(), "default-sort-unindexed")[0]?.message).toContain(
+      "cannot confirm",
+    );
   });
 
   it("explains Drizzle's nulls placement on a nullable descending column", () => {
@@ -355,6 +428,80 @@ describe("checkIndexes: other sorts", () => {
     });
     expect(byRule(resource.checkIndexes(), "relation-sort")).toEqual([]);
     expect(byRule(resource.checkIndexes(), "sort-unindexed")[0]?.fields).not.toContain("createdAt");
+  });
+});
+
+describe("checkIndexes: fixes", () => {
+  it("quotes names PostgreSQL reserves", () => {
+    const user = pgTable("user", {
+      id: uuid("id").primaryKey(),
+      orgId: uuid("org_id").notNull(),
+      order: integer("order").notNull(),
+      group: text("group").notNull(),
+    });
+    const schema = { user };
+    const relations = defineRelations(schema, () => ({}));
+    const resource = createQueryEngine({
+      db: drizzle.mock({ relations }),
+      schema,
+      relations,
+    }).defineResource("user", {
+      query: {
+        scope: (f: any) => f.is("orgId", "x"),
+        sort: { defaults: [{ key: "order", dir: "asc" }] },
+      },
+    } as never) as any;
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.fix?.sql).toBe(
+      'create index user_org_id_order_id_idx on "user" (org_id, "order", id);',
+    );
+    const [unindexed] = byRule(resource.checkIndexes(), "sort-unindexed");
+    expect(unindexed?.fix?.sql).toContain('(org_id, "group", id)');
+  });
+
+  it("never asks for the same index twice, and never to sort by a scope column", () => {
+    const { resource } = setup(() => [], {
+      sort: { defaults: [{ key: "createdAt", dir: "desc" }] },
+    });
+    const findings = resource.checkIndexes();
+    const [unindexed] = byRule(findings, "sort-unindexed");
+    expect(unindexed?.fields).not.toContain("orgId");
+    const statements = unindexed?.fix?.sql.split("\n") ?? [];
+    expect(new Set(statements).size).toBe(statements.length);
+  });
+
+  it("keeps the id tie-breaker behind a unique column that can be null", () => {
+    const codes = pgTable("codes", {
+      id: uuid("id").primaryKey(),
+      code: text("code").unique(),
+    });
+    const schema = { codes };
+    const relations = defineRelations(schema, () => ({}));
+    const resource = createQueryEngine({
+      db: drizzle.mock({ relations }),
+      schema,
+      relations,
+    }).defineResource("codes", {
+      query: { sort: { defaults: [{ key: "code", dir: "asc" }] } },
+    } as never) as any;
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.level).toBe("warn");
+    expect(finding?.message).toContain("id tie-breaker");
+  });
+
+  it("does not report twice a resource defined twice the same way", () => {
+    const orders = makeOrders();
+    const schema = { orders };
+    const relations = defineRelations(schema, () => ({}));
+    const engine = createQueryEngine({ db: drizzle.mock({ relations }), schema, relations });
+    const define = () =>
+      engine.defineResource("orders", {
+        query: { scope: (f: any) => f.is("orgId", "x") },
+      } as never);
+    const kept = [define(), define()];
+    const findings = engine.checkIndexes();
+    expect(byRule(findings, "default-sort-unindexed")).toHaveLength(1);
+    expect(kept).toHaveLength(2);
   });
 });
 
