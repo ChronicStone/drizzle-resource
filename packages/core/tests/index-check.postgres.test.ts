@@ -54,6 +54,8 @@ const variants = {
   // the same equalities, listed in either order, served by either one
   orderflip: "(org_id, created_at desc, id desc)",
   tenantindex: "(tenant, created_at desc, id desc)",
+  // PostgreSQL reads `org_id = $1`, whether the scope says is, or isAnyOf with one value
+  anyofone: "(org_id, created_at desc, id desc)",
 } as const;
 type Variant = keyof typeof variants;
 const variantNames = Object.keys(variants) as Variant[];
@@ -67,6 +69,11 @@ const undeclared = eventTable("undeclared");
 const searchable = eventTable("searchable");
 const searchableIndexed = eventTable("searchable_indexed");
 const neverAnalyzed = eventTable("never_analyzed");
+// Tables whose plan says little: too few rows, or never analysed.
+const smallIndexed = eventTable("small_indexed");
+const smallMissing = eventTable("small_missing");
+const unanalysedIndexed = eventTable("unanalysed_indexed");
+const unanalysedMissing = eventTable("unanalysed_missing");
 const schema = {
   ...tables,
   declared,
@@ -74,6 +81,10 @@ const schema = {
   searchable,
   searchableIndexed,
   neverAnalyzed,
+  smallIndexed,
+  smallMissing,
+  unanalysedIndexed,
+  unanalysedMissing,
 } as Record<string, ReturnType<typeof eventTable>>;
 const relations = defineRelations(schema as any, () => ({})) as any;
 
@@ -124,6 +135,7 @@ const scopes: Partial<Record<Variant, (f: any, ctx: any) => any>> = {
   // at most one row matches: the unique key is complete once slug has a value
   orderflip: (f) => f.and([f.is("tenant", "t1"), f.is("orgId", 1)]),
   tenantindex: (f) => f.and([f.is("orgId", 1), f.is("tenant", "t1")]),
+  anyofone: (f) => f.isAnyOf("orgId", [1]),
   uniquenullable: (f) => f.and([f.is("orgId", 1), f.is("slug", "s1")]),
 };
 const resources = Object.fromEntries(
@@ -156,6 +168,11 @@ const searchableResource = defineSimple("searchable", {
 const searchableIndexedResource = defineSimple("searchableIndexed", {
   search: { allowed: ["label"], defaults: ["label"] },
 });
+const byCreatedAt = { sort: { defaults: [{ key: "createdAt", dir: "desc" }] } };
+const smallIndexedResource = defineSimple("smallIndexed", byCreatedAt);
+const smallMissingResource = defineSimple("smallMissing", byCreatedAt);
+const unanalysedIndexedResource = defineSimple("unanalysedIndexed", byCreatedAt);
+const unanalysedMissingResource = defineSimple("unanalysedMissing", byCreatedAt);
 const neverAnalyzedResource = defineSimple("neverAnalyzed", {
   search: { allowed: ["label"], defaults: ["label"] },
 });
@@ -225,6 +242,10 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       "searchable",
       "searchable_indexed",
       "never_analyzed",
+      "small_indexed",
+      "small_missing",
+      "unanalysed_indexed",
+      "unanalysed_missing",
     ];
     for (const name of everyTable) {
       await db.execute(
@@ -255,6 +276,19 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
     for (const name of ["searchable", "searchable_indexed"]) {
       await db.execute(fill(name, 2_000));
       await db.execute(sql.raw(`analyze ${qualified(name)}`));
+    }
+    for (const name of ["small_indexed", "unanalysed_indexed"]) {
+      await db.execute(
+        sql.raw(`create index on ${qualified(name)} (org_id, created_at desc, id desc)`),
+      );
+    }
+    for (const name of ["small_indexed", "small_missing"]) {
+      await db.execute(fill(name, 200));
+      await db.execute(sql.raw(`analyze ${qualified(name)}`));
+    }
+    // loaded and never analysed: PostgreSQL's estimates for these are defaults, not statistics
+    for (const name of ["unanalysed_indexed", "unanalysed_missing"]) {
+      await db.execute(fill(name, 1_000));
     }
     // loaded after the last analyse: PostgreSQL does not know its size yet
     await db.execute(fill("never_analyzed", 2_000));
@@ -296,6 +330,7 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       contradicted: { verdict: "none", sorts: ["Sort"] },
       // the context gives the value, so the scope does state the partial index's condition
       unverifiedlegit: { verdict: "served", sorts: [] },
+      anyofone: { verdict: "served", sorts: [] },
       orderflip: { verdict: "filtered", sorts: [] },
       tenantindex: { verdict: "filtered", sorts: [] },
       uniquenullable: { verdict: "served", sorts: [] },
@@ -397,6 +432,32 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
     expect(
       noContext.find((finding) => finding.rule === "default-sort-unindexed")?.message,
     ).toContain("cannot confirm");
+  });
+
+  it("does not let a plan on a small or never-analysed table change a verdict", async () => {
+    const run = (resource: any) => resource.checkIndexes({ live: true }) as Promise<IndexFinding[]>;
+    const defaultSort = (findings: IndexFinding[]) =>
+      findings.filter((finding) => finding.rule === "default-sort-unindexed");
+    // the right index: no finding, whatever the plan on a table this small
+    expect(defaultSort(await run(smallIndexedResource))).toEqual([]);
+    expect(defaultSort(await run(unanalysedIndexedResource))).toEqual([]);
+    // no index: the rules' verdict stands, and the message says EXPLAIN did not check it
+    const [small] = defaultSort(await run(smallMissingResource));
+    expect(small?.level).toBe("error");
+    expect(small?.message).toContain("EXPLAIN did not check it");
+    expect(small?.message).toContain("about 200 rows");
+    const [unanalysed] = defaultSort(await run(unanalysedMissingResource));
+    expect(unanalysed?.level).toBe("error");
+    expect(unanalysed?.message).toContain("never analysed");
+    expect(unanalysed?.message).toContain("run ANALYZE");
+    // a threshold of one row lets the plan speak on the small table
+    const [checked] = defaultSort(
+      (await smallMissingResource.checkIndexes({
+        live: true,
+        largeTable: { explain: 1 },
+      })) as IndexFinding[],
+    );
+    expect(checked?.message).toContain("Confirmed by EXPLAIN");
   });
 
   it("explains a missing table", async () => {

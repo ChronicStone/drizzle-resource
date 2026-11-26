@@ -294,6 +294,37 @@ describe("checkIndexes: default sort", () => {
     }
   });
 
+  it("reads a single value in an array as an equality, as the engine does", () => {
+    const notEquality = [
+      (f: any, ctx: any) => f.isAnyOf("orgId", ctx.orgIds),
+      (f: any) => f.isAnyOf("orgId", ["a", "b"]),
+      (f: any) => f.isAnyOf("orgId", []),
+      (f: any) => f.isAnyOf("orgId", [null]),
+    ];
+    const equality = [
+      (f: any) => f.isAnyOf("orgId", ["a"]),
+      (f: any) => f.is("orgId", ["a", "b"]),
+      (f: any) => f.is("orgId", ["a"]),
+    ];
+    for (const scope of equality) {
+      const withIndex = setup((t) => [index("a").on(t.orgId, t.createdAt.desc(), t.id.desc())], {
+        scope,
+        sort: { defaults: createdDesc },
+      });
+      expect(byRule(withIndex.resource.checkIndexes(), "default-sort-unindexed")).toEqual([]);
+      const without = setup(() => [], { scope, sort: { defaults: createdDesc } });
+      expect(byRule(without.resource.checkIndexes(), "default-sort-unindexed")[0]?.fix?.sql).toBe(
+        "create index orders_org_id_created_at_id_idx on orders (org_id, created_at desc, id desc);",
+      );
+    }
+    for (const scope of notEquality) {
+      const { resource } = setup(() => [], { scope, sort: { defaults: createdDesc } });
+      expect(byRule(resource.checkIndexes(), "default-sort-unindexed")[0]?.fix?.sql).toBe(
+        "create index orders_created_at_id_idx on orders (created_at desc, id desc);",
+      );
+    }
+  });
+
   it("writes one where, joined with and, for several null scope columns", () => {
     const { resource } = setup(() => [], {
       scope: (f: any, ctx: any) =>
@@ -992,6 +1023,18 @@ describe("confirmDefaultSort", () => {
       scan(["Limit", 25], ["Sort", 900], ["Seq Scan", 900]),
     );
     expect(found.level).toBe("error");
+  });
+
+  it("raises a mixed-direction warning to an error when PostgreSQL sorts", () => {
+    const found = { ...finding("warn"), rule: "mixed-direction-sort" as const };
+    confirmDefaultSort(
+      "orders",
+      { ...info, finding: found },
+      [found],
+      scan(["Limit", 25], ["Sort", 900], ["Seq Scan", 900]),
+    );
+    expect(found.level).toBe("error");
+    expect(found.message).toContain("Confirmed by EXPLAIN");
   });
 
   it("adds an error for an index that serves the sort on paper but is not used", () => {

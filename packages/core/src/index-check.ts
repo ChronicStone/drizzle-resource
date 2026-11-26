@@ -61,6 +61,11 @@ export interface CheckIndexesOptions {
     search?: number;
     /** Counting every matching row on each page. Default 1,000,000. */
     count?: number;
+    /**
+     * Below this many estimated rows, or when PostgreSQL has never analysed the table, the plan
+     * says little about a real table and `EXPLAIN` does not change a verdict. Default 10,000.
+     */
+    explain?: number;
   };
 }
 
@@ -685,13 +690,22 @@ function readScope(target: IndexCheckTarget, options: CheckIndexesOptions): Scop
       return;
     }
     if (!fields.includes(node.key)) fields.push(node.key);
-    conditions.push({ field: node.key, operator: node.operator, value: node.value, conjunctive });
-    if (
-      conjunctive &&
-      node.operator === "is" &&
-      !Array.isArray(node.value) &&
-      !equalities.includes(node.key)
-    ) {
+    // The engine reads `is` with an array as its first value, and `isAnyOf` with one value as
+    // an equality. A list of unknown length (a context value) is not read as one.
+    let operator: string = node.operator;
+    let value = node.value;
+    if (operator === "is" && Array.isArray(value)) {
+      if (value.length === 0) operator = "isAnyOf";
+      else value = value[0];
+    } else if (operator === "isAnyOf" && Array.isArray(value) && value.length === 1) {
+      if (value[0] === null || value[0] === undefined) operator = "isAnyOf";
+      else {
+        operator = "is";
+        value = value[0];
+      }
+    }
+    conditions.push({ field: node.key, operator, value, conjunctive });
+    if (conjunctive && operator === "is" && !equalities.includes(node.key)) {
       equalities.push(node.key);
     }
   }
@@ -775,7 +789,7 @@ function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
     const text = isTextEntry(entry);
     const exact = !text || analysis.target.caseSensitive.has(condition.field);
     let fact: string | undefined;
-    if (condition.operator === "is" && !Array.isArray(condition.value)) {
+    if (condition.operator === "is") {
       if (condition.value === null) fact = `${name} is null`;
       else if (exact && sqlLiteral(condition.value) !== undefined)
         fact = `${name} = ${sqlLiteral(condition.value)}`;
@@ -1288,7 +1302,7 @@ export function confirmDefaultSort(
   }
   if (finding.rule !== "default-sort-unindexed" && finding.rule !== "mixed-direction-sort") return;
   if (sorts) {
-    if (finding.rule === "default-sort-unindexed") finding.level = "error";
+    finding.level = "error";
     finding.message += ". Confirmed by EXPLAIN: PostgreSQL sorts every matching row";
   } else if (incremental) {
     finding.message += ". Confirmed by EXPLAIN: PostgreSQL uses an incremental sort";
@@ -1338,6 +1352,7 @@ function analyze(
   options: CheckIndexesOptions,
   live: boolean,
   plan?: PagePlan,
+  planSkipped?: string,
 ): IndexFinding[] {
   const indexes = source.indexes(target.table);
   const analysis: Analysis = {
@@ -1375,6 +1390,8 @@ function analyze(
     const defaultNeed = checkDefaultSort(analysis);
     if (plan && analysis.defaultSort) {
       confirmDefaultSort(target.key, analysis.defaultSort, analysis.findings, plan);
+    } else if (planSkipped && analysis.defaultSort?.finding) {
+      analysis.defaultSort.finding.message += `. EXPLAIN did not check it: ${planSkipped}`;
     }
     checkSorts(analysis, defaultNeed);
     checkScope(analysis);
@@ -1481,8 +1498,18 @@ export function runIndexChecks(
           return [table, await pending] as const;
         }),
       );
-      const plan = await readPagePlan(target, database, options);
-      results.push(...analyze(target, liveSource(names, new Map(loaded)), options, true, plan));
+      const rows = new Map(loaded).get(target.table)?.rows;
+      const minimum = options.largeTable?.explain ?? 10_000;
+      const planSkipped =
+        rows === undefined
+          ? `PostgreSQL has never analysed ${qualifiedTable(names, target.table)}, so its plan says little: run ANALYZE`
+          : rows < minimum
+            ? `${qualifiedTable(names, target.table)} has about ${formatCount(Math.round(rows))} rows, too few for its plan to say much`
+            : undefined;
+      const plan = planSkipped ? undefined : await readPagePlan(target, database, options);
+      results.push(
+        ...analyze(target, liveSource(names, new Map(loaded)), options, true, plan, planSkipped),
+      );
     }
     return withoutRepeats(results);
   })();
