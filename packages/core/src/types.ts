@@ -354,7 +354,14 @@ export interface QueryFacetOption {
  * The engine always sets `status`. It is optional in the type so that facets built by hand, such
  * as the ones a custom strategy returns, keep compiling: an absent `status` means `ok`.
  */
-export type QueryFacetResult<TField extends string = string> = QueryFacetBase<TField> &
+export interface QueryFacetResult<TField extends string = string> extends QueryFacetBase<TField> {
+  /** `"ok"` when absent. `"skipped"` comes with `reason: "above-cap"`. */
+  status?: "ok" | "skipped" | "timeout";
+  reason?: "above-cap";
+}
+
+/** A {@link QueryFacetResult} as a union on `status`, for narrowing in a `switch`. */
+export type QueryFacetOutcome<TField extends string = string> = QueryFacetBase<TField> &
   ({ status?: "ok" } | { status: "skipped"; reason: "above-cap" } | { status: "timeout" });
 
 /** Facet payload without `status`. */

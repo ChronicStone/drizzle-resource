@@ -6,7 +6,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
-import { isStatementTimeout } from "../src/postgres.js";
+import { isOurTimeout, withStatementTimeout } from "../src/postgres.js";
 import type { QueryPageInfo, QueryRequestInput } from "../index.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -599,30 +599,6 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       expect(result.facets?.[0]).toMatchObject({ status: "ok" });
     });
 
-    it("restores the caller's statement timeout inside their transaction", async () => {
-      await db.transaction(async (tx) => {
-        await tx.execute(sql`select set_config('statement_timeout', '9000', true)`);
-        await timed.queryIds({ db: tx as never, request: request({ count: "exact" }) });
-        const [row] = await tx.execute(sql`show statement_timeout`, "objects");
-        expect(row).toEqual({ statement_timeout: "9s" });
-      });
-    });
-
-    it("keeps the caller's transaction usable after a timeout", async () => {
-      await db.transaction(async (tx) => {
-        const pending = withBlockedDocs(async (release) => {
-          const query = timed.queryIds({ db: tx as never, request: request({ count: "exact" }) });
-          await new Promise((resolve) => setTimeout(resolve, 400));
-          await release();
-          return query;
-        });
-        const result = await pending;
-        expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
-        const [row] = await tx.execute(sql`select 1 as ok`, "objects");
-        expect(row).toEqual({ ok: 1 });
-      });
-    });
-
     const groups = [
       [{ key: "org" as const }, { key: "accountId" as const }],
       [{ key: "account.name" as const }, { key: "labels.label" as const }],
@@ -633,56 +609,104 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
     ];
 
     it.each(groups)(
-      "runs several timed facet statements in a caller's transaction: %j",
+      "sets no statement timeout in a caller's transaction and leaves it usable: %j",
       async (...facets) => {
         await db.transaction(async (tx) => {
+          await tx.execute(sql`select set_config('statement_timeout', '9000', true)`);
+          statements.length = 0;
           const result = await manyFacets.query({
             db: tx as never,
             request: request({ count: "capped" }, { facets }),
           });
+          expect(result.pageInfo).toMatchObject({ count: "capped" });
           expect(result.facets?.map((facet) => facet.status)).toEqual(facets.map(() => "ok"));
+          expect(statements.some((query) => query.includes("set_config"))).toBe(false);
+          expect(statements.some((query) => /savepoint/i.test(query))).toBe(false);
           const [row] = await tx.execute(sql`show statement_timeout`, "objects");
-          expect(row).toEqual({ statement_timeout: "0" });
+          expect(row).toEqual({ statement_timeout: "9s" });
         });
       },
     );
 
-    it.each(groups)(
-      "times several facets out in a caller's transaction without aborting it: %j",
-      async (...facets) => {
-        await db.transaction(async (tx) => {
-          const result = await withBlockedDocs(async (release) => {
-            const pending = manyFacets.query({
-              db: tx as never,
-              request: request({ count: "none" }, { facets }),
-            });
-            await new Promise((resolve) => setTimeout(resolve, 600));
-            await release();
-            return pending;
-          });
-          expect(result.facets?.map((facet) => facet.status)).toEqual(facets.map(() => "timeout"));
-          const [row] = await tx.execute(sql`select 1 as ok`, "objects");
-          expect(row).toEqual({ ok: 1 });
-        });
-      },
-    );
-
-    it("runs a timed count and timed facets one after another in a caller's transaction", async () => {
+    it("does not time a stage in a caller's transaction: it waits for the table instead", async () => {
       await db.transaction(async (tx) => {
         const result = await withBlockedDocs(async (release) => {
           const pending = manyFacets.query({
             db: tx as never,
             request: request({ count: "capped" }, { facets: [{ key: "org" }] }),
           });
-          await new Promise((resolve) => setTimeout(resolve, 600));
+          await new Promise((resolve) => setTimeout(resolve, 300));
           await release();
           return pending;
         });
-        expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
-        expect(result.facets?.[0]).toMatchObject({ status: "timeout" });
-        const [row] = await tx.execute(sql`select 1 as ok`, "objects");
-        expect(row).toEqual({ ok: 1 });
+        expect(result.pageInfo).toMatchObject({ count: "capped" });
+        expect(result.facets?.[0]).toMatchObject({ status: "ok" });
       });
+    });
+
+    it("measures a timeout by elapsed time, not by the server's message", () => {
+      const french = Object.assign(new Error("annulation de la requête à cause du délai écoulé"), {
+        code: "57014",
+      });
+      expect(isOurTimeout(french, 50, 40)).toBe(true);
+      expect(isOurTimeout(new Error("Failed query", { cause: french }), 40, 40)).toBe(true);
+      expect(isOurTimeout(french, 36, 40)).toBe(true); // within the margin
+      expect(isOurTimeout(french, 10, 40)).toBe(false);
+      expect(isOurTimeout(new Error("annulation"), 500, 40)).toBe(false);
+      expect(isOurTimeout(Object.assign(new Error("x"), { code: "23505" }), 500, 40)).toBe(false);
+    });
+
+    it("reports a real timeout and rethrows a cancel from elsewhere", async () => {
+      const slow = await withStatementTimeout(db as never, 30, async (tx) => {
+        await (tx as typeof db).execute(sql`select pg_sleep(2)`);
+      });
+      expect(slow).toEqual({ timedOut: true });
+
+      await expect(
+        withStatementTimeout(db as never, 5000, async (tx) => {
+          const [pid] = await (tx as typeof db).execute(
+            sql`select pg_backend_pid() as pid`,
+            "objects",
+          );
+          setTimeout(async () => {
+            await db.execute(sql`select pg_cancel_backend(${(pid as { pid: number }).pid})`);
+          }, 100);
+          await (tx as typeof db).execute(sql`select pg_sleep(3)`);
+        }),
+      ).rejects.toThrow("Failed query");
+    });
+
+    it("caps the budget at the setting already in force", async () => {
+      const read = (database: typeof db, ms: number) =>
+        withStatementTimeout(
+          database as never,
+          ms,
+          async (tx) => {
+            const [row] = await (tx as typeof db).execute(sql`show statement_timeout`, "objects");
+            return (row as { statement_timeout: string }).statement_timeout;
+          },
+          { capToCurrent: true },
+        );
+      expect(await read(db, 40)).toEqual({ timedOut: false, value: "40ms" });
+      const strict = new Pool({
+        connectionString,
+        max: 1,
+        options: "-c statement_timeout=10",
+      });
+      const lenient = new Pool({
+        connectionString,
+        max: 1,
+        options: "-c statement_timeout=500",
+      });
+      try {
+        const strictDb = drizzle({ client: strict, relations });
+        const lenientDb = drizzle({ client: lenient, relations });
+        expect(await read(strictDb, 40)).toEqual({ timedOut: false, value: "10ms" });
+        expect(await read(lenientDb, 40)).toEqual({ timedOut: false, value: "40ms" });
+      } finally {
+        await strict.end();
+        await lenient.end();
+      }
     });
 
     it("holds at most one connection per facet statement while facets are timed", async () => {
@@ -722,22 +746,6 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       expect(result.facets).toEqual([
         { key: "accountId", status: "skipped", reason: "above-cap", options: [] },
       ]);
-    });
-
-    it("does not call a cancelled statement a timeout", async () => {
-      const cancelled = Object.assign(new Error("canceling statement due to user request"), {
-        code: "57014",
-      });
-      const timedOut = Object.assign(new Error("canceling statement due to statement timeout"), {
-        code: "57014",
-      });
-      expect(isStatementTimeout(cancelled)).toBe(false);
-      expect(isStatementTimeout(timedOut)).toBe(true);
-      expect(isStatementTimeout(new Error("Failed query", { cause: timedOut }))).toBe(true);
-      expect(isStatementTimeout(new Error("Failed query", { cause: cancelled }))).toBe(false);
-      expect(isStatementTimeout(new Error("canceling statement due to statement timeout"))).toBe(
-        false,
-      );
     });
 
     it.each([0, -5, 2.5])("rejects a timeout of %s", (value) => {
@@ -872,24 +880,36 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       expect(pages[0]).toContain(" union ");
     });
 
-    it("keeps a caller's transaction usable when the budget runs out", async () => {
-      await db.transaction(async (tx) => {
-        const result = (await afterBlocked(() =>
-          search.queryIds({ db: tx as never, request: searching("zebra", "none") }),
-        )) as Awaited<ReturnType<typeof search.queryIds>>;
-        expect(result.ids).toEqual([5, 600, 12000]);
-        const [row] = await tx.execute(sql`select 1 as ok`, "objects");
-        expect(row).toEqual({ ok: 1 });
+    it("picks the plan from costs in a caller's transaction, with no budget and no timeout", async () => {
+      await planDb.transaction(async (tx) => {
+        await tx.execute(sql`select set_config('statement_timeout', '20', true)`);
+        planStatements.length = 0;
+        const rare = await search.queryIds({
+          db: tx as never,
+          request: searching("zebra", "none"),
+        });
+        expect(rare.ids).toEqual([5, 600, 12000]);
+        expect(planStatements.some((query) => query.startsWith("explain"))).toBe(true);
+        expect(planStatements.some((query) => query.includes("set_config"))).toBe(false);
+        const [row] = await tx.execute(sql`show statement_timeout`, "objects");
+        expect(row).toEqual({ statement_timeout: "20ms" });
       });
     });
 
-    it("runs the ordinary plan in a caller's transaction when it fits the budget", async () => {
-      await db.transaction(async (tx) => {
-        const result = await search.queryIds({
-          db: tx as never,
-          request: searching("common", "capped"),
-        });
-        expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+    it("lets statements overlap in a caller's transaction without sharing a limit", async () => {
+      await planDb.transaction(async (tx) => {
+        const offsets = [0, 3, 8, 15];
+        for (const offset of offsets) {
+          const first = search.queryIds({ db: tx as never, request: searching("zebra", "none") });
+          await new Promise((resolve) => setTimeout(resolve, offset));
+          const second = search.query({
+            db: tx as never,
+            request: { ...searching("common", "none"), facets: [{ key: "ownerId" }] },
+          });
+          const [rare, common] = await Promise.all([first, second]);
+          expect(rare.ids).toEqual([5, 600, 12000]);
+          expect(common.facets?.[0]).toMatchObject({ status: "ok" });
+        }
         const [row] = await tx.execute(sql`show statement_timeout`, "objects");
         expect(row).toEqual({ statement_timeout: "0" });
       });

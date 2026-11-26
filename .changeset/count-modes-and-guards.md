@@ -12,4 +12,11 @@ Add opt-in guards: `validation.maxPageIndex` (also enforced by the Zod, Valibot 
 
 Search without an exact count now runs the ordinary plan with a small time budget (`search.planBudget`, 25 ms) and retries with the trigram-indexed plan only when the budget runs out, instead of trusting PostgreSQL's cost estimate, which took a rare term through the whole sort index. Common terms run as before.
 
-One change can need your attention: an exhaustive `switch (pageInfo.count)` must now handle `"capped"` and `"estimated"`. `scan` accepts any `QueryCountMode` and rejects `"capped"` and `"estimated"` at runtime; facets built by hand keep compiling because `status` is optional in the type.
+Type changes to check in your code:
+
+- An exhaustive `switch (pageInfo.count)` must now handle `"capped"` and `"estimated"`.
+- A `QueryCountMode` value no longer fits a parameter typed `"none" | "exact"`.
+- `QueryFacetResult` gains an optional `status` and `reason`. Facets you write by hand keep compiling, and an absent `status` means `ok`. Use `QueryFacetOutcome` to narrow on `status`.
+- `scan` accepts any `QueryCountMode` and rejects `"capped"` and `"estimated"` at runtime.
+
+Search budgets and `timeouts` apply only when the engine owns the connection. With `db: tx` (your own transaction) the engine sets no `statement_timeout` and picks the search plan as before, because statements that overlap on one connection would share the limit.

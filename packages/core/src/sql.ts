@@ -48,8 +48,8 @@ import type {
 import { decodeCursor, encodeCursor } from "./cursor.js";
 import {
   estimatePostgresQuery,
+  isCallerTransaction,
   isPostgresDatabase,
-  isTransactionDatabase,
   probePostgresSearch,
   scanPostgresCursor,
   withStatementTimeout,
@@ -739,7 +739,7 @@ export function createQueryResourceUtils<
     );
     const indexed = compileIndexedSearch(request);
     if (!indexed) return;
-    if (request.pagination.count !== "exact") {
+    if (request.pagination.count !== "exact" && !isCallerTransaction(database)) {
       // Without an exact count PostgreSQL's estimate cannot tell a rare term from a common one
       // (it assumes millions of matches for both), so it walks the sort index for a rare term.
       // The first statement of the request runs the ordinary plan with a time budget instead,
@@ -789,7 +789,9 @@ export function createQueryResourceUtils<
     run: (db: QueryEngineDb) => Promise<TResult>,
   ): Promise<TResult> {
     if (!undecidedSearches.delete(request)) return run(db);
-    const outcome = await withStatementTimeout(db, resource.queryConfig.search.planBudget, run);
+    const outcome = await withStatementTimeout(db, resource.queryConfig.search.planBudget, run, {
+      capToCurrent: true,
+    });
     if (!outcome.timedOut) return outcome.value;
     indexedSearchRequests.add(request);
     return run(db);
@@ -1438,10 +1440,6 @@ export function createQueryResourceUtils<
       aggregates = isAboveCap(pageCount, countCap())
         ? { facets: skippedFacets(facets) }
         : await resolveAggregates({ request, facets });
-    } else if (isTransactionDatabase(database)) {
-      // One connection runs one statement at a time, and a timed count must not time the facets.
-      pageCount = await resolveCount(request);
-      aggregates = await resolveAggregates({ request, facets });
     } else {
       [pageCount, aggregates] = await Promise.all([
         resolveCount(request),

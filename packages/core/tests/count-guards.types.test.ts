@@ -4,7 +4,17 @@ import { integer, pgTable, text } from "drizzle-orm/pg-core";
 import { describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
-import type { QueryCountMode, QueryFacetResult, QueryPageInfo } from "../index.js";
+import type {
+  QueryCountMode,
+  QueryFacetOutcome,
+  QueryFacetResult,
+  QueryPageInfo,
+} from "../index.js";
+
+// Compiles only while QueryFacetResult stays an interface.
+interface LabelledFacet extends QueryFacetResult {
+  label: string;
+}
 
 const docs = pgTable("docs", { id: integer().primaryKey(), org: text().notNull() });
 const schema = { docs };
@@ -36,6 +46,16 @@ describe("types that keep compiling", () => {
       "ok" | "skipped" | "timeout" | undefined
     >();
     expect(skipped.status).toBe("skipped");
+  });
+
+  it("keeps QueryFacetResult extendable and narrows through QueryFacetOutcome", () => {
+    const facet: LabelledFacet = { key: "org", options: [], label: "Org" };
+    expect(facet.label).toBe("Org");
+    const explain = (outcome: QueryFacetOutcome) =>
+      outcome.status === "skipped" ? outcome.reason : (outcome.status ?? "ok");
+    expect(explain({ key: "org", options: [], status: "skipped", reason: "above-cap" })).toBe(
+      "above-cap",
+    );
   });
 
   it("narrows rowCount and the capped flag on pageInfo.count", () => {

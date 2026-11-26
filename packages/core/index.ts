@@ -40,6 +40,7 @@ export type {
   QueryFacetOption,
   QueryFacetRequest,
   QueryFacetResult,
+  QueryFacetOutcome,
   QueryFacetsResponse,
   QueryFilterBuilder,
   QueryFilterCondition,
