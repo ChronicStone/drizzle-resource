@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // eslint-disable-next-line import/no-unassigned-import
 import "~/assets/css/pixel.css";
+import { benchScale } from "~/utils/bench-scale";
 
 /** Before and after on a log scale, one line per request. */
 interface Row {
@@ -8,7 +9,25 @@ interface Row {
   before: number;
   after: number;
 }
-const props = defineProps<{ title: string; rows: Row[]; legend: [string, string] }>();
+const input = defineProps<{
+  title: string;
+  rows?: Row[];
+  /** "history": the 2.4.1 comparison from data/bench-scale.json */
+  source?: "history";
+  legend: [string, string];
+}>();
+const props = computed(() =>
+  input.source === "history"
+    ? {
+        ...input,
+        rows: benchScale.history.requests.map(({ label, before, after }) => ({
+          label,
+          before,
+          after,
+        })),
+      }
+    : { ...input, rows: input.rows ?? [] },
+);
 
 /* draw at the real width, so text keeps its size; under 520px labels go above the dots */
 const root = ref<HTMLElement>();
@@ -25,14 +44,14 @@ const narrow = computed(() => W.value < 520);
 const L = computed(() => (narrow.value ? 6 : 200));
 const R = computed(() => W.value - 80);
 const rowH = computed(() => (narrow.value ? 52 : 40));
-const lo = computed(() => Math.log10(Math.min(...props.rows.map((r) => r.after)) / 1.5));
-const hi = computed(() => Math.log10(Math.max(...props.rows.map((r) => r.before)) * 1.6));
+const lo = computed(() => Math.log10(Math.min(...props.value.rows.map((r) => r.after)) / 1.5));
+const hi = computed(() => Math.log10(Math.max(...props.value.rows.map((r) => r.before)) * 1.6));
 const x = (v: number) =>
   L.value + ((Math.log10(v) - lo.value) / (hi.value - lo.value)) * (R.value - L.value);
 const ticks = computed(() =>
   [0.1, 1, 10, 100, 1000].filter((t) => Math.log10(t) >= lo.value && Math.log10(t) <= hi.value),
 );
-const H = computed(() => props.rows.length * rowH.value + 30);
+const H = computed(() => props.value.rows.length * rowH.value + 30);
 const fmt = (v: number) => (v >= 10 ? `${Math.round(v)} ms` : `${v.toFixed(v < 1 ? 2 : 1)} ms`);
 </script>
 
@@ -40,19 +59,19 @@ const fmt = (v: number) => (v >= 10 ? `${Math.round(v)} ms` : `${v.toFixed(v < 1
   <figure class="px-embed not-prose bs">
     <div ref="root" class="bs-measure" />
     <figcaption class="bs-cap">
-      <span><b>{{ title }}</b>, milliseconds, log scale</span>
+      <span><b>{{ props.title }}</b>, milliseconds, log scale</span>
       <span class="bs-legend">
-        <span><i class="base" />{{ legend[0] }}</span>
-        <span><i class="hit" />{{ legend[1] }}</span>
+        <span><i class="base" />{{ props.legend[0] }}</span>
+        <span><i class="hit" />{{ props.legend[1] }}</span>
       </span>
     </figcaption>
-    <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="title">
+    <svg :viewBox="`0 0 ${W} ${H}`" role="img" :aria-label="props.title">
       <g v-for="t in ticks" :key="t">
         <line :x1="x(t)" :x2="x(t)" y1="0" :y2="H - 22" class="grid" />
         <text :x="x(t)" :y="H - 6" text-anchor="middle" class="axis">{{ t }} ms</text>
       </g>
       <g
-        v-for="(r, i) in rows"
+        v-for="(r, i) in props.rows"
         :key="r.label"
         :transform="`translate(0 ${(narrow ? 32 : 18) + i * rowH})`"
       >
