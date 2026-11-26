@@ -2662,6 +2662,44 @@ html:not(.dark) .px-land :is(h1, h2) .px-acc {
 .px-tb .s-search {
   --px-s: var(--px-s-search);
 }
+/* speed-up labels: the measured ratio at 10M, in the accent, above each group */
+.px-tb .spd {
+  font: 700 15px var(--font-sans);
+  letter-spacing: -0.01em;
+  fill: var(--hit-text);
+  paint-order: stroke;
+  stroke: var(--panel);
+  stroke-width: 4px;
+  stroke-linejoin: round;
+}
+.px-tb .spd.h {
+  font-size: 13px;
+}
+.px-tb .spd.same {
+  fill: var(--ink3);
+  font-size: 12.5px;
+  font-weight: 600;
+}
+.px-tb .spd.slower {
+  fill: var(--px-warn);
+}
+@media (prefers-reduced-motion: no-preference) {
+  .px-tb .spd {
+    animation: px-tb-pop 0.45s var(--ease) both;
+    transform-box: fill-box;
+    transform-origin: center bottom;
+  }
+}
+@keyframes px-tb-pop {
+  from {
+    opacity: 0;
+    transform: translateY(6px) scale(0.92);
+  }
+  to {
+    opacity: 1;
+    transform: none;
+  }
+}
 .px-tb .ring {
   fill: none;
   stroke: var(--px-warn);

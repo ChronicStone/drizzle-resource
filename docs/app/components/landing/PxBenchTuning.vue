@@ -13,7 +13,8 @@ type Key = "page" | "cursor" | "count" | "relationSort" | "facets" | "search";
 /** from the benchmark: did the tuned run make this request faster? */
 type Verdict = "improved" | "unchanged" | "worse";
 interface Data {
-  placeholder: boolean;
+  /** true until the final benchmark run: shows the "provisional" banner */
+  provisional: boolean;
   measuredOn: string;
   engine: string;
   postgres: string;
@@ -21,7 +22,17 @@ interface Data {
   clients: number;
   runs: number;
   sizes: number[];
-  requests: Record<Key, { outOfTheBox: number[]; tuned: number[]; verdict: Verdict }>;
+  requests: Record<
+    Key,
+    {
+      outOfTheBox: number[];
+      tuned: number[];
+      verdict: Verdict;
+      /** out of the box ÷ tuned at 10M rows, as measured; null when the request is not tuned */
+      ratio: number | null;
+      engineChange: boolean;
+    }
+  >;
   tunedSettings: { countCap: number };
 }
 const data = bench as Data;
@@ -96,14 +107,17 @@ const labelAt = (i: number, s: number) => {
   return `${fmt(k > 0.98 ? r.tuned[s]! : k < 0.02 ? r.outOfTheBox[s]! : valueAt(i, s))} ms`;
 };
 
-/** shown next to a request that the tools flag but the tuned run did not speed up */
-const noteAt = (i: number) => {
-  const r = rows[i]!;
-  if (r.improved || r.flat || beat.value < r.drop) return "";
-  return r.verdict === "worse" ? " · slower tuned" : " · no change tuned";
-};
-const verdictText = (v: Verdict) =>
-  v === "improved" ? "faster" : v === "worse" ? "slower" : "no change";
+/** The speed-up label: the benchmark's measured ratio at 10M, only for an improved request. */
+const speedText = (r: (typeof rows)[number]) =>
+  r.improved && r.ratio
+    ? `${r.ratio >= 10 ? Math.round(r.ratio).toLocaleString("en-US") : r.ratio.toFixed(1)}× faster`
+    : r.verdict === "worse"
+      ? "slower"
+      : "no change";
+const speedKind = (r: (typeof rows)[number]) =>
+  r.improved && r.ratio ? "up" : r.verdict === "worse" ? "slower" : "same";
+/** a label appears on the step that earns it; the server renders the end, so every label */
+const speedShown = (i: number) => beat.value >= rows[i]!.drop;
 
 const slow = computed(() =>
   rows
@@ -229,7 +243,7 @@ const consoleFor = computed(() => {
 
 /* ---------- the chart, drawn twice: columns on wide screens, bars on phones ---------- */
 const SIZE_CELLS = [2, 3, 4]; // the bigger the table, the wider the column
-const V = { W: 800, H: 384, L: 60, R: 8, T: 30, B: 84, cell: 6 };
+const V = { W: 800, H: 404, L: 60, R: 8, T: 50, B: 84, cell: 6 };
 const vert = computed(() => {
   const { W, H, L, R, T, B, cell } = V;
   const Hp = H - T - B;
@@ -257,13 +271,16 @@ const vert = computed(() => {
       });
       // above the tallest column of the group, so the label never sits on a neighbour
       const top = base - Math.max(...[0, 1, 2].map((s) => hOf(valueAt(i, s)))) - 8;
-      const ring = {
-        x: gx - 6,
-        y: base - hOf(r.outOfTheBox[LAST]!) - 24,
-        w: gw + 12,
-        h: hOf(r.outOfTheBox[LAST]!) + 46,
-      };
-      return { r, i, gx, cx: gx + gw / 2, cols, top, ring, words: wrap(r.label, 16) };
+      // the speed-up label goes above everything in the group: the 10M value and the dim columns
+      const tallest = Math.max(...[0, 1, 2].map((s) => hOf(r.outOfTheBox[s]!)));
+      const speedY = Math.min(top - 20, base - tallest - 12);
+      const cx = gx + gw / 2;
+      const sw = speedText(r).length * 8.6;
+      const speedX = Math.min(Math.max(cx, L + sw / 2), W - R - sw / 2);
+      // the "found" ring wraps the whole group, speed-up label included
+      const ringTop = Math.min(base - tallest - 24, speedY - 20);
+      const ring = { x: gx - 6, y: ringTop, w: gw + 12, h: base + 22 - ringTop };
+      return { r, i, gx, cx, cols, top, ring, speedY, speedX, words: wrap(r.label, 16) };
     }),
   };
 });
@@ -305,7 +322,7 @@ const horiz = computed(() => {
 });
 /** keep the 10M label inside the chart: centred on its column unless that would cross an edge */
 function valuePos(i: number, cx: number) {
-  const w = `10M: ${labelAt(i, LAST)}${noteAt(i)}`.length * 6.7;
+  const w = `10M: ${labelAt(i, LAST)}`.length * 6.7;
   if (cx + w / 2 > V.W - 2) return { x: V.W - 2, anchor: "end" };
   if (cx - w / 2 < V.L) return { x: V.L, anchor: "start" };
   return { x: cx, anchor: "middle" };
@@ -496,8 +513,8 @@ onBeforeUnmount(() => {
         <i />Median time per request, one client{{ " "
         }}<small>PostgreSQL {{ data.postgres }} · {{ data.cpus }} CPUs</small>
       </div>
-      <p v-if="data.placeholder" class="px-tb-ph">
-        Placeholder numbers: they will be replaced by the next benchmark run.
+      <p v-if="data.provisional" class="px-tb-ph">
+        Provisional numbers: the final benchmark run will replace them.
       </p>
       <div class="px-tb-ctl">
         <button type="button" class="px-btn px-btn-o" @click="play">↻ replay</button>
@@ -616,8 +633,17 @@ onBeforeUnmount(() => {
                     :y="g.top"
                     :text-anchor="valuePos(g.i, g.cols[LAST]!.cx).anchor"
                   >
-                    <tspan class="vs">10M: </tspan>{{ labelAt(g.i, LAST)
-                    }}<tspan v-if="noteAt(g.i)" class="vs">{{ noteAt(g.i) }}</tspan>
+                    <tspan class="vs">10M: </tspan>{{ labelAt(g.i, LAST) }}
+                  </text>
+                  <text
+                    v-if="speedShown(g.i)"
+                    class="spd"
+                    :class="speedKind(g.r)"
+                    :x="g.speedX"
+                    :y="g.speedY"
+                    text-anchor="middle"
+                  >
+                    {{ speedText(g.r) }}
                   </text>
                   <rect
                     v-if="found.includes(g.r.key)"
@@ -674,8 +700,16 @@ onBeforeUnmount(() => {
                   :class="[`s-${g.r.key}`, { flat: g.r.flat, found: found.includes(g.r.key) }]"
                   :data-i="g.i"
                 >
-                  <text class="gl h" x="0" :y="g.y0 + 13">
-                    {{ g.r.label }}<tspan v-if="noteAt(g.i)" class="vs">{{ noteAt(g.i) }}</tspan>
+                  <text class="gl h" x="0" :y="g.y0 + 13">{{ g.r.label }}</text>
+                  <text
+                    v-if="speedShown(g.i)"
+                    class="spd h"
+                    :class="speedKind(g.r)"
+                    :x="HZ.W"
+                    :y="g.y0 + 13"
+                    text-anchor="end"
+                  >
+                    {{ speedText(g.r) }}
                   </text>
                   <g mask="url(#px-tb-hm)">
                     <g v-if="ks[g.i]! > 0 && !g.r.flat" class="px-tb-ghost">
@@ -774,8 +808,15 @@ onBeforeUnmount(() => {
               <tr v-for="r in rows" :key="r.key">
                 <th scope="row">{{ r.label }}</th>
                 <td v-for="(v, s) in r.outOfTheBox" :key="`o${s}`">{{ fmt(v) }} ms</td>
-                <td v-for="(v, s) in r.tuned" :key="`t${s}`">{{ fmt(v) }} ms</td>
-                <td>{{ verdictText(r.verdict) }}</td>
+                <template v-if="r.ratio === null">
+                  <td colspan="3">not tuned</td>
+                </template>
+                <template v-else>
+                  <td v-for="(v, s) in r.tuned" :key="`t${s}`">{{ fmt(v) }} ms</td>
+                </template>
+                <td>
+                  {{ speedText(r) }}{{ r.engineChange ? ", facets as separate statements" : "" }}
+                </td>
               </tr>
             </tbody>
           </table>
