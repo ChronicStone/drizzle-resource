@@ -9,9 +9,12 @@
 import { readFileSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 
-type Cell = { medianMs?: number; skipped?: unknown };
+type Cell = { medianMs?: number; skipped?: unknown; verdict?: Verdict };
+type Verdict = "improved" | "unchanged" | "worse";
 type Profiles = {
   sizes: number[];
+  /** per scenario: did the tuned profile make it faster? (also accepted on the tuned scenario itself) */
+  verdicts?: Record<string, Verdict>;
   profiles: Record<"out-of-the-box" | "tuned", Record<string, Record<string, Cell>>>;
   setup?: { chosenRuns?: Record<string, Record<string, { label?: string }>> };
 };
@@ -52,10 +55,29 @@ const median = (profile: "out-of-the-box" | "tuned", scenario: string) =>
     return Math.round(cell.medianMs * 1000) / 1000;
   });
 
+const VERDICTS: Verdict[] = ["improved", "unchanged", "worse"];
+/** The benchmark decides whether tuning helped; this script never infers it from the numbers. */
+const verdict = (scenario: string): Verdict => {
+  const tuned = data.profiles.tuned?.[scenario] as
+    | (Record<string, Cell> & { verdict?: Verdict })
+    | undefined;
+  const v =
+    data.verdicts?.[scenario] ??
+    tuned?.verdict ??
+    tuned?.[String(SIZES[SIZES.length - 1])]?.verdict;
+  if (!v || !VERDICTS.includes(v))
+    throw new Error(`tuned / ${scenario}: no verdict (improved, unchanged or worse) in ${source}`);
+  return v;
+};
+
 const requests = Object.fromEntries(
   Object.entries(SCENARIOS).map(([key, s]) => [
     key,
-    { outOfTheBox: median("out-of-the-box", s.outOfTheBox), tuned: median("tuned", s.tuned) },
+    {
+      outOfTheBox: median("out-of-the-box", s.outOfTheBox),
+      tuned: median("tuned", s.tuned),
+      verdict: verdict(s.tuned),
+    },
   ]),
 );
 
@@ -64,9 +86,18 @@ const CREDITED = ["count", "relationSort", "facets", "search"];
 for (const key of CREDITED) {
   const r = requests[key]!;
   const last = SIZES.length - 1;
-  if (r.tuned[last]! >= r.outOfTheBox[last]! * 0.9)
+  const ratio = r.tuned[last]! / r.outOfTheBox[last]!;
+  if (ratio >= 0.9)
     console.warn(
-      `warning: ${key} is barely faster tuned (${r.outOfTheBox[last]} → ${r.tuned[last]} ms at 10M); the chart says a tool brings it down`,
+      `warning: ${key} is barely faster tuned (${r.outOfTheBox[last]} → ${r.tuned[last]} ms at 10M); the landing shows it unchanged unless the verdict says improved (verdict: ${r.verdict})`,
+    );
+  if (r.verdict === "improved" && ratio >= 0.9)
+    console.warn(
+      `warning: ${key} has verdict "improved" but the numbers barely moved; check profiles.json`,
+    );
+  if (r.verdict !== "improved" && ratio < 0.5)
+    console.warn(
+      `warning: ${key} has verdict "${r.verdict}" but is ${Math.round(1 / ratio)}× faster; check profiles.json`,
     );
 }
 
@@ -90,4 +121,6 @@ const target = outFile ?? join(root, "docs/app/data/bench-landing.json");
 writeFileSync(target, `${JSON.stringify(out, null, 2)}\n`);
 console.log(`wrote ${target}`);
 for (const [key, r] of Object.entries(requests))
-  console.log(`  ${key.padEnd(13)} ${r.outOfTheBox.join(" / ")} → ${r.tuned.join(" / ")} ms`);
+  console.log(
+    `  ${key.padEnd(13)} ${r.outOfTheBox.join(" / ")} → ${r.tuned.join(" / ")} ms  (${r.verdict})`,
+  );

@@ -10,6 +10,8 @@ import { prefersReducedMotion } from "./px";
    Numbers come only from data/bench-landing.json, written by tools/landing-bench-data.ts. */
 
 type Key = "page" | "cursor" | "count" | "relationSort" | "facets" | "search";
+/** from the benchmark: did the tuned run make this request faster? */
+type Verdict = "improved" | "unchanged" | "worse";
 interface Data {
   placeholder: boolean;
   measuredOn: string;
@@ -19,7 +21,7 @@ interface Data {
   clients: number;
   runs: number;
   sizes: number[];
-  requests: Record<Key, { outOfTheBox: number[]; tuned: number[] }>;
+  requests: Record<Key, { outOfTheBox: number[]; tuned: number[]; verdict: Verdict }>;
   tunedSettings: { countCap: number };
 }
 const data = bench as Data;
@@ -65,7 +67,11 @@ const REQUESTS: { key: Key; label: string; shape: string; drop: number; flat?: b
     drop: 4,
   },
 ];
-const rows = REQUESTS.map((r) => ({ ...r, ...data.requests[r.key] }));
+// A request the tuned run did not make faster keeps its out-of-the-box columns: no drop is shown.
+const rows = REQUESTS.map((r) => {
+  const d = data.requests[r.key];
+  return { ...r, ...d, improved: d.verdict === "improved" };
+});
 const SIZE_LABEL = ["200k", "1M", "10M"];
 const SIZE_LONG = ["200,000", "1 million", "10 million"];
 const LAST = data.sizes.length - 1;
@@ -79,7 +85,7 @@ const frac = (ms: number) => Math.max(0.02, (Math.log10(ms) + 1) / 5); // 0.1 ms
 
 /* ---------- state: what the server renders is the end of the story ---------- */
 const beat = ref(4);
-const ks = ref(rows.map(() => 1)); // 0 = out of the box, 1 = tuned
+const ks = ref(rows.map((r) => (r.improved ? 1 : 0))); // 0 = out of the box, 1 = tuned
 const grow = ref([1, 1, 1]); // how far each size's columns have risen
 const keyOn = ref(-1);
 const valueAt = (i: number, s: number) =>
@@ -89,6 +95,15 @@ const labelAt = (i: number, s: number) => {
   const r = rows[i]!;
   return `${fmt(k > 0.98 ? r.tuned[s]! : k < 0.02 ? r.outOfTheBox[s]! : valueAt(i, s))} ms`;
 };
+
+/** shown next to a request that the tools flag but the tuned run did not speed up */
+const noteAt = (i: number) => {
+  const r = rows[i]!;
+  if (r.improved || r.flat || beat.value < r.drop) return "";
+  return r.verdict === "worse" ? " · slower tuned" : " · no change tuned";
+};
+const verdictText = (v: Verdict) =>
+  v === "improved" ? "faster" : v === "worse" ? "slower" : "no change";
 
 const slow = computed(() =>
   rows
@@ -177,7 +192,9 @@ const consoleFor = computed(() => {
           ["warn", "warn  orders  sort customer.name joins every order first"],
           ["ok", "      copy name onto orders and index it, or disable the sort"],
         ],
-        say: `checkIndexes() flags the relation sort. With its fix: ${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms.`,
+        say: r.improved
+          ? `checkIndexes() flags the relation sort. With its fix: ${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms.`
+          : `checkIndexes() flags the relation sort, but on this run its fix did not make it faster (${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms), so the chart leaves it as it was.`,
       };
     }
     default:
@@ -188,10 +205,19 @@ const consoleFor = computed(() => {
           ["", 'facets: { whenCapped: "skip" },'],
           ["ok", `// pageInfo: { rowCount: ${cap}, exact: false }`],
         ],
-        say: `A capped count and facet limits bring the rest down. This is the tuned state: ${rows
-          .filter((r) => r.drop === 4 && !r.flat)
-          .map((r) => `${r.label} ${fmt(r.tuned[LAST]!)} ms`)
-          .join(", ")} at 10M.`,
+        say: (() => {
+          const credited = rows.filter((r) => !r.flat);
+          const faster = credited.filter((r) => r.drop === 4 && r.improved);
+          const not = credited.filter((r) => !r.improved);
+          return (
+            `A capped count and facet limits bring the rest down. This is the tuned state: ${faster
+              .map((r) => `${r.label} ${fmt(r.tuned[LAST]!)} ms`)
+              .join(", ")} at 10M.` +
+            (not.length
+              ? ` ${not.map((r) => r.label).join(" and ")} did not get faster on this run.`
+              : "")
+          );
+        })(),
       };
   }
 });
@@ -271,6 +297,13 @@ const horiz = computed(() => {
     }),
   };
 });
+/** keep the 10M label inside the chart: centred on its column unless that would cross an edge */
+function valuePos(i: number, cx: number) {
+  const w = `10M: ${labelAt(i, LAST)}${noteAt(i)}`.length * 6.7;
+  if (cx + w / 2 > V.W - 2) return { x: V.W - 2, anchor: "end" };
+  if (cx - w / 2 < V.L) return { x: V.L, anchor: "start" };
+  return { x: cx, anchor: "middle" };
+}
 function wrap(t: string, max: number) {
   const out: string[] = [];
   let line = "";
@@ -292,7 +325,7 @@ let timers: number[] = [];
 let drops: { x: number; y: number; vx: number; vy: number; c: string; born: number }[] = [];
 let io: IntersectionObserver | undefined;
 const ease = (t: number) => 1 - Math.pow(1 - t, 3);
-const target = (b: number) => rows.map((r) => (b >= r.drop ? 1 : 0));
+const target = (b: number) => rows.map((r) => (r.improved && b >= r.drop ? 1 : 0));
 const later = (ms: number, fn: () => void) => timers.push(window.setTimeout(fn, ms));
 function stop() {
   cancelAnimationFrame(raf);
@@ -449,7 +482,7 @@ onBeforeUnmount(() => {
       <p class="px-lede">
         A page of rows takes about {{ rows[0]!.outOfTheBox[LAST]!.toFixed(1) }} ms at 200,000 rows
         and at 10 million. Counting grows with the table. The four tools below find each slow
-        request and bring it back down.
+        request and show what brings it back down.
       </p>
     </div>
     <div class="px-panel px-tb-panel">
@@ -573,11 +606,12 @@ onBeforeUnmount(() => {
                   <text
                     v-if="grow[LAST]! > 0.99"
                     class="val"
-                    :x="g.cols[LAST]!.cx"
+                    :x="valuePos(g.i, g.cols[LAST]!.cx).x"
                     :y="g.top"
-                    text-anchor="middle"
+                    :text-anchor="valuePos(g.i, g.cols[LAST]!.cx).anchor"
                   >
-                    <tspan class="vs">10M: </tspan>{{ labelAt(g.i, LAST) }}
+                    <tspan class="vs">10M: </tspan>{{ labelAt(g.i, LAST)
+                    }}<tspan v-if="noteAt(g.i)" class="vs">{{ noteAt(g.i) }}</tspan>
                   </text>
                   <rect
                     v-if="found.includes(g.r.key)"
@@ -634,7 +668,9 @@ onBeforeUnmount(() => {
                   :class="[`s-${g.r.key}`, { flat: g.r.flat, found: found.includes(g.r.key) }]"
                   :data-i="g.i"
                 >
-                  <text class="gl h" x="0" :y="g.y0 + 13">{{ g.r.label }}</text>
+                  <text class="gl h" x="0" :y="g.y0 + 13">
+                    {{ g.r.label }}<tspan v-if="noteAt(g.i)" class="vs">{{ noteAt(g.i) }}</tspan>
+                  </text>
                   <g mask="url(#px-tb-hm)">
                     <g v-if="ks[g.i]! > 0 && !g.r.flat" class="px-tb-ghost">
                       <rect
@@ -722,6 +758,7 @@ onBeforeUnmount(() => {
                 <th rowspan="2">Request</th>
                 <th colspan="3">Out of the box</th>
                 <th colspan="3">Tuned</th>
+                <th rowspan="2">Tuned vs out of the box</th>
               </tr>
               <tr>
                 <th v-for="(l, j) in [...SIZE_LABEL, ...SIZE_LABEL]" :key="j">{{ l }} rows</th>
@@ -732,6 +769,7 @@ onBeforeUnmount(() => {
                 <th scope="row">{{ r.label }}</th>
                 <td v-for="(v, s) in r.outOfTheBox" :key="`o${s}`">{{ fmt(v) }} ms</td>
                 <td v-for="(v, s) in r.tuned" :key="`t${s}`">{{ fmt(v) }} ms</td>
+                <td>{{ verdictText(r.verdict) }}</td>
               </tr>
             </tbody>
           </table>
