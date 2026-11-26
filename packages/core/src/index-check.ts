@@ -406,6 +406,8 @@ interface Need {
   nullIds: ReadonlySet<string>;
   /** Database names of the columns the scope has a condition on. */
   scopeColumns: ReadonlySet<string>;
+  /** The columns the scope requires to be null: the `where` of a partial index that orders. */
+  nullColumns: readonly PgColumn[];
 }
 
 type Verdict =
@@ -587,18 +589,14 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
   const labels: string[] = [];
   const drizzle: string[] = [];
   const statements: string[] = [];
-  const conditions: Array<{ drizzle: string; sql: string }> = [];
+  // `is null` cannot lead an index that orders: say it as a partial index condition instead.
+  const conditions = need.nullColumns.map((column) => ({
+    drizzle: `\${t.${columnKey(need.table, column) ?? column.name}} is null`,
+    sql: `${quoteIdentifier(names.column(column))} is null`,
+  }));
   for (const step of [...need.eq, ...need.sort]) {
     const dbName = names.column(step.column);
-    // `is null` cannot lead an index that orders: say it as a partial index condition instead.
-    if (need.nullIds.has(step.plainId) && !("dir" in step)) {
-      const key = columnKey(need.table, step.column) ?? step.column.name;
-      conditions.push({
-        drizzle: `\${t.${key}} is null`,
-        sql: `${quoteIdentifier(dbName)} is null`,
-      });
-      continue;
-    }
+    if (need.nullIds.has(step.plainId) && !("dir" in step)) continue;
     const key = columnKey(need.table, step.column) ?? step.column.name;
     const dir = "dir" in step ? (step as SortStep).dir : "asc";
     labels.push(step.lower ? `lower_${dbName}` : dbName);
@@ -741,6 +739,7 @@ interface Analysis {
   notNull: Set<string>;
   /** Columns the scope requires to be null, as index key ids. */
   nullIds: Set<string>;
+  nullColumns: PgColumn[];
   /** Database names of the columns the scope has a condition on. */
   scopeColumns: Set<string>;
   findings: IndexFinding[];
@@ -779,6 +778,7 @@ function sqlLiteral(value: unknown) {
 function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
   const byField = new Map<string, string[]>();
   const columns = new Set<string>();
+  const nullColumns = new Map<string, PgColumn>();
   for (const condition of analysis.scope.conditions) {
     const entry = analysis.target.trustedFields.get(condition.field);
     if (!entry || entry.source !== "root" || entry.virtual || !is(entry.column, PgColumn)) continue;
@@ -797,8 +797,9 @@ function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
       fact = `${name} is null`;
     }
     if (fact) byField.set(condition.field, [...(byField.get(condition.field) ?? []), fact]);
+    if (fact?.endsWith(" is null")) nullColumns.set(name, column);
   }
-  return { byField, columns };
+  return { byField, columns, nullColumns: [...nullColumns.values()] };
 }
 
 function describeSort(sort: readonly { field: string; dir: "asc" | "desc" }[]) {
@@ -889,6 +890,7 @@ function needFor(analysis: Analysis, sort: SortStep[]): Need {
       facts: analysis.facts,
       nullIds: analysis.nullIds,
       scopeColumns: analysis.scopeColumns,
+      nullColumns: analysis.nullColumns,
     },
     analysis.indexes,
     notNull,
@@ -1108,6 +1110,7 @@ function manyFixes(analysis: Analysis, steps: readonly FieldRegistryRelationStep
         facts: new Set<string>(),
         nullIds: new Set<string>(),
         scopeColumns: new Set<string>(),
+        nullColumns: [],
         sort: columns.map((column) => ({
           id: columnId(analysis.source.names.column(column)),
           plainId: columnId(analysis.source.names.column(column)),
@@ -1369,12 +1372,14 @@ function analyze(
         .map((column) => columnId(source.names.column(column))),
     ),
     nullIds: new Set<string>(),
+    nullColumns: [],
     scopeColumns: new Set<string>(),
     findings: [],
   };
   if (!target.customQuery) {
     analysis.scope = readScope(target, options);
-    const { byField, columns } = scopeFacts(analysis);
+    const { byField, columns, nullColumns } = scopeFacts(analysis);
+    analysis.nullColumns = nullColumns;
     analysis.facts = new Set([...byField.values()].flat());
     analysis.scopeColumns = columns;
     analysis.nullIds = new Set(

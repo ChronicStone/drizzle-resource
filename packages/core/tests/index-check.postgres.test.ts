@@ -66,6 +66,8 @@ const declared = eventTable("declared", (t) => [
   index("declared_idx").on(t.orgId, t.createdAt.desc(), t.id.desc()),
 ]);
 const undeclared = eventTable("undeclared");
+const softIs = eventTable("soft_is");
+const softEmpty = eventTable("soft_empty");
 const searchable = eventTable("searchable");
 const searchableIndexed = eventTable("searchable_indexed");
 const neverAnalyzed = eventTable("never_analyzed");
@@ -78,6 +80,8 @@ const schema = {
   ...tables,
   declared,
   undeclared,
+  softIs,
+  softEmpty,
   searchable,
   searchableIndexed,
   neverAnalyzed,
@@ -162,6 +166,18 @@ const declaredResource = defineSimple("declared", {
 const undeclaredResource = defineSimple("undeclared", {
   sort: { defaults: [{ key: "createdAt", dir: "desc" }] },
 });
+const byCreatedAtUnderOrg = (condition: (f: any) => any) => ({
+  scope: (f: any) => f.and([f.is("orgId", 1), condition(f)]),
+  sort: { defaults: [{ key: "createdAt", dir: "desc" }] },
+});
+const softIsResource = defineSimple(
+  "softIs",
+  byCreatedAtUnderOrg((f) => f.is("deletedAt", null)),
+);
+const softEmptyResource = defineSimple(
+  "softEmpty",
+  byCreatedAtUnderOrg((f) => f.isEmpty("deletedAt")),
+);
 const searchableResource = defineSimple("searchable", {
   search: { allowed: ["label"], defaults: ["label"] },
 });
@@ -242,6 +258,8 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       "searchable",
       "searchable_indexed",
       "never_analyzed",
+      "soft_is",
+      "soft_empty",
       "small_indexed",
       "small_missing",
       "unanalysed_indexed",
@@ -269,7 +287,7 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
         `create index on ${qualified("searchable_indexed")} using gin (lower(label) gin_trgm_ops)`,
       ),
     );
-    for (const name of [...variantNames, "declared", "undeclared"]) {
+    for (const name of [...variantNames, "declared", "undeclared", "soft_is", "soft_empty"]) {
       await db.execute(fill(name, 20_000));
       await db.execute(sql.raw(`analyze ${qualified(name)}`));
     }
@@ -458,6 +476,32 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       })) as IndexFinding[],
     );
     expect(checked?.message).toContain("Confirmed by EXPLAIN");
+  });
+
+  it("suggests a partial index for a soft-delete scope, and creating it clears the finding", async () => {
+    for (const [name, resource] of [
+      ["soft_is", softIsResource],
+      ["soft_empty", softEmptyResource],
+    ] as const) {
+      const sorts = (findings: IndexFinding[]) =>
+        findings.filter((finding) => finding.rule === "default-sort-unindexed");
+      const before = sorts((await resource.checkIndexes({ live: true })) as IndexFinding[]);
+      expect(before).toHaveLength(1);
+      expect(before[0]?.level).toBe("error");
+      const fix = before[0]!.fix!;
+      expect(fix.drizzle).toBe(
+        `index("${name}_org_id_created_at_id_partial_idx").on(t.orgId, t.createdAt.desc(), t.id.desc()).where(sql\`\${t.deletedAt} is null\`)`,
+      );
+      expect(fix.sql).toBe(
+        `create index ${name}_org_id_created_at_id_partial_idx on ${namespace.schemaName}.${name} (org_id, created_at desc, id desc) where deleted_at is null;`,
+      );
+      await db.execute(sql.raw(fix.sql));
+      await db.execute(sql.raw(`analyze ${qualified(name)}`));
+      const after = (await resource.checkIndexes({ live: true })) as IndexFinding[];
+      expect(sorts(after)).toEqual([]);
+      // PostgreSQL really reads the new index in order
+      expect((await pagePlan(resource)).filter((node) => /Sort$/.test(node))).toEqual([]);
+    }
   });
 
   it("explains a missing table", async () => {

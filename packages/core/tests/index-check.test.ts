@@ -325,6 +325,17 @@ describe("checkIndexes: default sort", () => {
     }
   });
 
+  it("suggests the partial index for an isEmpty scope too", () => {
+    const { resource } = setup(() => [], {
+      scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.isEmpty("deletedAt")]),
+      sort: { defaults: createdDesc },
+    });
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.fix?.sql).toBe(
+      "create index orders_org_id_created_at_id_partial_idx on orders (org_id, created_at desc, id desc) where deleted_at is null;",
+    );
+  });
+
   it("writes one where, joined with and, for several null scope columns", () => {
     const { resource } = setup(() => [], {
       scope: (f: any, ctx: any) =>
