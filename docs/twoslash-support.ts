@@ -15,13 +15,30 @@ import type {
   ResourceQuerySortConfig,
 } from "drizzle-resource";
 
+import { drizzle } from "drizzle-orm/node-postgres";
+
 import { db } from "./db";
 import { engine } from "./engine";
 import { ordersResource } from "./orders.resource";
 import { relations } from "./relations";
+import { scaleRelations, scaleRelationsAfter } from "./scale-example";
 import { customers, orders, products, schema, tags } from "./schema";
 
 export { customers, db, engine, orders, ordersResource, products, relations, schema, tags };
+
+// The Scale pages' example: the benchmark's orders and customers (see scale-example.ts).
+export {
+  byCustomerRequest,
+  deepRequest,
+  listRequest,
+  ordersWithName,
+  scaleRelations,
+  scaleRelationsAfter,
+  scaleSchema,
+  scaleSchemaAfter,
+} from "./scale-example";
+export const scaleDb = drizzle.mock({ relations: scaleRelations });
+export const scaleDbAfter = drizzle.mock({ relations: scaleRelationsAfter });
 
 export const request: QueryRequest = {
   context: {},
