@@ -45,19 +45,13 @@ export async function estimatePostgresQuery(
   }
 }
 
-export async function probePostgresSearch(
+/** Read the columns of a table that have a `lower(column)` trigram index, bypassing the cache. */
+export async function listPostgresSearchColumns(
   database: QueryEngineDb,
   table: PgTable,
   observing?: PlanningObserver,
 ) {
   if (!isPostgresDatabase(database)) return new Set<string>();
-  let tables = searchIndexes.get(database);
-  if (!tables) {
-    tables = new WeakMap();
-    searchIndexes.set(database, tables);
-  }
-  const cached = tables.get(table);
-  if (cached) return cached;
   const name = dialect.sqlToQuery(sql`${table}`).sql;
   const catalog = sql`
     select distinct attribute.attname as column
@@ -81,14 +75,29 @@ export async function probePostgresSearch(
       )
   `;
   const execution = database.execute<{ column: string }>(catalog, "objects");
-  const pending = Promise.resolve(
-    observing ? observing.observer.raw("plan", observing.request, catalog, execution) : execution,
-  )
-    .then((rows) => new Set(rows.map((row) => row.column)))
-    .catch((error: unknown) => {
-      tables.delete(table);
-      throw error;
-    });
+  const rows = await (observing
+    ? observing.observer.raw("plan", observing.request, catalog, execution)
+    : execution);
+  return new Set(rows.map((row) => row.column));
+}
+
+export async function probePostgresSearch(
+  database: QueryEngineDb,
+  table: PgTable,
+  observing?: PlanningObserver,
+) {
+  if (!isPostgresDatabase(database)) return new Set<string>();
+  let tables = searchIndexes.get(database);
+  if (!tables) {
+    tables = new WeakMap();
+    searchIndexes.set(database, tables);
+  }
+  const cached = tables.get(table);
+  if (cached) return cached;
+  const pending = listPostgresSearchColumns(database, table, observing).catch((error: unknown) => {
+    tables.delete(table);
+    throw error;
+  });
   tables.set(table, pending);
   return pending;
 }
