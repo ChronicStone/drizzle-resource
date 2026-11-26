@@ -21,6 +21,7 @@ function eventTable(name: string, extra?: (table: any) => any[]) {
       createdAt: timestamp("created_at").notNull(),
       deletedAt: timestamp("deleted_at"),
       label: text().notNull(),
+      slug: text(),
     },
     extra,
   );
@@ -40,7 +41,16 @@ const variants = {
   lowerexpr: "(lower(tenant), created_at desc, id desc)",
   extraeq: "(org_id, created_at desc, id desc)",
   partialimplied: "(org_id, created_at desc, id desc) where deleted_at is null",
+  // the scope does not mention deleted_at: a request could, but the scope cannot promise it
   partialunverified: "(org_id, created_at desc, id desc) where deleted_at is null",
+  extraeqvalue: "(org_id, created_at desc, id desc)",
+  softnoid: "(org_id, created_at desc)",
+  skipleading: "(deleted_at, created_at desc, id desc)",
+  nullprefix: "(org_id, deleted_at, created_at desc, id desc)",
+  unrelatedpartial: "(org_id, created_at desc, id desc) where label <> ''",
+  contradicted: "(org_id, created_at desc, id desc) where deleted_at is not null",
+  unverifiedlegit: "(org_id, created_at desc, id desc) where tenant = 't1'",
+  uniquenullable: undefined,
 } as const;
 type Variant = keyof typeof variants;
 const variantNames = Object.keys(variants) as Variant[];
@@ -89,18 +99,32 @@ const sortDefaults: Partial<Record<Variant, Array<{ key: string; dir: "asc" | "d
   nullslast: [{ key: "deletedAt", dir: "desc" }],
   nullsfirst: [{ key: "deletedAt", dir: "desc" }],
 };
-const scopes: Partial<Record<Variant, (f: any) => any>> = {
+const caseSensitive: Partial<Record<Variant, string[]>> = {
+  extraeqvalue: ["tenant"],
+  unverifiedlegit: ["tenant"],
+  uniquenullable: ["slug"],
+};
+const scopes: Partial<Record<Variant, (f: any, ctx: any) => any>> = {
   lowerplain: (f) => f.is("tenant", "t1"),
   lowerexpr: (f) => f.is("tenant", "t1"),
   // an index on the org and the sort serves this: the second equality only filters
   extraeq: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
   partialimplied: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  extraeqvalue: (f) => f.and([f.is("orgId", 1), f.is("tenant", "t1")]),
+  softnoid: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  skipleading: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  nullprefix: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  contradicted: (f) => f.and([f.is("orgId", 1), f.is("deletedAt", null)]),
+  unverifiedlegit: (f, ctx) => f.and([f.is("orgId", 1), f.is("tenant", ctx.tenant)]),
+  // at most one row matches: the unique key is complete once slug has a value
+  uniquenullable: (f) => f.and([f.is("orgId", 1), f.is("slug", "s1")]),
 };
 const resources = Object.fromEntries(
   variantNames.map((name) => [
     name,
     (engine as any).defineResource(name, {
       query: {
+        filters: { caseSensitive: caseSensitive[name] ?? [] },
         scope: scopes[name] ?? ((f: any) => f.is("orgId", 1)),
         sort: { defaults: sortDefaults[name] ?? [{ key: "createdAt", dir: "desc" }] },
         search: { allowed: ["label"] },
@@ -132,19 +156,22 @@ const neverAnalyzedResource = defineSimple("neverAnalyzed", {
 function fill(table: string, rows: number) {
   return sql`
     insert into ${sql.identifier(namespace.schemaName)}.${sql.identifier(table)}
-      (id, org_id, tenant, created_at, deleted_at, label)
+      (id, org_id, tenant, created_at, deleted_at, label, slug)
     select i, i % 5, 't' || (i % 3),
       timestamp '2025-01-01' + i * interval '1 minute',
       case when i % 2 = 0 then null else timestamp '2026-01-01' + i * interval '1 minute' end,
-      md5(i::text)
+      md5(i::text), 's' || i
     from generate_series(1, ${rows}) as i`;
 }
 
 const qualified = (table: string) => `${namespace.schemaName}."${table}"`;
 
+/** Sorting one row costs nothing: only sort nodes that read more than a row count. */
 function planNodes(plan: any): string[] {
   return [
-    plan["Node Type"] as string,
+    ...(plan["Plan Rows"] > 1 || !/Sort$/.test(plan["Node Type"])
+      ? [plan["Node Type"] as string]
+      : []),
     ...((plan.Plans ?? []) as any[]).flatMap((child) => planNodes(child)),
   ];
 }
@@ -159,6 +186,7 @@ async function pagePlan(resource: any) {
       search: { value: "", fields: [] },
       sorting: [],
     },
+    context: { tenant: "t1" },
   });
   const page = statements.find((statement) => /order by/i.test(statement.query));
   if (!page) throw new Error("The engine did not run a page query");
@@ -195,9 +223,12 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       await db.execute(
         sql.raw(`create table ${qualified(name)} (
           id integer primary key, org_id integer not null, tenant text not null,
-          created_at timestamp not null, deleted_at timestamp, label text not null)`),
+          created_at timestamp not null, deleted_at timestamp, label text not null, slug text)`),
       );
     }
+    await db.execute(
+      sql.raw(`create unique index on ${qualified("uniquenullable")} (org_id, slug)`),
+    );
     for (const name of variantNames) {
       const columns = variants[name];
       if (columns) await db.execute(sql.raw(`create index on ${qualified(name)} ${columns}`));
@@ -248,9 +279,18 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
       nullsfirst: { verdict: "served", sorts: [] },
       lowerplain: { verdict: "none", sorts: ["Sort"] },
       lowerexpr: { verdict: "served", sorts: [] },
-      extraeq: { verdict: "filtered", sorts: [] },
+      // is null is not a column the index needs: it is a filter on the rows it reads
+      extraeq: { verdict: "served", sorts: [] },
+      extraeqvalue: { verdict: "filtered", sorts: [] },
+      softnoid: { verdict: "near", sorts: ["Incremental Sort"] },
+      skipleading: { verdict: "none", sorts: ["Sort"] },
+      nullprefix: { verdict: "none", sorts: ["Sort"] },
+      unrelatedpartial: { verdict: "none", sorts: ["Sort"] },
+      contradicted: { verdict: "none", sorts: ["Sort"] },
+      unverifiedlegit: { verdict: "partial", sorts: [] },
+      uniquenullable: { verdict: "served", sorts: [] },
       partialimplied: { verdict: "served", sorts: [] },
-      partialunverified: { verdict: "partial", sorts: ["Sort"] },
+      partialunverified: { verdict: "none", sorts: ["Sort"] },
     });
   });
 
