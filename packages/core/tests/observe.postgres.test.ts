@@ -5,7 +5,15 @@ import { createQueryEngine } from "../index.js";
 import type { QueryEvent, QueryRequestInput } from "../index.js";
 import { createObserveFixture, pageRequest } from "./observe-fixture.js";
 
-const fixture = createObserveFixture({ rows: 20_000 });
+let hookMode: "ok" | "throw" | "reject" = "ok";
+const fixture = createObserveFixture({
+  rows: 20_000,
+  onQuery: () => {
+    if (hookMode === "throw") throw new Error("hook failed");
+    // Returned to the engine as is: a rejection must be swallowed there, not left unhandled.
+    if (hookMode === "reject") return Promise.reject(new Error("hook rejected"));
+  },
+});
 const { events, ordersResource } = fixture;
 
 const stages = () => events.map((event) => event.stage);
@@ -278,6 +286,29 @@ describe.skipIf(!fixture.connectionString)("onQuery on PostgreSQL", () => {
       context: { region: "eu" },
     });
     expect(events.at(0)!.shape).toBe("orders · sort createdAt desc · offset · count none");
+  });
+
+  it("never lets a hook that throws or rejects change a result or leak an unhandled rejection", async () => {
+    const unhandled: unknown[] = [];
+    const collect = (reason: unknown) => unhandled.push(reason);
+    process.on("unhandledRejection", collect);
+    try {
+      const request = pageRequest({ facets: [{ key: "status" }] });
+      hookMode = "ok";
+      const baseline = await ordersResource.query({ request, summary: true });
+      for (const mode of ["throw", "reject"] as const) {
+        hookMode = mode;
+        events.length = 0;
+        expect(await ordersResource.query({ request, summary: true })).toEqual(baseline);
+        // the hook ran for every statement, and every one of them failed
+        expect(events.length).toBeGreaterThanOrEqual(4);
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    } finally {
+      hookMode = "ok";
+      process.off("unhandledRejection", collect);
+    }
+    expect(unhandled).toEqual([]);
   });
 
   it("never lets a hook that throws change a result", async () => {

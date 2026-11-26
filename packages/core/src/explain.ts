@@ -1,6 +1,6 @@
 import { sql } from "drizzle-orm";
-import { isPostgresDatabase } from "./postgres.js";
-import { describeRequestShape, statementText } from "./observe.js";
+import { isOurTimeout, isPostgresDatabase } from "./postgres.js";
+import { cloneShape, describeRequestShape, statementText } from "./observe.js";
 import type { CapturedStatement, QueryEvent, RequestShape } from "./observe.js";
 import type { QueryEngineDb, QueryRequest } from "./types.js";
 
@@ -50,6 +50,10 @@ export interface ExplainStage {
   /** PostgreSQL's plan: the `Plan` object of `EXPLAIN (FORMAT JSON)`. */
   plan: ExplainPlanNode;
   warnings: ExplainWarning[];
+  /** A search without an exact count runs its ordinary plan first and the indexed plan as a fallback. */
+  attempt?: "ordinary" | "indexed";
+  /** With `analyze`, whether the ordinary attempt ran over the budget the engine gives it. */
+  budget?: { ms: number; exceeded: boolean };
 }
 
 export interface ExplainReport {
@@ -180,6 +184,8 @@ export interface AnalysisInput {
   relationSorts: readonly string[];
   /** The statement answers several facets through GROUPING SETS. */
   groupingSets: boolean;
+  /** The exact count of the page is a column of this statement. */
+  carriesCount?: boolean;
   facets?: readonly string[];
 }
 
@@ -223,6 +229,60 @@ function describeScan(node: Node) {
   return `${type.toLowerCase()} on ${relation}`;
 }
 
+/**
+ * Text filters compile to `lower(column) = $1` (and `lower(column) like ...`), so a plain index
+ * on the column does not serve them. Reads the expressions a plan's filter compares.
+ */
+export function lowerExpressions(filter: string | undefined) {
+  const equal = new Set<string>();
+  const like = new Set<string>();
+  const pattern = /lower\(\(?(?:"?\w+"?\.)?"?(\w+)"?\)?(?:::[a-z ]+)?\)\s*(~~\*?|=|<>|<=|>=|<|>)/g;
+  for (const match of filter?.matchAll(pattern) ?? []) {
+    (match[2]!.startsWith("~~") ? like : equal).add(match[1]!);
+  }
+  return { equal: [...equal], like: [...like] };
+}
+
+/** What index serves a filter, in plain words. */
+function indexAdvice(filter: string | undefined, relation: string) {
+  const { equal, like } = lowerExpressions(filter);
+  const parts: string[] = [];
+  if (equal.length > 0) {
+    const expressions = equal.map((column) => `lower(${column})`).join(", ");
+    parts.push(
+      `index the expression ${expressions} (CREATE INDEX ON ${relation} (${expressions})): the engine compares text without case, so a plain index on ${equal.join(", ")} is not used. Or add ${equal.map((column) => `"${column}"`).join(", ")} to filters.caseSensitive and keep the plain index`,
+    );
+  }
+  if (like.length > 0) {
+    parts.push(
+      `a trigram index on ${like.map((column) => `lower(${column})`).join(", ")} (CREATE INDEX ON ${relation} USING gin (lower(${like[0]}) gin_trgm_ops))`,
+    );
+  }
+  return parts.length > 0
+    ? parts.join("; ")
+    : `add an index on the filtered column(s) of ${relation}`;
+}
+
+function misestimateFix(filter: string | undefined, relation: string | undefined) {
+  const { equal, like } = lowerExpressions(filter);
+  const columns = [...new Set([...equal, ...like])];
+  if (columns.length > 0) {
+    const expressions = columns.map((column) => `lower(${column})`).join(", ");
+    return `PostgreSQL keeps no statistics on ${expressions}, so ANALYZE cannot fix this estimate: create an expression index on it (that also gathers statistics) or extended statistics on the expression (CREATE STATISTICS ... ON (${columns.map((column) => `lower(${column})`).join("), (")}) FROM ${relation ?? "the table"})`;
+  }
+  return `run ANALYZE${relation ? ` ${relation}` : ""}; if the estimate stays off, create extended statistics (CREATE STATISTICS) on the filtered columns, or put the filtered column on the root table`;
+}
+
+/** The filter of a node, or of the scans below it. */
+function filterOf(node: Node) {
+  return (
+    text(node, "Filter") ??
+    nodes(node)
+      .map(({ node: inner }) => text(inner, "Filter"))
+      .find((filter) => filter !== undefined)
+  );
+}
+
 /** Decide what a plan says. Pure: a plan, what the request asked for, and sizes in. */
 export function analyzePlan(input: AnalysisInput): Analysis {
   const { plan, analyzed, stage } = input;
@@ -248,12 +308,13 @@ export function analyzePlan(input: AnalysisInput): Analysis {
             ? sort.context.workers + Math.max(0, 1 - 0.3 * sort.context.workers)
             : 1)
       : undefined;
-    warnings.push({
-      code: "relation-sort",
-      message: `sorting by ${input.relationSorts.join(", ")} joins every matching row of ${input.root} to the related table before it can sort${sorted === undefined ? "" : ` (${about}${formatNumber(sorted)} rows sorted)`}`,
-      fix: `copy ${input.relationSorts.join(", ")} onto ${input.root} and sort by the copy, or add ${input.relationSorts.map((field) => `"${field}"`).join(", ")} to sort.disabled`,
-      basis,
-    });
+    if ((sorted ?? read) >= thresholds.rows)
+      warnings.push({
+        code: "relation-sort",
+        message: `sorting by ${input.relationSorts.join(", ")} joins every matching row of ${input.root} to the related table before it can sort${sorted === undefined ? "" : ` (${about}${formatNumber(sorted)} rows sorted)`}`,
+        fix: `copy ${input.relationSorts.join(", ")} onto ${input.root} and sort by the copy, or add ${input.relationSorts.map((field) => `"${field}"`).join(", ")} to sort.disabled`,
+        basis,
+      });
   }
 
   // deep-offset
@@ -268,7 +329,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
       fix: input.allowsCursor
         ? 'use cursor pagination (pagination: { mode: "cursor" }): it starts after the last row of the previous page, at any depth'
         : 'allow cursor pagination (query.pagination.modes: ["offset", "cursor"]) and page with it: it starts after the last row of the previous page, at any depth',
-      basis: "measured",
+      basis,
     });
   }
 
@@ -283,9 +344,14 @@ export function analyzePlan(input: AnalysisInput): Analysis {
     )
       continue;
     const name = text(node, "Index Name") ?? text(node, "Relation Name");
+    const { equal } = lowerExpressions(text(node, "Filter"));
+    const starts =
+      equal.length > 0
+        ? `the expression ${equal.map((column) => `lower(${column})`).join(", ")} (the engine compares text without case, so a plain index on the column is not used)`
+        : "the filtered columns";
     const fix = input.hasSearch
-      ? "add an index that starts with the filtered columns and ends with the sort columns; for the search, a lower(column) trigram index (gin_trgm_ops) lets PostgreSQL find the matches without walking the sort index"
-      : "add an index that starts with the filtered columns and ends with the sort columns, so the filter and the order come from one index";
+      ? `add an index that starts with ${starts} and ends with the sort columns; for the search, a lower(column) trigram index (gin_trgm_ops) lets PostgreSQL find the matches without walking the sort index`
+      : `add an index that starts with ${starts} and ends with the sort columns, so the filter and the order come from one index`;
     if (analyzed) {
       const removed = (number(node, "Rows Removed by Filter") ?? 0) * loops(node);
       const returned = actualRows(node);
@@ -330,6 +396,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
           label: string;
           relation?: string;
           implied: boolean;
+          filter?: string;
         }
       | undefined;
     const consider = (
@@ -338,6 +405,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
       label: string,
       relation?: string,
       implied = false,
+      filter?: string,
     ) => {
       const low = Math.min(planned, actual);
       const high = Math.max(planned, actual);
@@ -347,7 +415,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
       )
         return;
       if (!worst || high - low > worst.score) {
-        worst = { score: high - low, planned, actual, label, relation, implied };
+        worst = { score: high - low, planned, actual, label, relation, implied, filter };
       }
     };
     for (const { node, context } of all) {
@@ -374,12 +442,13 @@ export function analyzePlan(input: AnalysisInput): Analysis {
               label,
               relation,
               true,
+              text(node, "Filter"),
             );
           }
         }
         continue;
       }
-      consider(planned, actual, label, relation);
+      consider(planned, actual, label, relation, false, filterOf(node));
     }
     const found = worst as
       | {
@@ -388,6 +457,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
           label: string;
           relation?: string;
           implied: boolean;
+          filter?: string;
         }
       | undefined;
     if (found) {
@@ -400,7 +470,7 @@ export function analyzePlan(input: AnalysisInput): Analysis {
         message: found.implied
           ? `PostgreSQL expected ${formatNumber(found.planned)} matching rows in ${found.label}, but the rows it walked imply about ${formatNumber(found.actual)} (${formatNumber(factor)}x ${direction}), so it can pick a plan that is slow at this size`
           : `PostgreSQL expected ${formatNumber(found.planned)} rows from ${found.label} but got ${formatNumber(found.actual)} (${formatNumber(factor)}x ${direction}), so it can pick a plan that is slow at this size`,
-        fix: `run ANALYZE${found.relation ? ` ${found.relation}` : ""}; if the estimate stays off, create extended statistics (CREATE STATISTICS) on the filtered columns, or put the filtered column on the root table`,
+        fix: misestimateFix(found.filter, found.relation),
         basis,
       });
     }
@@ -421,13 +491,16 @@ export function analyzePlan(input: AnalysisInput): Analysis {
     warnings.push({
       code: "seq-scan",
       message: `reads ${about}${formatNumber(examined)} rows of ${text(node, "Relation Name")} to keep ${about}${formatNumber(kept)}: no index serves the filter ${filter.length > 90 ? `${filter.slice(0, 87)}...` : filter}`,
-      fix: `add an index on the filtered column(s) of ${text(node, "Relation Name")}`,
+      fix: indexAdvice(filter, text(node, "Relation Name")!),
       basis,
     });
   }
 
   // full-count: an exact count that reads every matching row
-  if (stage === "count" && !all.some(({ node }) => node["Node Type"] === "Limit")) {
+  if (
+    (stage === "count" || input.carriesCount) &&
+    !all.some(({ node }) => node["Node Type"] === "Limit")
+  ) {
     const bottom = all.filter(
       ({ node }) =>
         node["Node Type"] === "Aggregate" &&
@@ -450,7 +523,10 @@ export function analyzePlan(input: AnalysisInput): Analysis {
     if (bottom.length > 0 && read >= thresholds.rows && matched > input.countCap) {
       warnings.push({
         code: "full-count",
-        message: `${analyzed ? "reads" : "expects to read"} ${about}${formatNumber(read)} rows to return one number`,
+        message:
+          stage === "count"
+            ? `${analyzed ? "reads" : "expects to read"} ${about}${formatNumber(read)} rows to return one number`
+            : `the exact count rides in this ${stage} statement, which ${analyzed ? "reads" : "expects to read"} ${about}${formatNumber(read)} rows to produce it`,
         fix: `count: "capped" stops after ${formatNumber(input.countCap + 1)} rows and shows "${formatNumber(input.countCap)}+" instead`,
         basis,
       });
@@ -569,26 +645,79 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
     )
     .toSorted((left, right) => stageOrder[left.stage] - stageOrder[right.stage]);
 
-  async function explainAll(db: QueryEngineDb) {
-    const prefix = analyze
-      ? sql`explain (analyze, buffers, verbose, format json)`
-      : sql`explain (verbose, format json)`;
-    const plans: Array<{ plan: Node; executionTime?: number }> = [];
-    for (const entry of statements) {
-      const rows = await (db as any).execute(sql`${prefix} ${entry.statement}`, "objects");
-      plans.push(parsePlan(rows));
-    }
-    return plans;
+  interface Explained {
+    entry: (typeof statements)[number];
+    plan?: Node;
+    executionTime?: number;
+    /** The plan carries measurements. */
+    measured: boolean;
+    /** The ordinary search attempt ran over its budget, as it does for the engine. */
+    exceeded?: boolean;
+    /** The indexed attempt is not run: the ordinary one finished within its budget. */
+    skipped?: boolean;
   }
 
-  let plans: Array<{ plan: Node; executionTime?: number }>;
+  /** The ordinary search attempt runs under its budget, as it does in the engine. */
+  async function analyzeWithinBudget(db: QueryEngineDb, entry: Explained["entry"], budget: number) {
+    const started = performance.now();
+    const [{ previous } = { previous: "0" }] = await (db as any).execute(
+      sql`select current_setting('statement_timeout') as previous`,
+      "objects",
+    );
+    try {
+      const rows = await (db as any).transaction(async (savepoint: QueryEngineDb) => {
+        await (savepoint as any).execute(
+          sql`select set_config('statement_timeout', ${String(budget)}, true)`,
+        );
+        return (savepoint as any).execute(
+          sql`explain (analyze, buffers, verbose, format json) ${entry.statement}`,
+          "objects",
+        );
+      });
+      // RELEASE SAVEPOINT keeps a SET LOCAL until the transaction ends.
+      await (db as any).execute(sql`select set_config('statement_timeout', ${previous}, true)`);
+      return { ...parsePlan(rows), measured: true, exceeded: false };
+    } catch (error) {
+      const elapsed = performance.now() - started;
+      if (!isOurTimeout(error, elapsed, budget)) throw error;
+      const rows = await (db as any).execute(
+        sql`explain (verbose, format json) ${entry.statement}`,
+        "objects",
+      );
+      return { ...parsePlan(rows), executionTime: elapsed, measured: false, exceeded: true };
+    }
+  }
+
+  async function explainAll(db: QueryEngineDb) {
+    const results: Explained[] = [];
+    let ordinaryExceeded: boolean | undefined;
+    for (const entry of statements) {
+      if (entry.attempt === "indexed" && analyze && ordinaryExceeded === false) {
+        results.push({ entry, measured: false, skipped: true });
+        continue;
+      }
+      if (analyze && entry.attempt === "ordinary" && entry.budget !== undefined) {
+        const outcome = await analyzeWithinBudget(db, entry, entry.budget);
+        ordinaryExceeded = outcome.exceeded;
+        results.push({ entry, ...outcome });
+        continue;
+      }
+      const prefix = analyze
+        ? sql`explain (analyze, buffers, verbose, format json)`
+        : sql`explain (verbose, format json)`;
+      const rows = await (db as any).execute(sql`${prefix} ${entry.statement}`, "objects");
+      results.push({ entry, ...parsePlan(rows), measured: analyze });
+    }
+    return results;
+  }
+
+  let explained: Explained[] = [];
   if (analyze) {
     // EXPLAIN ANALYZE runs the statements for real: do it where nothing can be kept.
-    plans = [];
     try {
       await (database as any).transaction(
         async (transaction: QueryEngineDb) => {
-          plans = await explainAll(transaction);
+          explained = await explainAll(transaction);
           throw rollback;
         },
         { accessMode: "read only" },
@@ -597,25 +726,28 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       if (error !== rollback) throw error;
     }
   } else {
-    plans = await explainAll(database);
+    explained = await explainAll(database);
   }
+  const ran = explained.filter(
+    (result): result is Explained & { plan: Node } => result.plan !== undefined,
+  );
 
   const tables = await tableSizes(
     database,
-    plans.map(({ plan }) => plan),
+    ran.map(({ plan }) => plan),
   );
   const { shape, key } = describeRequestShape(run.resource, run.request, run.ignoreFilter);
   const { pagination } = run.request;
   const pageSize = pagination.pageSize <= 0 ? 25 : pagination.pageSize;
   const offset =
     pagination.mode === "offset" ? (Math.max(pagination.pageIndex, 1) - 1) * pageSize : 0;
+  const notes = [...run.notes];
 
-  const stages = statements.map((entry, index): ExplainStage => {
-    const { plan, executionTime } = plans[index]!;
+  const stages = ran.map(({ entry, plan, executionTime, measured, exceeded }): ExplainStage => {
     const analysis = analyzePlan({
       stage: entry.stage,
       plan,
-      analyzed: analyze,
+      analyzed: measured,
       tables,
       countCap: run.countCap,
       root: run.resource,
@@ -629,29 +761,74 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       hasSearch: run.request.search.value.length > 0,
       relationSorts: run.relationSorts,
       groupingSets: entry.groupingSets === true,
+      carriesCount: entry.carriesCount === true,
       facets: entry.facets,
     });
-    const label =
+    const attempt =
+      entry.attempt === "ordinary"
+        ? `ordinary search plan, runs first with a ${entry.budget} ms budget`
+        : entry.attempt === "indexed"
+          ? "indexed search plan, used when the ordinary one runs over its budget"
+          : undefined;
+    const label = [
       entry.stage === "facets" && entry.facets
-        ? `${entry.facets.join(", ")}${entry.groupingSets ? " (GROUPING SETS)" : ""}${entry.note ? `: ${entry.note}` : ""}`
-        : entry.note;
+        ? `${entry.facets.join(", ")}${entry.groupingSets ? " (GROUPING SETS)" : ""}`
+        : undefined,
+      attempt,
+      entry.note,
+    ]
+      .filter(Boolean)
+      .join("; ");
     return {
       stage: entry.stage,
       ...(label ? { label } : {}),
       sql: statementText(entry.statement),
-      ...(analyze && executionTime !== undefined ? { ms: executionTime } : {}),
+      ...(executionTime !== undefined && (measured || exceeded) ? { ms: executionTime } : {}),
       ...(analysis.rowsRead === undefined ? {} : { rowsRead: analysis.rowsRead }),
       ...(analysis.rowsReturned === undefined ? {} : { rowsReturned: analysis.rowsReturned }),
-      summary: analysis.summary,
+      summary: exceeded
+        ? `stopped at its ${entry.budget} ms budget, the engine retries with the indexed plan; planned: ${analysis.summary}`
+        : analysis.summary,
       plan,
       warnings: analysis.warnings,
+      ...(entry.attempt === undefined
+        ? {}
+        : {
+            attempt: entry.attempt,
+            ...(entry.attempt === "ordinary" && analyze
+              ? { budget: { ms: entry.budget!, exceeded: exceeded === true } }
+              : {}),
+          }),
     };
   });
+
+  // Say which search plan the engine takes, and why.
+  const ordinary = ran.find(({ entry }) => entry.attempt === "ordinary");
+  const indexed = ran.find(({ entry }) => entry.attempt === "indexed");
+  if (ordinary) {
+    const budget = ordinary.entry.budget;
+    if (analyze && ordinary.exceeded) {
+      notes.push(
+        `search: the ordinary plan ran over its ${budget} ms budget, so the engine retries with the indexed plan: every request with this search pays the ${budget} ms first`,
+      );
+    } else if (analyze) {
+      notes.push(
+        `search: the ordinary plan finished within its ${budget} ms budget, so the engine keeps it and never runs the indexed plan`,
+      );
+    } else if (indexed) {
+      const cost = (node: Node) => number(node, "Total Cost") ?? 0;
+      const ordinaryCost = cost(ordinary.plan);
+      const indexedCost = cost(indexed.plan);
+      notes.push(
+        `search: the engine runs the ordinary plan first with a ${budget} ms budget and switches to the indexed plan only if that runs over, which it cannot know before running. PostgreSQL costs the ordinary plan at ${formatNumber(ordinaryCost)} and the indexed plan at ${formatNumber(indexedCost)}, so ${indexedCost < ordinaryCost ? "it expects the indexed plan to be cheaper: a rare term falls back to it" : "it expects the ordinary plan to be the cheaper one"}`,
+      );
+    }
+  }
 
   return {
     resource: run.resource,
     shape,
-    shapeKey: key,
+    shapeKey: cloneShape(key),
     analyzed: analyze,
     stages,
     planning: run.planning.map(({ stage, sql: statement, ms, rows }) => ({
@@ -660,7 +837,7 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       ms,
       rows,
     })),
-    notes: run.notes,
+    notes,
   };
 }
 

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { createQueryEngine, formatExplain } from "../index.js";
 import type { ExplainPlanNode, ExplainReport, QueryEvent, QueryRequest } from "../index.js";
-import { analyzePlan } from "../src/explain.js";
+import { analyzePlan, lowerExpressions } from "../src/explain.js";
 import type { AnalysisInput } from "../src/explain.js";
 import { createStatementObserver, describeRequestShape } from "../src/observe.js";
 
@@ -425,6 +425,211 @@ describe("plan analysis", () => {
       }),
     );
     expect(parallel.warnings).toEqual([]);
+  });
+});
+
+describe("advice for text filters", () => {
+  const scan = (filter: string, extra: Partial<ExplainPlanNode> = {}) =>
+    plan({
+      "Node Type": "Seq Scan",
+      "Relation Name": "orders",
+      Filter: filter,
+      "Plan Rows": 10,
+      "Actual Rows": 3,
+      "Actual Loops": 1,
+      "Rows Removed by Filter": 499_997,
+      ...extra,
+    });
+
+  it("reads the expressions a plan compares", () => {
+    expect(lowerExpressions("(lower(orders.status) = 'x'::text)")).toEqual({
+      equal: ["status"],
+      like: [],
+    });
+    expect(lowerExpressions("(lower((orders.reference)::text) ~~ '%x%'::text)")).toEqual({
+      equal: [],
+      like: ["reference"],
+    });
+    expect(lowerExpressions('(lower(orders."customerId") = ANY ($1))')).toEqual({
+      equal: ["customerId"],
+      like: [],
+    });
+    expect(lowerExpressions("(orders.amount = 3)")).toEqual({ equal: [], like: [] });
+  });
+
+  it("advises the expression index, not a plain one, for a text equality", () => {
+    const { warnings } = analyzePlan(
+      input({ stage: "ids", plan: scan("(lower(orders.reference) = 'ref-77'::text)") }),
+    );
+    expect(warnings[0]!.fix).toBe(
+      'index the expression lower(reference) (CREATE INDEX ON orders (lower(reference))): the engine compares text without case, so a plain index on reference is not used. Or add "reference" to filters.caseSensitive and keep the plain index',
+    );
+  });
+
+  it("advises a trigram index for a substring filter, and a plain one for a number", () => {
+    expect(
+      analyzePlan(
+        input({ stage: "ids", plan: scan("(lower((orders.reference)::text) ~~ '%x%'::text)") }),
+      ).warnings[0]!.fix,
+    ).toContain("USING gin (lower(reference) gin_trgm_ops)");
+    expect(
+      analyzePlan(input({ stage: "ids", plan: scan("(orders.amount = 3)") })).warnings[0]!.fix,
+    ).toBe("add an index on the filtered column(s) of orders");
+  });
+
+  it("starts the index of an index walk with the expression", () => {
+    const { warnings } = analyzePlan(
+      input({
+        stage: "ids",
+        plan: plan({
+          "Node Type": "Limit",
+          "Plan Rows": 25,
+          "Actual Rows": 25,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Index Scan",
+              "Index Name": "orders_created_idx",
+              "Relation Name": "orders",
+              Filter: "(lower(orders.status) = 'x'::text)",
+              "Plan Rows": 5_000,
+              "Actual Rows": 25,
+              "Actual Loops": 1,
+              "Rows Removed by Filter": 100_000,
+            },
+          ],
+        }),
+      }),
+    );
+    const walk = warnings.find((warning) => warning.code === "index-walk")!;
+    expect(walk.fix).toContain("starts with the expression lower(status)");
+  });
+
+  it("does not send a misestimate on an expression to ANALYZE", () => {
+    const { warnings } = analyzePlan(
+      input({
+        stage: "count",
+        plan: plan({
+          "Node Type": "Aggregate",
+          "Plan Rows": 1,
+          "Actual Rows": 1,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Relation Name": "orders",
+              Filter: "(lower(orders.status) = 'paid'::text)",
+              "Plan Rows": 1_500,
+              "Actual Rows": 75_000,
+              "Actual Loops": 1,
+              "Rows Removed by Filter": 225_000,
+            },
+          ],
+        }),
+      }),
+    );
+    const estimate = warnings.find((warning) => warning.code === "misestimate")!;
+    expect(estimate.fix).toMatch(
+      /^PostgreSQL keeps no statistics on lower\(status\), so ANALYZE cannot fix/,
+    );
+    expect(estimate.fix).toContain("CREATE STATISTICS ... ON (lower(status)) FROM orders");
+  });
+});
+
+describe("plan analysis thresholds and basis", () => {
+  const sorted = (rows: number) =>
+    plan({
+      "Node Type": "Limit",
+      "Plan Rows": 25,
+      "Actual Rows": 25,
+      "Actual Loops": 1,
+      Plans: [
+        {
+          "Node Type": "Sort",
+          "Plan Rows": rows,
+          "Actual Rows": 25,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Relation Name": "orders",
+              "Plan Rows": rows,
+              "Actual Rows": rows,
+              "Actual Loops": 1,
+            },
+          ],
+        },
+      ],
+    });
+
+  it("leaves a relation sort over a handful of rows alone", () => {
+    const warn = (rows: number) =>
+      analyzePlan(input({ stage: "ids", plan: sorted(rows), relationSorts: ["customer.name"] }))
+        .warnings;
+    expect(warn(1)).toEqual([]);
+    expect(warn(500_000).map((warning) => warning.code)).toEqual(["relation-sort"]);
+  });
+
+  it("calls a deep offset measured only after analyze", () => {
+    const deep = {
+      pagination: { mode: "offset" as const, offset: 50_000, pageSize: 25, pageIndex: 2_001 },
+    };
+    const basis = (analyzed: boolean) =>
+      analyzePlan(input({ stage: "ids", plan: sorted(1), analyzed, ...deep })).warnings[0]!.basis;
+    expect(basis(false)).toBe("estimated");
+    expect(basis(true)).toBe("measured");
+  });
+
+  it("finds the full count in the statement that carries it", () => {
+    const warnings = analyzePlan(
+      input({
+        stage: "facets",
+        carriesCount: true,
+        groupingSets: false,
+        plan: plan({
+          "Node Type": "Aggregate",
+          "Actual Rows": 5,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Relation Name": "orders",
+              "Actual Rows": 800_000,
+              "Actual Loops": 1,
+            },
+          ],
+        }),
+      }),
+    ).warnings;
+    expect(warnings.map((warning) => warning.code)).toEqual(["full-count"]);
+    expect(warnings[0]!.message).toBe(
+      "the exact count rides in this facets statement, which reads 800,000 rows to produce it",
+    );
+  });
+});
+
+describe("shape of an event", () => {
+  it("is a copy: a hook that edits one event does not change the next", async () => {
+    const seen: string[][] = [];
+    const observer = createStatementObserver("orders", [
+      (event) => {
+        seen.push([...event.shapeKey.filters]);
+        event.shapeKey.filters.push("edited:is");
+        event.shapeKey.resource = "edited";
+      },
+    ]);
+    const query = Object.assign(Promise.resolve([]), { toSQL: () => ({ sql: "select 1" }) });
+    const filtered = request({
+      filters: [{ type: "condition", key: "status", operator: "is", value: 1 }],
+    });
+    const events: QueryEvent[] = [];
+    const second = createStatementObserver("orders", [(event) => void events.push(event)]);
+    await observer.run("ids", filtered, query);
+    await observer.run("rows", filtered, query);
+    await second.run("rows", filtered, query);
+    expect(seen).toEqual([["status:is"], ["status:is"]]);
+    expect(events[0]!.shapeKey.filters).toEqual(["status:is"]);
+    expect(events[0]!.shapeKey.resource).toBe("orders");
   });
 });
 

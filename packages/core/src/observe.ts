@@ -109,6 +109,17 @@ export function describeRequestShape(
   return described;
 }
 
+/** A copy of a shape that shares nothing with the cached one. */
+export function cloneShape(key: RequestShape): RequestShape {
+  return {
+    ...key,
+    filters: [...key.filters],
+    sorting: [...key.sorting],
+    search: [...key.search],
+    facets: [...key.facets],
+  };
+}
+
 /** The SQL text of a statement, with placeholders and without parameter values. */
 export function statementText(statement: SQL): string {
   return dialect.sqlToQuery(statement).sql;
@@ -126,6 +137,15 @@ export interface CapturedStatement {
   groupingSets?: boolean;
   /** Why the statement is not an ordinary one, in plain words. */
   note?: string;
+  /** The exact count of the page is a column of this statement, not a statement of its own. */
+  carriesCount?: boolean;
+  /**
+   * A search without an exact count runs the `ordinary` plan first, with a time budget, and the
+   * `indexed` plan only when the budget runs out.
+   */
+  attempt?: "ordinary" | "indexed";
+  /** The budget of the `ordinary` attempt, in milliseconds. */
+  budget?: number;
 }
 
 export interface ObservedStatementOptions<T> {
@@ -134,6 +154,7 @@ export interface ObservedStatementOptions<T> {
   facets?: string[];
   groupingSets?: boolean;
   note?: string;
+  carriesCount?: boolean;
 }
 
 /**
@@ -161,6 +182,10 @@ export interface StatementObserver {
   readonly dry: boolean;
   /** Add a statement to a dry run's capture without running anything. */
   record(entry: CapturedStatement): void;
+  /** How many statements a dry run has captured so far. */
+  captured(): number;
+  /** Mark the statements a dry run captured since `from`. */
+  annotate(from: number, patch: Partial<CapturedStatement>): void;
 }
 
 /** Planning and scan statements run even in a dry run: they are not the request's own work. */
@@ -205,7 +230,8 @@ export function createStatementObserver(
         resource,
         stage,
         shape,
-        shapeKey: key,
+        // Each event gets its own copy: a hook that edits one must not change the next.
+        shapeKey: cloneShape(key),
         ms: performance.now() - started,
         rows,
         sql: text(),
@@ -249,6 +275,10 @@ export function createStatementObserver(
     record(entry) {
       capture?.push(entry);
     },
+    captured: () => capture?.length ?? 0,
+    annotate(from, patch) {
+      for (const entry of capture?.slice(from) ?? []) Object.assign(entry, patch);
+    },
     run(stage, request, query, statementOptions) {
       if (capture && !alwaysRun.has(stage)) {
         capture.push({
@@ -257,6 +287,7 @@ export function createStatementObserver(
           facets: statementOptions?.facets,
           groupingSets: statementOptions?.groupingSets,
           note: statementOptions?.note,
+          carriesCount: statementOptions?.carriesCount,
         });
         return Promise.resolve(statementOptions?.dry as never);
       }

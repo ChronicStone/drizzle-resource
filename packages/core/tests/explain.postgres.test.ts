@@ -1,3 +1,4 @@
+import { sql } from "drizzle-orm";
 import { afterAll, beforeAll, describe, expect, it } from "vite-plus/test";
 
 import { formatExplain } from "../index.js";
@@ -79,6 +80,7 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
     expect(report.stages[0]!.warnings).toHaveLength(1);
     expect(report.stages[0]!.warnings[0]).toMatchObject({
       code: "deep-offset",
+      basis: "estimated",
       message:
         "page 4,000 skips 199,950 rows to return 50: PostgreSQL reads and discards every row before the page",
       fix: 'use cursor pagination (pagination: { mode: "cursor" }): it starts after the last row of the previous page, at any depth',
@@ -222,6 +224,173 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       "the count is the planner's row estimate for this statement, nothing is counted",
     );
     expect(report.stages[1]!.sql).not.toMatch(/count\(\*\)/);
+  });
+
+  it("advises the expression index for a text filter, and the advice clears the warning", async () => {
+    const request = pageRequest({ filters: [is("status", "zzz")] });
+    const flagged = (report: ExplainReport) =>
+      report.stages
+        .flatMap((stage) => stage.warnings)
+        .filter((warning) => warning.code === "seq-scan" || warning.code === "index-walk");
+    for (const analyze of [false, true]) {
+      const before = flagged(await ordersResource.explain({ request, analyze }));
+      expect(before.length).toBeGreaterThan(0);
+      for (const warning of before) expect(warning.fix).toContain("lower(status)");
+    }
+    await fixture.db.execute(
+      sql`create index orders_lower_status_idx on ${fixture.orders} (lower(status))`,
+    );
+    try {
+      await fixture.db.execute(sql`analyze ${fixture.orders}`);
+      const after = await ordersResource.explain({ request, analyze: true });
+      expect(flagged(after)).toEqual([]);
+      expect(after.stages[0]!.rowsRead).toBeLessThan(10);
+    } finally {
+      await fixture.db.execute(
+        sql`drop index ${sql.identifier(fixture.schemaName)}.orders_lower_status_idx`,
+      );
+    }
+  });
+
+  it("does not send an estimate on a text expression to ANALYZE", async () => {
+    const report = await ordersResource.explain({
+      request: pageRequest({ filters: [is("status", "paid")] }),
+      analyze: true,
+    });
+    const estimate = report.stages
+      .flatMap((stage) => stage.warnings)
+      .find((warning) => warning.code === "misestimate")!;
+    expect(estimate.fix).toMatch(
+      /^PostgreSQL keeps no statistics on lower\(status\), so ANALYZE cannot fix/,
+    );
+  });
+
+  it("leaves a sort through a relation alone when almost nothing matches", async () => {
+    const report = await ordersResource.explain({
+      request: pageRequest({
+        filters: [is("id", 5)],
+        sorting: [{ key: "customer.name", dir: "asc" }],
+      }),
+      analyze: true,
+    });
+    expect(codes(report, "ids")).not.toContain("relation-sort");
+  });
+
+  it("finds the full count in the facets statement that carries it", async () => {
+    const report = await ordersResource.explain({
+      request: pageRequest({ facets: [{ key: "status" }, { key: "region" }] }),
+      analyze: true,
+    });
+    expect(report.stages.map((stage) => stage.stage)).toEqual(["ids", "facets"]);
+    const found = report.stages[1]!.warnings.find((warning) => warning.code === "full-count")!;
+    expect(found.message).toBe(
+      "the exact count rides in this facets statement, which reads 300,000 rows to produce it",
+    );
+    expect(found.fix).toContain('count: "capped"');
+  });
+
+  describe("a search without an exact count", () => {
+    const request = pageRequest({
+      pagination: noCount,
+      search: { value: "ref-29999", fields: ["reference", "customer.name"] },
+    });
+
+    it("explains both plans and says which the engine takes, without running anything", async () => {
+      const report = await ordersResource.explain({ request });
+      const [ordinary, indexed] = report.stages.filter((stage) => stage.stage === "ids");
+      expect(ordinary).toMatchObject({ attempt: "ordinary" });
+      expect(indexed).toMatchObject({ attempt: "indexed" });
+      expect(ordinary!.sql).not.toBe(indexed!.sql);
+      expect(ordinary!.label).toBe("ordinary search plan, runs first with a 25 ms budget");
+      expect(report.notes.join("\n")).toMatch(
+        /^search: the engine runs the ordinary plan first with a 25 ms budget and switches to the indexed plan only if that runs over/,
+      );
+      expect(report.notes.join("\n")).toMatch(
+        /PostgreSQL costs the ordinary plan at [\d,]+ and the indexed plan at [\d,]+/,
+      );
+    });
+
+    it("applies the budget under analyze, and keeps the ordinary plan when it fits", async () => {
+      const roomy = fixture.engine.defineResource("orders", {
+        relations: { customer: true },
+        query: {
+          pagination: { modes: ["offset"] },
+          search: { allowed: ["reference", "customer.name"], planBudget: 60_000 },
+        },
+      });
+      const report = await roomy.explain({ request, analyze: true });
+      const ids = report.stages.filter((stage) => stage.stage === "ids");
+      expect(ids).toHaveLength(1);
+      expect(ids[0]).toMatchObject({
+        attempt: "ordinary",
+        budget: { ms: 60_000, exceeded: false },
+      });
+      expect(report.notes.join("\n")).toContain(
+        "the ordinary plan finished within its 60000 ms budget, so the engine keeps it",
+      );
+    });
+
+    it("reports the attempt that ran over its budget and then the indexed retry", async () => {
+      const tight = fixture.engine.defineResource("orders", {
+        relations: { customer: true },
+        query: {
+          pagination: { modes: ["offset"] },
+          search: { allowed: ["reference", "customer.name"], planBudget: 1 },
+        },
+      });
+      const report = await tight.explain({ request, analyze: true });
+      const ids = report.stages.filter((stage) => stage.stage === "ids");
+      expect(ids.map((stage) => stage.attempt)).toEqual(["ordinary", "indexed"]);
+      expect(ids[0]!.budget).toEqual({ ms: 1, exceeded: true });
+      expect(ids[0]!.summary).toMatch(
+        /^stopped at its 1 ms budget, the engine retries with the indexed plan/,
+      );
+      expect(ids[1]!.ms).toBeGreaterThan(0);
+      expect(report.notes.join("\n")).toContain("ran over its 1 ms budget, so the engine retries");
+      expect(formatExplain(report)).toContain("stopped at its 1 ms budget");
+    });
+  });
+
+  it("explains inside a caller's transaction, without the search budget, and leaves it usable", async () => {
+    const request = pageRequest({
+      pagination: noCount,
+      search: { value: "ref-29999", fields: ["reference", "customer.name"] },
+    });
+    const report = await fixture.db.transaction(async (transaction) => {
+      const explained = await ordersResource.explain({ request, db: transaction, analyze: true });
+      const result = await transaction.execute<{ one: number }>(sql`select 1 as one`);
+      expect(result.rows[0]!.one).toBe(1);
+      return explained;
+    });
+    expect(report.stages.filter((stage) => stage.stage === "ids")).toHaveLength(1);
+    expect(report.stages[0]!.attempt).toBeUndefined();
+    expect(report.analyzed).toBe(true);
+  });
+
+  it("explains concurrent requests independently", async () => {
+    const requests = [
+      pageRequest({ pagination: { ...noCount, pageIndex: 4_000, pageSize: 50 } }),
+      pageRequest({ filters: [is("amount", 12_345)] }),
+      pageRequest({ sorting: [{ key: "customer.name", dir: "asc" }] }),
+      pageRequest({ facets: [{ key: "status" }, { key: "region" }] }),
+    ];
+    const alone = [];
+    for (const request of requests) alone.push(await ordersResource.explain({ request }));
+    const together = await Promise.all([
+      ...requests.map((request) => ordersResource.explain({ request })),
+      ordersResource.query({ request: pageRequest() }),
+      ...requests.map((request) => ordersResource.explain({ request, analyze: true })),
+    ]);
+    const warnings = (report: ExplainReport) =>
+      report.stages.map((stage) => [stage.stage, stage.warnings.map((warning) => warning.code)]);
+    for (const [index, report] of alone.entries()) {
+      expect(warnings(together[index] as ExplainReport)).toEqual(warnings(report));
+    }
+    for (const index of requests.keys()) {
+      const measured = together[requests.length + 1 + index] as ExplainReport;
+      expect(measured.shape).toBe(alone[index]!.shape);
+      expect(measured.analyzed).toBe(true);
+    }
   });
 
   it("refuses a resource whose ids come from your own statement", async () => {

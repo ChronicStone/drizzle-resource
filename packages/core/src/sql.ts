@@ -811,7 +811,21 @@ export function createQueryResourceUtils<
     db: QueryEngineDb,
     run: (db: QueryEngineDb) => Promise<TResult>,
   ): Promise<TResult> {
-    if (!undecidedSearches.delete(request) || observer.dry) return run(db);
+    if (!undecidedSearches.delete(request)) return run(db);
+    if (observer.dry) {
+      // A dry run shows both attempts: the ordinary plan the engine runs first, with its budget,
+      // and the indexed plan it falls back to. Only the ordinary one answers the caller.
+      const budget = resource.queryConfig.search.planBudget;
+      let from = observer.captured();
+      const ordinary = await run(db);
+      observer.annotate(from, { attempt: "ordinary", budget });
+      indexedSearchRequests.add(request);
+      from = observer.captured();
+      await run(db);
+      observer.annotate(from, { attempt: "indexed", budget });
+      indexedSearchRequests.delete(request);
+      return ordinary;
+    }
     const outcome = await withStatementTimeout(db, resource.queryConfig.search.planBudget, run, {
       capToCurrent: true,
     });
@@ -1093,18 +1107,24 @@ export function createQueryResourceUtils<
       resource.queryConfig.timeouts.count,
       async (db): Promise<QueryPageCount> => {
         if (mode === "exact") {
-          const [total] = await observer.run("count", request, buildCountQuery(request, db), {
-            dry: [{ rowCount: dryExactCount }],
-          });
+          const [total] = await observer.run(
+            "count",
+            request,
+            buildCountQuery(request, db),
+            observer.dry ? { dry: [{ rowCount: dryExactCount }] } : undefined,
+          );
           return { count: "exact", rowCount: Number(total?.rowCount ?? 0) };
         }
         const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(
           request,
           db,
           async (planned) =>
-            observer.run("count", request, buildCappedCountQuery(request, planned), {
-              dry: [{ rowCount: cap }],
-            }),
+            observer.run(
+              "count",
+              request,
+              buildCappedCountQuery(request, planned),
+              observer.dry ? { dry: [{ rowCount: cap }] } : undefined,
+            ),
         );
         const found = Number(total?.rowCount ?? 0);
         return { count: "capped", rowCount: Math.min(found, cap), exact: found <= cap };
@@ -1258,7 +1278,7 @@ export function createQueryResourceUtils<
           .orderBy(...orderBy)
           .limit(pageSize + (needsLookahead ? 1 : 0))
           .offset(offset),
-        { dry: [] },
+        observer.dry ? { dry: [] } : undefined,
       )) as any[];
     };
     const queriedRows = await plannedSearch(request, database, fetchPage);
@@ -1328,7 +1348,7 @@ export function createQueryResourceUtils<
         with: relations,
         ...projection?.config(database, true),
       }),
-      { dry: [] },
+      observer.dry ? { dry: [] } : undefined,
     );
 
     const orderIndex = new Map(orderedIds.map((id: unknown, index: number) => [id, index]));
@@ -1446,7 +1466,12 @@ export function createQueryResourceUtils<
         direct
           ? joinRelationSteps(query, config.schema, joins).where(buildWhereClause(aggregateRequest))
           : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))),
-        { dry: [{ ...(includeCount ? { [countKey]: dryExactCount } : {}) }] },
+        observer.dry
+          ? {
+              dry: [{ ...(includeCount ? { [countKey]: dryExactCount } : {}) }],
+              carriesCount: includeCount,
+            }
+          : undefined,
       )) as Array<Record<string, unknown>>;
     });
     if (outcome.timedOut) {
@@ -1694,7 +1719,12 @@ export function createQueryResourceUtils<
 
       results[index] = formatResult(
         plan,
-        await observer.run("facets", request, facetQuery, { dry: [], facets: [String(facet.key)] }),
+        await observer.run(
+          "facets",
+          request,
+          facetQuery,
+          observer.dry ? { dry: [], facets: [String(facet.key)] } : undefined,
+        ),
       );
     }
 
@@ -1770,12 +1800,20 @@ export function createQueryResourceUtils<
           ),
         )
         .orderBy(asc(ranked.mask), asc(ranked.position));
-      const rows = await observer.run("facets", request, rowsQuery, {
-        // A dry run answers the exact count the grouping sets would carry, so the page is not skipped.
-        dry: count ? [{ mask: 2 ** group.length - 1, count: dryExactCount }] : [],
-        facets: group.map(({ facet }) => String(facet.key)),
-        groupingSets: true,
-      });
+      const rows = await observer.run(
+        "facets",
+        request,
+        rowsQuery,
+        observer.dry
+          ? {
+              // A dry run answers the exact count the grouping sets would carry, so the page is not skipped.
+              dry: count ? [{ mask: 2 ** group.length - 1, count: dryExactCount }] : [],
+              facets: group.map(({ facet }) => String(facet.key)),
+              groupingSets: true,
+              carriesCount: count,
+            }
+          : undefined,
+      );
       if (count) {
         rowCount = Number(
           rows.find((row: any) => Number(row.mask) === 2 ** group.length - 1)?.count ?? 0,
@@ -1865,11 +1903,13 @@ export function createQueryResourceUtils<
           (db as any).select({ count: sql<number>`count(*)` }).from(rootTable),
           empty,
         ).where(buildWhereClause(empty)),
-        {
-          dry: [{ count: 0 }],
-          facets: [String(plan.facet.key)],
-          note: `rows where ${String(plan.facet.key)} is empty`,
-        },
+        observer.dry
+          ? {
+              dry: [{ count: 0 }],
+              facets: [String(plan.facet.key)],
+              note: `rows where ${String(plan.facet.key)} is empty`,
+            }
+          : undefined,
       );
       return Number(row?.count ?? 0);
     }

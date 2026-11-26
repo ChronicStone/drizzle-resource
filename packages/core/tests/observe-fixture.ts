@@ -63,7 +63,7 @@ export function createObserveFixture(options: {
     relations,
     onQuery: (event) => {
       events.push(event);
-      options.onQuery?.(event);
+      return options.onQuery?.(event);
     },
   });
   const ordersResource = engine.defineResource("orders", {
@@ -84,7 +84,15 @@ export function createObserveFixture(options: {
   });
 
   async function setup() {
-    await db.execute(sql`create extension if not exists pg_trgm`);
+    // Test files run in parallel and `create extension if not exists` still races: take a lock.
+    const installer = await client.connect();
+    try {
+      await installer.query("select pg_advisory_lock(87654321)");
+      await installer.query("create extension if not exists pg_trgm");
+    } finally {
+      await installer.query("select pg_advisory_unlock(87654321)").catch(() => undefined);
+      installer.release();
+    }
     await db.execute(sql`create schema ${sql.identifier(namespace.schemaName)}`);
     await db.execute(sql`create table ${customers} (
       id integer primary key, name text not null, country text not null
@@ -130,6 +138,7 @@ export function createObserveFixture(options: {
     scopedResource,
     orders,
     schema,
+    schemaName: namespace.schemaName,
     relationsGraph: relations,
     setup,
     teardown,
