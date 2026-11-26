@@ -95,6 +95,8 @@ interface IndexInfo {
   method: string;
   unique: boolean;
   partial: boolean;
+  /** The `where` condition of a partial index, as text. */
+  predicate?: string;
   valid: boolean;
   keys: IndexKey[];
 }
@@ -147,8 +149,40 @@ function normalizeExpression(text: string) {
 const columnId = (name: string) => `col:${name}`;
 const expressionId = (text: string) => `expr:${normalizeExpression(text)}`;
 
+/** Words PostgreSQL does not accept as a bare table or column name. */
+const reservedWords = new Set(
+  `all analyse analyze and any array as asc asymmetric authorization binary both case cast check collate collation column concurrently constraint create cross current_catalog current_date current_role current_schema current_time current_timestamp current_user default deferrable desc distinct do else end except false fetch for foreign freeze from full grant group having ilike in initially inner intersect into is isnull join lateral leading left like limit localtime localtimestamp natural not notnull null offset on only or order outer overlaps placing primary references returning right select session_user similar some symmetric system_user table tablesample then to trailing true union unique user using variadic verbose when where window with`.split(
+    " ",
+  ),
+);
+
 function quoteIdentifier(name: string) {
-  return /^[a-z_][a-z0-9_]*$/.test(name) ? name : `"${name.replaceAll('"', '""')}"`;
+  return /^[a-z_][a-z0-9_]*$/.test(name) && !reservedWords.has(name)
+    ? name
+    : `"${name.replaceAll('"', '""')}"`;
+}
+
+/**
+ * Split a partial index condition into its `and` parts, comparable with the scope's facts:
+ * `deleted_at is null`, `status = 'open'`. String literals keep their case.
+ */
+function predicateParts(text: string): string[] {
+  const parts = text
+    .split(/('(?:[^']|'')*')/)
+    .map((piece, position) =>
+      position % 2 === 1
+        ? piece
+        : piece
+            .toLowerCase()
+            .replace(/"[^"]*"\./g, "")
+            .replaceAll('"', "")
+            .replace(/::[a-z_]+(?: [a-z_]+)?/g, "")
+            .replace(/[()]/g, " "),
+    )
+    .join("")
+    .replace(/\s+/g, " ")
+    .trim();
+  return parts.split(/ and /i).map((part) => part.trim());
 }
 
 function qualifiedTable(names: Names, table: PgTable) {
@@ -190,6 +224,7 @@ function schemaIndexes(table: PgTable, names: Names): IndexInfo[] {
       method: index.method ?? "btree",
       unique: Boolean(index.unique),
       partial: Boolean(index.where),
+      predicate: index.where ? defaultDialect.sqlToQuery(index.where).sql : undefined,
       valid: true,
       keys: index.columns.map((entry): IndexKey => {
         if (is(entry, IndexedColumn)) {
@@ -214,6 +249,7 @@ type LiveIndexRow = {
   unique: boolean;
   valid: boolean;
   partial: boolean;
+  predicate: string | null;
   keys: Array<{
     column: string | null;
     expression: string | null;
@@ -250,6 +286,7 @@ async function loadLiveTable(
           idx.indisunique as unique,
           (idx.indisvalid and idx.indisready) as valid,
           idx.indpred is not null as partial,
+          pg_catalog.pg_get_expr(idx.indpred, idx.indrelid) as predicate,
           (
             select json_agg(
               json_build_object(
@@ -285,6 +322,7 @@ async function loadLiveTable(
       method: row.method,
       unique: row.unique,
       partial: row.partial,
+      predicate: row.predicate ?? undefined,
       valid: row.valid,
       keys: (row.keys ?? []).map((key): IndexKey => ({
         id: key.column === null ? expressionId(key.expression ?? "") : columnId(key.column),
@@ -339,6 +377,8 @@ interface Step {
   /** The comparison is `lower(column)`, not the column itself. */
   lower: boolean;
   nullable: boolean;
+  /** What the equality guarantees about every row, as a partial index condition would say it. */
+  facts: string[];
 }
 
 interface SortStep extends Step {
@@ -351,24 +391,49 @@ interface Need {
   table: PgTable;
   eq: Step[];
   sort: SortStep[];
+  /** Every condition the scope guarantees, such as `deleted_at is null`. */
+  facts: ReadonlySet<string>;
 }
 
 type Verdict =
   | { kind: "served"; index: string }
+  /** Serves the sort, but some scope equalities are not in the index and filter row by row. */
+  | { kind: "filtered"; index: string; missing: string[] }
+  /** A partial index that would serve it if the scope always included its condition. */
+  | { kind: "partial"; index: string; condition: string }
   | { kind: "near"; index: string }
   | { kind: "none" };
+
+interface MatchOptions {
+  ignoreNulls?: boolean;
+  plainEquality?: boolean;
+  /** Count a partial index even if the scope does not imply its condition. */
+  assumePartial?: boolean;
+}
 
 const defaultNulls = (dir: "asc" | "desc") => (dir === "asc" ? "last" : "first");
 const flip = <T extends string>(value: T, a: T, b: T) => (value === a ? b : a);
 
-/** Number of sort steps an index serves in order, reading it forward or backward. */
-function servedSteps(
-  need: Need,
-  index: IndexInfo,
-  options: { ignoreNulls?: boolean; plainEquality?: boolean },
-) {
-  if (index.method !== "btree" || index.partial || !index.valid) return undefined;
-  const wanted = new Set(need.eq.map((step) => (options.plainEquality ? step.plainId : step.id)));
+/**
+ * How much of the need an index serves, reading it forward or backward: the sort steps in order,
+ * and the scope equalities that are not among its leading columns.
+ */
+function servedSteps(need: Need, index: IndexInfo, options: MatchOptions) {
+  if (index.method !== "btree" || !index.valid) return undefined;
+  let covered = new Set<string>();
+  let implied = !index.partial;
+  if (index.partial) {
+    const parts = index.predicate ? predicateParts(index.predicate) : undefined;
+    implied = parts !== undefined && parts.every((part) => need.facts.has(part));
+    if (!implied && !options.assumePartial) return undefined;
+    covered = new Set(parts ?? []);
+  }
+  const wanted = new Map(
+    need.eq
+      .filter((step) => !step.facts.some((fact) => implied && covered.has(fact)))
+      .map((step) => [options.plainEquality ? step.plainId : step.id, step.field]),
+  );
+  const total = wanted.size;
   let position = 0;
   while (wanted.size > 0 && position < index.keys.length) {
     const key = index.keys[position]!;
@@ -376,7 +441,8 @@ function servedSteps(
     wanted.delete(key.id);
     position += 1;
   }
-  if (wanted.size > 0) return undefined;
+  // An index that starts with none of the scope columns would walk every tenant's rows.
+  if (wanted.size > 0 && wanted.size === total) return undefined;
   let forward = true;
   let backward = true;
   let served = 0;
@@ -391,34 +457,59 @@ function servedSteps(
     if (!forward && !backward) break;
     served += 1;
   }
-  return served;
+  return {
+    served,
+    missing: [...wanted.values()],
+    unverified: index.partial && !implied,
+  };
 }
 
-function evaluate(
-  need: Need,
-  indexes: IndexInfo[],
-  options: { ignoreNulls?: boolean; plainEquality?: boolean } = {},
-): Verdict {
+function evaluate(need: Need, indexes: IndexInfo[], options: MatchOptions = {}): Verdict {
+  let filtered: Verdict | undefined;
   let near: string | undefined;
   for (const index of indexes) {
-    const served = servedSteps(need, index, options);
-    if (served === undefined) continue;
-    if (served === need.sort.length) return { kind: "served", index: index.name };
-    if (served === need.sort.length - 1 && need.sort.at(-1)?.tieBreaker) near ??= index.name;
+    const match = servedSteps(need, index, options);
+    if (!match) continue;
+    if (match.served === need.sort.length) {
+      if (match.missing.length === 0) return { kind: "served", index: index.name };
+      filtered ??= { kind: "filtered", index: index.name, missing: match.missing };
+    } else if (
+      match.served === need.sort.length - 1 &&
+      need.sort.at(-1)?.tieBreaker &&
+      match.missing.length === 0
+    ) {
+      near ??= index.name;
+    }
   }
+  if (filtered) return filtered;
   return near ? { kind: "near", index: near } : { kind: "none" };
 }
 
-function uniqueKeys(indexes: IndexInfo[]) {
+/** `evaluate`, then, when nothing serves the need, the partial indexes that might. */
+function assess(need: Need, indexes: IndexInfo[]): Verdict {
+  const verdict = evaluate(need, indexes);
+  if (verdict.kind !== "none") return verdict;
+  for (const index of indexes) {
+    if (!index.partial) continue;
+    const match = servedSteps(need, index, { assumePartial: true });
+    if (match && match.served === need.sort.length && match.unverified) {
+      return { kind: "partial", index: index.name, condition: index.predicate ?? "a condition" };
+    }
+  }
+  return verdict;
+}
+
+/** Unique keys whose columns cannot be null: a unique index lets rows with a null column tie. */
+function uniqueKeys(indexes: IndexInfo[], notNull: ReadonlySet<string>) {
   return indexes
     .filter((index) => index.unique && !index.partial && index.valid)
     .map((index) => index.keys.map((key) => key.id))
-    .filter((ids) => ids.length > 0 && ids.every((id) => id.startsWith("col:")));
+    .filter((ids) => ids.length > 0 && ids.every((id) => notNull.has(id)));
 }
 
 /** Cut the sort where the columns so far are unique: nothing after that can tie. */
-function reduceNeed(need: Need, indexes: IndexInfo[]): Need {
-  const unique = uniqueKeys(indexes);
+function reduceNeed(need: Need, indexes: IndexInfo[], notNull: ReadonlySet<string>): Need {
+  const unique = uniqueKeys(indexes, notNull);
   const covered = new Set(need.eq.map((step) => step.id));
   const holds = () => unique.find((key) => key.every((id) => covered.has(id)));
   const single = holds();
@@ -472,7 +563,9 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
   };
 }
 
-function mergeFixes(fixes: Array<{ drizzle: string; sql: string }>) {
+function mergeFixes(all: Array<{ drizzle: string; sql: string }>) {
+  // Two fields can ask for the same index: a second `create index` of it would fail.
+  const fixes = [...new Map(all.map((fix) => [fix.sql, fix])).values()];
   if (fixes.length === 0) return undefined;
   return {
     drizzle: fixes.map((fix) => fix.drizzle).join("\n"),
@@ -508,10 +601,12 @@ interface ScopeRead {
   equalities: string[];
   /** Every field the scope reads. */
   fields: string[];
+  /** Every condition, and whether the scope needs all of them at once (no `or` above it). */
+  conditions: Array<{ field: string; operator: string; value: unknown; conjunctive: boolean }>;
 }
 
 function readScope(target: IndexCheckTarget, options: CheckIndexesOptions): ScopeRead {
-  if (!target.scope) return { equalities: [], fields: [] };
+  if (!target.scope) return { equalities: [], fields: [], conditions: [] };
   let input: QueryFilterInput;
   try {
     input = target.scope(
@@ -528,12 +623,14 @@ function readScope(target: IndexCheckTarget, options: CheckIndexesOptions): Scop
   }
   const equalities: string[] = [];
   const fields: string[] = [];
+  const conditions: ScopeRead["conditions"] = [];
   function walk(node: QueryFilterNode, conjunctive: boolean) {
     if (node.type === "group") {
       for (const child of node.children) walk(child, conjunctive && node.combinator === "and");
       return;
     }
     if (!fields.includes(node.key)) fields.push(node.key);
+    conditions.push({ field: node.key, operator: node.operator, value: node.value, conjunctive });
     if (
       conjunctive &&
       node.operator === "is" &&
@@ -545,7 +642,7 @@ function readScope(target: IndexCheckTarget, options: CheckIndexesOptions): Scop
   }
   const roots = Array.isArray(input) ? input : input ? [input] : [];
   for (const node of roots) walk(node, true);
-  return { equalities, fields };
+  return { equalities, fields, conditions };
 }
 
 interface Analysis {
@@ -555,6 +652,10 @@ interface Analysis {
   indexes: IndexInfo[];
   eq: Step[];
   scope: ScopeRead;
+  /** Conditions the scope guarantees on every row, as a partial index would state them. */
+  facts: Set<string>;
+  /** Columns that can never be null, as index key ids. */
+  notNull: Set<string>;
   findings: IndexFinding[];
 }
 
@@ -563,6 +664,7 @@ function makeStep(
   field: string,
   entry: FieldRegistryEntry,
   lowerWhenText: boolean,
+  facts: string[] = [],
 ): Step | undefined {
   if (entry.source !== "root" || entry.virtual || !is(entry.column, PgColumn)) return undefined;
   const column = entry.column as PgColumn;
@@ -576,7 +678,38 @@ function makeStep(
     table: analysis.target.table,
     lower,
     nullable: !column.notNull,
+    facts,
   };
+}
+
+function sqlLiteral(value: unknown) {
+  if (typeof value === "string") return `'${value.replaceAll("'", "''")}'`;
+  if (typeof value === "number" && Number.isFinite(value)) return String(value);
+  return undefined;
+}
+
+/** What each scope condition says about every row, in the words of a partial index condition. */
+function scopeFacts(analysis: Pick<Analysis, "target" | "source" | "scope">) {
+  const byField = new Map<string, string[]>();
+  for (const condition of analysis.scope.conditions) {
+    if (!condition.conjunctive) continue;
+    const entry = analysis.target.trustedFields.get(condition.field);
+    if (!entry || entry.source !== "root" || entry.virtual || !is(entry.column, PgColumn)) continue;
+    const column = entry.column as PgColumn;
+    const name = analysis.source.names.column(column);
+    const text = isTextEntry(entry);
+    const exact = !text || analysis.target.caseSensitive.has(condition.field);
+    let fact: string | undefined;
+    if (condition.operator === "is" && !Array.isArray(condition.value)) {
+      if (condition.value === null) fact = `${name} is null`;
+      else if (exact && sqlLiteral(condition.value) !== undefined)
+        fact = `${name} = ${sqlLiteral(condition.value)}`;
+    } else if (condition.operator === "isEmpty" && !text && !(column as any).dimensions) {
+      fact = `${name} is null`;
+    }
+    if (fact) byField.set(condition.field, [...(byField.get(condition.field) ?? []), fact]);
+  }
+  return byField;
 }
 
 function describeSort(sort: readonly { field: string; dir: "asc" | "desc" }[]) {
@@ -657,8 +790,10 @@ function needFor(analysis: Analysis, sort: SortStep[]): Need {
       table: analysis.target.table,
       eq,
       sort: sort.filter((step) => !covered.has(step.column)),
+      facts: analysis.facts,
     },
     analysis.indexes,
+    analysis.notNull,
   );
 }
 
@@ -716,14 +851,31 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
   }
   if (unknown) return undefined;
   const need = needFor(analysis, steps);
-  const verdict = evaluate(need, analysis.indexes);
+  const verdict = assess(need, analysis.indexes);
   if (verdict.kind === "served") return need;
   const label = describeSort(steps);
   const fix = buildFix(analysis.source, need);
   const fields = steps.map((step) => step.field);
   const hints = hintsFor(need, analysis.indexes);
   const hint = hints.length > 0 ? ` (${hints.join("; ")})` : "";
-  if (mixes(need)) {
+  if (verdict.kind === "filtered") {
+    add(
+      analysis,
+      "warn",
+      "default-sort-unindexed",
+      `default sort ${label}${scopeSuffix(analysis)} is served by index ${verdict.index}, but the scope on ${verdict.missing.join(", ")} is not in it: ${verdict.missing.join(", ")} filters row by row. Add ${verdict.missing.length === 1 ? "it" : "them"} to the index only if that filter is selective`,
+      fields,
+    );
+  } else if (verdict.kind === "partial") {
+    add(
+      analysis,
+      "warn",
+      "default-sort-unindexed",
+      `default sort ${label}${scopeSuffix(analysis)} is served by index ${verdict.index} only when every query meets its condition (${verdict.condition}), and the scope does not always say so: checkIndexes cannot confirm the index is used`,
+      fields,
+      fix,
+    );
+  } else if (mixes(need)) {
     add(
       analysis,
       "warn",
@@ -767,11 +919,14 @@ function checkSorts(analysis: Analysis, defaultNeed: Need | undefined) {
       relations.set(path, [...(relations.get(path) ?? []), field]);
       continue;
     }
+    // A column the scope fixes by equality has one value: nothing to sort.
+    if (analysis.eq.some((step) => step.column === entry.column)) continue;
     const { steps } = sortSteps(analysis, [{ key: field, dir: "asc" }]);
     if (steps.length === 0 || steps[0]!.field !== field) continue;
     const need = needFor(analysis, steps);
     if (skip !== undefined && signature(need) === skip) continue;
-    if (evaluate(need, analysis.indexes).kind === "served") continue;
+    // Filtering a little row by row, or an index only the scope can confirm, is not "no index".
+    if (["served", "filtered", "partial"].includes(assess(need, analysis.indexes).kind)) continue;
     missing.push(field);
     fixes.push(buildFix(analysis.source, need));
   }
@@ -833,6 +988,7 @@ function manyFixes(analysis: Analysis, steps: readonly FieldRegistryRelationStep
       buildFix(analysis.source, {
         table,
         eq: [],
+        facts: new Set<string>(),
         sort: columns.map((column) => ({
           id: columnId(analysis.source.names.column(column)),
           plainId: columnId(analysis.source.names.column(column)),
@@ -841,6 +997,7 @@ function manyFixes(analysis: Analysis, steps: readonly FieldRegistryRelationStep
           table,
           lower: false,
           nullable: !column.notNull,
+          facts: [],
           dir: "asc",
           tieBreaker: false,
         })),
@@ -999,14 +1156,22 @@ function analyze(
     options,
     indexes,
     eq: [],
-    scope: { equalities: [], fields: [] },
+    scope: { equalities: [], fields: [], conditions: [] },
+    facts: new Set<string>(),
+    notNull: new Set(
+      Object.values(getColumns(target.table) as Record<string, PgColumn>)
+        .filter((column) => column.notNull || column.primary)
+        .map((column) => columnId(source.names.column(column))),
+    ),
     findings: [],
   };
   if (!target.customQuery) {
     analysis.scope = readScope(target, options);
+    const facts = scopeFacts(analysis);
+    analysis.facts = new Set([...facts.values()].flat());
     analysis.eq = analysis.scope.equalities.flatMap((field) => {
       const entry = target.trustedFields.get(field);
-      const step = entry ? makeStep(analysis, field, entry, true) : undefined;
+      const step = entry ? makeStep(analysis, field, entry, true, facts.get(field)) : undefined;
       return step ? [step] : [];
     });
     const defaultNeed = checkDefaultSort(analysis);
@@ -1041,6 +1206,36 @@ function tablesOf(target: IndexCheckTarget) {
   return tables;
 }
 
+/**
+ * The resources of an engine, held weakly: a resource defined per request or per tenant and then
+ * dropped is collected, and no longer appears in `engine.checkIndexes()`.
+ */
+export function createIndexCheckRegistry() {
+  const refs = new Set<WeakRef<object>>();
+  const targets = new WeakMap<object, IndexCheckTarget>();
+  return {
+    add(owner: object, target: IndexCheckTarget) {
+      targets.set(owner, target);
+      refs.add(new WeakRef(owner));
+    },
+    targets(): IndexCheckTarget[] {
+      const alive: IndexCheckTarget[] = [];
+      for (const ref of refs) {
+        const owner = ref.deref();
+        const target = owner ? targets.get(owner) : undefined;
+        if (target) alive.push(target);
+        else refs.delete(ref);
+      }
+      return alive;
+    },
+  };
+}
+
+/** Resources defined twice with the same definition would report every finding twice. */
+function withoutRepeats(findings: IndexFinding[]) {
+  return [...new Map(findings.map((finding) => [JSON.stringify(finding), finding])).values()];
+}
+
 export function runIndexChecks(
   targets: readonly IndexCheckTarget[],
   options: CheckIndexesOptions & { live: true },
@@ -1058,7 +1253,9 @@ export function runIndexChecks(
   options: CheckIndexesOptions = {},
 ): IndexFinding[] | Promise<IndexFinding[]> {
   if (!options.live) {
-    return targets.flatMap((target) => analyze(target, schemaSource(target.db), options, false));
+    return withoutRepeats(
+      targets.flatMap((target) => analyze(target, schemaSource(target.db), options, false)),
+    );
   }
   return (async () => {
     const results: IndexFinding[] = [];
@@ -1084,7 +1281,7 @@ export function runIndexChecks(
       );
       results.push(...analyze(target, liveSource(names, new Map(loaded)), options, true));
     }
-    return results;
+    return withoutRepeats(results);
   })();
 }
 

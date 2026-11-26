@@ -30,7 +30,7 @@ import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from 
 import { createQueryFilterBuilder } from "./filters.js";
 import { defaultQueryValidation } from "./contracts.js";
 import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
-import { runIndexChecks } from "./index-check.js";
+import { createIndexCheckRegistry, runIndexChecks } from "./index-check.js";
 import type { CheckIndexesOptions, IndexCheckTarget } from "./index-check.js";
 
 function normalizeRequest(
@@ -327,7 +327,7 @@ export function createQueryEngine<
   } as QueryEngineConfig<TDb, TSchema, TRelations>;
   validateModels(config.schema, config.models ?? {}, config.relations);
   // Shared by every engine that `withContext()` derives, so one call checks every resource.
-  const indexCheckTargets: IndexCheckTarget[] = [];
+  const indexChecks = createIndexCheckRegistry();
   function buildEngine<TEngineContext extends GenericObject>(): QueryEngine<
     TDb,
     TSchema,
@@ -539,7 +539,6 @@ export function createQueryEngine<
         customQuery: Boolean(options.strategy?.query || options.strategy?.ids),
         customFacets: Boolean(options.strategy?.facets),
       };
-      indexCheckTargets.push(indexCheckTarget);
 
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
       let summaryShape: ReturnType<typeof resolveSummaryShape> | undefined;
@@ -758,6 +757,8 @@ export function createQueryEngine<
           );
         },
       } as unknown as QueryResource<any, any, any, any, any, any, any, any>;
+
+      indexChecks.add(resource, indexCheckTarget);
 
       trustedResource = {
         ...resource,
@@ -1129,7 +1130,7 @@ export function createQueryEngine<
         return buildEngine<TContext>();
       },
       checkIndexes: (checkOptions?: CheckIndexesOptions) =>
-        runIndexChecks(indexCheckTargets, checkOptions),
+        runIndexChecks(indexChecks.targets(), checkOptions),
       defineScope,
       defineResource,
       defineQueryResource,
