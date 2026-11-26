@@ -65,20 +65,33 @@ const indexedBudgetFactor = 4;
 /** Most statements of one request that run at the same time when facets are split. */
 const maxSplitStatements = 4;
 
-/** Runs the tasks `limit` at a time. The first failure stops the ones that have not started. */
-async function runLimited(tasks: Array<() => Promise<void>>, limit: number) {
-  const queue = [...tasks];
-  await Promise.all(
-    Array.from({ length: Math.min(limit, queue.length) }, async () => {
+/**
+ * Lets `limit` tasks run at a time; the others wait for a slot. After the first failure the ones
+ * that have not started never start.
+ */
+function createStatementSlots(limit: number) {
+  let active = 0;
+  let failed = false;
+  const waiting: Array<() => void> = [];
+  return {
+    async run<TResult>(task: () => Promise<TResult>): Promise<TResult> {
+      if (active < limit) active += 1;
+      else await new Promise<void>((resolve) => waiting.push(resolve));
       try {
-        for (let task = queue.shift(); task; task = queue.shift()) await task();
+        if (failed) return undefined as TResult;
+        return await task();
       } catch (error) {
-        queue.length = 0;
+        failed = true;
         throw error;
+      } finally {
+        const next = waiting.shift();
+        if (next) next();
+        else active -= 1;
       }
-    }),
-  );
+    },
+  };
 }
+type StatementSlots = ReturnType<typeof createStatementSlots>;
 
 function isExactCount(count: QueryPageCount) {
   return count.count === "exact" || (count.count === "capped" && count.exact);
@@ -1562,6 +1575,8 @@ export function createQueryResourceUtils<
     const mode = request.pagination.count;
     const approximate = mode === "capped" || mode === "estimated";
     const facets = request.facets ?? [];
+    // Split facets and the count that runs next to them share one limit.
+    const slots = createStatementSlots(isCallerTransaction(database) ? 1 : maxSplitStatements);
     let pageCount: QueryPageCount | undefined;
     let aggregates:
       | (QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount })
@@ -1574,17 +1589,18 @@ export function createQueryResourceUtils<
         facets,
         knownRowCount: rowCount,
         includeCount: mode === "exact" && rowCount === undefined,
+        slots,
       });
     } else if (resource.queryConfig.facets.whenCapped === "skip") {
       // Facets are the expensive part, so the count decides first whether they run at all.
       pageCount = await resolveCount(request);
       aggregates = isAboveCap(pageCount, countCap())
         ? { facets: skippedFacets(facets) }
-        : await resolveAggregates({ request, facets });
+        : await resolveAggregates({ request, facets, slots });
     } else {
       [pageCount, aggregates] = await Promise.all([
-        resolveCount(request),
-        resolveAggregates({ request, facets }),
+        slots.run(() => resolveCount(request)),
+        resolveAggregates({ request, facets, slots }),
       ]);
     }
     const { ids, pageInfo } = await executeIdsQuery({
@@ -1602,11 +1618,13 @@ export function createQueryResourceUtils<
     facets,
     knownRowCount,
     includeCount = false,
+    slots = createStatementSlots(isCallerTransaction(database) ? 1 : maxSplitStatements),
   }: {
     request: QueryRequest;
     facets: QueryFacetRequest[];
     knownRowCount?: number;
     includeCount?: boolean;
+    slots?: StatementSlots;
   }): Promise<QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount }> {
     await prepareSearch(request);
     let rowCount: number | undefined;
@@ -1911,6 +1929,10 @@ export function createQueryResourceUtils<
             ) &&
             first.joins.length === plan.joins.length &&
             first.joins.every((step) => plan.joins.some((other) => step.path === other.path)) &&
+            // A shared statement inner-joins every member's relation, which would drop the rows
+            // that have no such relation from a facet that does not need it.
+            first.inner.size === plan.inner.size &&
+            [...first.inner].every((path) => plan.inner.has(path)) &&
             candidate.every(({ entry }) => entry.column !== plan.entry.column)
           );
         });
@@ -1926,6 +1948,7 @@ export function createQueryResourceUtils<
       groups.find(
         ([first]) =>
           first?.predicate &&
+          first.inner.size === 0 &&
           first.predicate.sql === countPredicate.sql &&
           first.predicate.params.length === countPredicate.params.length &&
           first.predicate.params.every((value, index) =>
@@ -1940,12 +1963,7 @@ export function createQueryResourceUtils<
       const { splitAbove } = resource.queryConfig.facets;
       if (!isPostgresDatabase(database) || splitAbove === Infinity) return false;
       if (splitAbove <= 0) return true;
-      const table = await estimatePostgresTableRows(
-        database,
-        rootTable,
-        { observer, request },
-        config.db,
-      );
+      const table = await estimatePostgresTableRows(database, rootTable, { observer, request });
       if (table === undefined || table <= splitAbove) return false;
       // A request that narrows the table makes the statements read the matching rows only.
       if (request.filters.length === 0 && request.search.value.length === 0) return true;
@@ -2040,7 +2058,7 @@ export function createQueryResourceUtils<
     ];
     if (split) {
       // A transaction of the caller has one connection: its statements follow each other.
-      await runLimited(tasks, isCallerTransaction(database) ? 1 : maxSplitStatements);
+      await Promise.all(tasks.map((task) => slots.run(task)));
     } else {
       await Promise.all(tasks.map((task) => task()));
     }

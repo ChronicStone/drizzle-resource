@@ -999,12 +999,16 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
    * statement runs on one CPU; a single-facet statement can use parallel workers, and the
    * statements overlap. Default 100,000.
    *
-   * The estimate is the root table's `pg_class.reltuples`, read once and reused for five minutes.
-   * A request that filters or searches is judged by the planner's estimate of the rows it matches,
-   * so a narrow request keeps the cheaper shared statement. `0` always runs facets separately and
+   * The estimate is the root table's `pg_class.reltuples`, read once per database object and
+   * reused for five minutes (a transaction passed in with `db` reads it once). A request that
+   * filters or searches on the root table's own columns is judged by the planner's estimate of the
+   * rows it matches, so a narrow request keeps the cheaper shared statement; a filter through a
+   * relation has no estimate, and the table size decides. `0` always runs facets separately and
    * `Infinity` always shares one statement. The engine shares one statement when PostgreSQL has no
-   * estimate. In a transaction the caller passed in (`db: tx`) the statements follow each other
-   * on its one connection, which makes splitting worth less below about 200,000 rows.
+   * estimate. At most four statements of a request run at once, one after the other in a
+   * transaction the caller passed in, which makes splitting worth less below about 200,000 rows.
+   * A split exact count is timed by `timeouts.count`, and a request whose facets queue behind each
+   * other can take up to `ceil(n / 4)` times `timeouts.facets`.
    */
   splitAbove?: number;
 }

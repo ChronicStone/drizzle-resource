@@ -24,11 +24,19 @@ const mkEvents = (name: string) =>
 const events = mkEvents("events");
 const fresh = mkEvents("fresh");
 const tiny = mkEvents("tiny");
-const schema = { owners, events, fresh, tiny };
+// `loose` rows may have no owner: a facet on `kind` must still count them.
+const loose = namespace.table("loose", {
+  id: integer().primaryKey(),
+  kind: text().notNull(),
+  org: integer().notNull(),
+  ownerId: integer(),
+});
+const schema = { owners, events, fresh, tiny, loose };
 const relations = defineRelations(schema, (r) => ({
   events: { owner: r.one.owners({ from: r.events.ownerId, to: r.owners.id }) },
   fresh: { owner: r.one.owners({ from: r.fresh.ownerId, to: r.owners.id }) },
   tiny: { owner: r.one.owners({ from: r.tiny.ownerId, to: r.owners.id }) },
+  loose: { owner: r.one.owners({ from: r.loose.ownerId, to: r.owners.id }) },
 }));
 
 const client = new Pool({ connectionString, max: 8 });
@@ -107,6 +115,17 @@ const grouped = define("events", { splitAbove: Infinity });
 const separate = define("events", { splitAbove: 0 });
 const autoFresh = define("fresh");
 const autoTiny = define("tiny");
+function defineLoose(splitAbove: number) {
+  return engine.defineResource("loose", {
+    relations: { owner: true },
+    query: {
+      pagination: { modes: ["offset"] },
+      facets: { allowed: ["kind", "org", "owner.name"], splitAbove },
+    },
+  });
+}
+const looseShared = defineLoose(Infinity);
+const looseSplit = defineLoose(0);
 const skipping = define("events", { splitAbove: 0, whenCapped: "skip" }, { countCap: 10 });
 const skippingGrouped = define(
   "events",
@@ -160,6 +179,15 @@ describe.skipIf(!connectionString)("facets split into statements", () => {
         from generate_series(1, ${rows}::int) n
       `);
     }
+    await db.execute(sql`create table ${loose} (
+      id integer primary key, kind text not null, org integer not null, "ownerId" integer
+    )`);
+    await db.execute(sql`
+      insert into ${loose}
+      select n, (array['a','b','c'])[1 + n % 3], n % 50,
+        case when n % 4 = 0 then null else 1 + n % 50 end
+      from generate_series(1, 2000) n
+    `);
     await db.execute(sql`analyze ${events}`);
     await db.execute(sql`analyze ${tiny}`);
   }, 120_000);
@@ -252,6 +280,23 @@ describe.skipIf(!connectionString)("facets split into statements", () => {
     expect(overlap.peak).toBeLessThanOrEqual(4);
   });
 
+  it("counts the estimate of an estimated count in the same limit", async () => {
+    overlap.peak = 0;
+    const many: QueryFacetRequest[] = [
+      { key: "kind" },
+      { key: "kind", limit: 2 },
+      { key: "region" },
+      { key: "region", limit: 1 },
+      { key: "flag" },
+      { key: "org", limit: 5 },
+      { key: "owner.name" },
+    ];
+    const result = await separate.query({ request: request({ facets: many }, "estimated") });
+    expect(result.facets).toHaveLength(many.length);
+    expect(overlap.peak).toBeGreaterThanOrEqual(2);
+    expect(overlap.peak).toBeLessThanOrEqual(4);
+  });
+
   it("runs the statements one after the other in a caller's transaction", async () => {
     const outside = await separate.query({ request: request({ facets }) });
     await db.transaction(async (tx) => {
@@ -263,14 +308,64 @@ describe.skipIf(!connectionString)("facets split into statements", () => {
     });
   });
 
-  it("shares the row estimate with the transactions of callers", async () => {
+  it("reads the row estimate once per database object, and once inside a transaction", async () => {
+    // A tenant's database object can see other tables than the engine's: nothing is shared.
+    const other = drizzle({
+      client,
+      relations,
+      logger: { logQuery: (query) => void statements.push(query) },
+    });
     const start = statements.length;
     for (let round = 0; round < 2; round++) {
-      await db.transaction(async (tx) => {
-        await auto.queryFacets({ db: tx as never, request: request(), facets });
-      });
+      await auto.queryFacets({ db: other as never, request: request(), facets });
     }
-    expect(probes(start)).toBe(0);
+    expect(probes(start)).toBe(1);
+    const before = statements.length;
+    await db.transaction(async (tx) => {
+      for (let round = 0; round < 2; round++) {
+        await auto.queryFacets({ db: tx as never, request: request(), facets });
+      }
+    });
+    expect(probes(before)).toBe(1);
+  });
+
+  it("counts rows without a relation in a facet that shares a statement with a relation facet", async () => {
+    const owned = request({
+      filters: [
+        {
+          type: "group",
+          combinator: "or",
+          children: [
+            { type: "condition", key: "org", operator: "between", value: { from: 10, to: 40 } },
+            { type: "condition", key: "owner.name", operator: "contains", value: "owner 1" },
+          ],
+        },
+      ],
+    });
+    // Both facets keep the whole filter, so they share one statement.
+    const asked: QueryFacetRequest[] = [
+      { key: "kind", mode: "include-self" },
+      { key: "owner.name", mode: "include-self" },
+    ];
+    const [expected] = await db.execute(
+      sql`select
+        count(*)::int as total,
+        count(*) filter (where l.kind = 'a')::int as kind_a
+      from ${loose} l left join ${owners} o on o.id = l."ownerId"
+      where (l.org between 10 and 40) or (lower(o.name) like '%owner 1%')`,
+      "objects",
+    );
+    const shared = await looseShared.query({ request: { ...owned, facets: asked } });
+    const split = await looseSplit.query({ request: { ...owned, facets: asked } });
+    expect(shared.facets).toEqual(split.facets);
+    expect(shared.pageInfo).toMatchObject({ count: "exact", rowCount: expected!.total });
+    expect(split.pageInfo).toMatchObject({ count: "exact", rowCount: expected!.total });
+    // `kind` is counted over every matching row, `owner.name` only over rows that have an owner.
+    expect(shared.facets?.[0]?.options.find((option) => option.value === "a")?.count).toBe(
+      expected!.kind_a,
+    );
+    const ownerTotal = shared.facets![1]!.options.reduce((sum, option) => sum + option.count, 0);
+    expect(ownerTotal).toBeLessThan(expected!.total as number);
   });
 
   it("times out one facet and keeps the others", async () => {

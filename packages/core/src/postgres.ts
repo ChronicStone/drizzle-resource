@@ -95,22 +95,21 @@ export async function probePostgresSearch(
 
 /**
  * `pg_class.reltuples` of a table: the row count PostgreSQL last recorded with `ANALYZE` or
- * `VACUUM`. It reads one catalog row and never the table. Cached per database and table for a few
- * minutes, so a table that grows is noticed. `undefined` when PostgreSQL has no estimate (a table
+ * `VACUUM`. It reads one catalog row and never the table. Cached for five minutes per database object (a
+ * transaction passed in by a caller is its own) and table, so a table that grows is noticed once
+ * the cache expires. `undefined` when PostgreSQL has no estimate (a table
  * never analyzed, a view) or the catalog cannot be read.
  */
 export async function estimatePostgresTableRows(
   database: QueryEngineDb,
   table: PgTable,
   observing?: PlanningObserver,
-  /** What the estimate is cached under: the engine's database, so transactions share it. */
-  cacheKey: object = database,
 ): Promise<number | undefined> {
   if (!isPostgresDatabase(database)) return undefined;
-  let tables = tableRows.get(cacheKey);
+  let tables = tableRows.get(database);
   if (!tables) {
     tables = new WeakMap();
-    tableRows.set(cacheKey, tables);
+    tableRows.set(database, tables);
   }
   const cached = tables.get(table);
   if (cached && Date.now() - cached.at < tableRowsTtl) return cached.rows;
