@@ -1,0 +1,21 @@
+{
+  "$comment": "PLACEHOLDER. Numbers for the landing's benchmark chart. Regenerate with `bun tools/landing-bench-data.ts` from tools/results/profiles.json; do not edit by hand. Times are medians in milliseconds, one per table size.",
+  "placeholder": true,
+  "measuredOn": "2026-11-26",
+  "engine": "d0f9953",
+  "postgres": "18.7",
+  "cpus": 4,
+  "clients": 1,
+  "runs": 10,
+  "sizes": [200000, 1000000, 10000000],
+  "requests": {
+    "page": { "outOfTheBox": [0.27, 0.29, 0.28], "tuned": [0.27, 0.29, 0.28] },
+    "cursor": { "outOfTheBox": [0.56, 0.44, 0.37], "tuned": [0.56, 0.44, 0.37] },
+    "count": { "outOfTheBox": [5.47, 15.78, 71.76], "tuned": [1.7, 1.8, 1.9] },
+    "relationSort": { "outOfTheBox": [25.54, 90.17, 687.71], "tuned": [3.1, 3.2, 3.3] },
+    "facets": { "outOfTheBox": [26.11, 116.93, 1336.36], "tuned": [26.1, 62, 410] },
+    "search": { "outOfTheBox": [201.13, 772.03, 6711.07], "tuned": [9.3, 8.7, 9.1] }
+  },
+  "tunedSettings": { "countCap": 10000, "facetsWhenCapped": "skip" },
+  "load": { "callers": 32, "rows": 10000000, "pageRps": 5577, "pageWithCountRps": 8.4 }
+}

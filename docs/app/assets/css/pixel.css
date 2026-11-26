@@ -2394,3 +2394,434 @@ html:not(.dark) .px-land :is(h1, h2) .px-acc {
     margin: -14px -12px 12px;
   }
 }
+
+/* ---------- benchmarks: three table sizes, out of the box → tuned (PxBenchTuning) ---------- */
+.px-tb {
+  --px-s-page: #e0ac00;
+  --px-s-cursor: #b89a3c;
+  --px-s-count: #2c8794;
+  --px-s-relationSort: #7357c9;
+  --px-s-facets: #c96a12;
+  --px-s-search: #d4472a;
+}
+.dark .px-tb {
+  --px-s-page: #ffd23f;
+  --px-s-cursor: #c9b16a;
+  --px-s-count: #64c3cf;
+  --px-s-relationSort: #b39dff;
+  --px-s-facets: #ff9f43;
+  --px-s-search: #ff6b4a;
+}
+.px-tb-panel {
+  overflow: hidden;
+}
+.px-tb-panel > .px-win-h {
+  border-radius: 16px 16px 0 0;
+}
+.px-tb-ph {
+  margin: 12px 18px 0 !important;
+  padding: 8px 12px;
+  border: 1px dashed var(--px-warn);
+  border-radius: 8px;
+  color: var(--px-warn);
+  font: 500 12.5px var(--font-mono);
+}
+.px-tb-ctl {
+  padding: 14px 18px 0;
+}
+.px-tb-ctl .px-btn {
+  padding: 6px 12px;
+}
+.px-tb-steps {
+  list-style: none;
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  margin: 16px 18px 0;
+  padding: 0;
+  position: relative;
+}
+.px-tb-steps::before {
+  content: "";
+  position: absolute;
+  left: 12px;
+  right: 12px;
+  top: 15px;
+  border-top: 1px dashed var(--line2);
+}
+.px-tb-steps button {
+  position: relative;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 3px;
+  width: 100%;
+  background: none;
+  border: 0;
+  padding: 0 8px 0 0;
+  cursor: pointer;
+  color: var(--ink3);
+  text-align: left;
+  font: inherit;
+}
+.px-tb-steps .dot {
+  width: 30px;
+  height: 30px;
+  border-radius: 9px;
+  display: grid;
+  place-items: center;
+  background: var(--panel);
+  border: 1px solid var(--line2);
+  font: 600 13px var(--font-mono);
+  color: var(--ink3);
+}
+.px-tb-steps .t {
+  font-weight: 600;
+  font-size: 13.5px;
+  color: var(--ink2);
+  margin-top: 4px;
+}
+.px-tb-steps code {
+  font-family: var(--font-mono);
+  font-size: 10.5px;
+  color: var(--ink3);
+}
+.px-tb-steps button.done .dot {
+  border-color: var(--hit-text);
+  color: var(--hit-text);
+}
+.px-tb-steps button[aria-current="step"] .dot {
+  background: var(--hit);
+  border-color: var(--hit);
+  color: var(--hit-ink);
+}
+.px-tb-steps button[aria-current="step"] .t {
+  color: var(--ink);
+}
+.px-tb-steps button:hover .t {
+  color: var(--hit-text);
+}
+.px-tb-body {
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) 380px;
+  gap: 18px;
+  padding: 16px 18px 0;
+  align-items: start;
+}
+.px-tb-key {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 6px 16px;
+  margin: 0 0 10px !important;
+  font-size: 13px;
+  color: var(--ink2);
+}
+.px-tb-key .lbl {
+  font: 500 10.5px var(--font-mono);
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--ink3);
+}
+.px-tb-key .k {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+  color: var(--ink);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+  padding: 3px 8px 3px 6px;
+  border-radius: 7px;
+  transition:
+    background 0.25s,
+    color 0.25s;
+}
+.px-tb-key .k i {
+  display: inline-block;
+  height: 14px;
+  background: repeating-linear-gradient(90deg, currentColor 0 4.5px, transparent 4.5px 6px);
+}
+.px-tb-key .k0 i {
+  width: 12px;
+}
+.px-tb-key .k1 i {
+  width: 18px;
+}
+.px-tb-key .k2 i {
+  width: 24px;
+}
+.px-tb-key .k.on {
+  background: var(--hit);
+  color: var(--hit-ink);
+}
+.px-tb-key .note {
+  flex-basis: 100%;
+  font-size: 12.5px;
+  color: var(--ink3);
+}
+.px-tb-plot {
+  position: relative;
+  min-width: 0;
+  container: px-tb-plot / inline-size;
+}
+.px-tb-plot svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+.px-tb-plot canvas {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  pointer-events: none;
+}
+.px-tb-h {
+  display: none;
+}
+@container px-tb-plot (max-width: 599px) {
+  .px-tb-v {
+    display: none;
+  }
+  .px-tb-h {
+    display: block;
+  }
+}
+.px-tb .grid {
+  stroke: var(--line2);
+  stroke-width: 1;
+  stroke-dasharray: 1 5;
+  stroke-linecap: round;
+}
+.px-tb .base {
+  stroke: var(--line2);
+}
+.px-tb .ax {
+  font: 500 10.5px var(--font-mono);
+  fill: var(--ink3);
+}
+.px-tb .gl {
+  font: 500 11.5px var(--font-sans);
+  fill: var(--ink2);
+}
+.px-tb .gl.h {
+  font-size: 12.5px;
+  fill: var(--ink);
+}
+.px-tb .szl {
+  font: 500 10.5px var(--font-mono);
+  fill: var(--ink2);
+}
+.px-tb .szl.s2 {
+  fill: var(--ink);
+  font-weight: 700;
+}
+.px-tb .val {
+  font: 600 11px var(--font-mono);
+  fill: var(--ink);
+}
+.px-tb .hv {
+  font: 600 10.5px var(--font-mono);
+  fill: var(--ink2);
+}
+.px-tb .vs {
+  fill: var(--ink3);
+  font-weight: 500;
+}
+.px-tb .flat .val,
+.px-tb .flat .hv {
+  fill: var(--hit-text);
+}
+.px-tb-grp .px-tb-live,
+.px-tb-grp .px-tb-ghost {
+  fill: var(--px-s);
+}
+.px-tb-ghost {
+  opacity: 0.2;
+}
+.px-tb .s-page {
+  --px-s: var(--px-s-page);
+}
+.px-tb .s-cursor {
+  --px-s: var(--px-s-cursor);
+}
+.px-tb .s-count {
+  --px-s: var(--px-s-count);
+}
+.px-tb .s-relationSort {
+  --px-s: var(--px-s-relationSort);
+}
+.px-tb .s-facets {
+  --px-s: var(--px-s-facets);
+}
+.px-tb .s-search {
+  --px-s: var(--px-s-search);
+}
+.px-tb .ring {
+  fill: none;
+  stroke: var(--px-warn);
+  stroke-width: 1.5;
+  stroke-dasharray: 4 3;
+}
+.px-tb .found .gl {
+  fill: var(--px-warn);
+}
+.px-tb-con {
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.px-tb-code {
+  background: var(--code);
+  color: var(--cink);
+  border: 1px solid var(--line);
+  border-radius: 12px;
+  overflow: hidden;
+  min-height: 208px;
+}
+.px-tb-code .bar {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 8px 12px;
+  border-bottom: 1px solid var(--cline);
+  font: 500 10.5px var(--font-mono);
+  color: var(--chead-ink);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+  background: var(--chead);
+}
+.px-tb-code .bar b {
+  color: var(--hit-text);
+  font-weight: 600;
+}
+.px-tb-code .bar span {
+  margin-left: auto;
+  text-transform: none;
+  letter-spacing: 0;
+}
+.px-tb-code pre {
+  margin: 0;
+  padding: 10px 14px;
+  font: 11px/1.75 var(--font-mono);
+  white-space: pre-wrap;
+  word-break: break-word;
+}
+.px-tb-code .kw {
+  color: var(--tk-kw);
+}
+.px-tb-code .warn {
+  color: var(--cbad);
+}
+.px-tb-code .ok {
+  color: var(--tk-str);
+}
+.px-tb-code .dim {
+  color: var(--cdim);
+}
+.px-tb-con .say {
+  font-size: 13.5px;
+  color: var(--ink2);
+}
+.px-tb-con .go {
+  font: 600 12px var(--font-mono);
+  color: var(--hit-text);
+}
+.px-tb-panel > .px-src {
+  margin: 18px 18px 0 !important;
+  padding-top: 14px;
+  border-top: 1px solid var(--line);
+}
+.px-tb-all {
+  margin: 10px 18px 16px;
+  font-size: 13px;
+  color: var(--ink2);
+}
+.px-tb-all summary {
+  cursor: pointer;
+  font: 500 12.5px var(--font-mono);
+  color: var(--ink3);
+}
+.px-tb-all .tbl {
+  overflow-x: auto;
+}
+.px-tb-all table {
+  border-collapse: collapse;
+  margin-top: 10px;
+  width: 100%;
+  font-variant-numeric: tabular-nums;
+}
+.px-tb-all caption {
+  caption-side: bottom;
+  text-align: left;
+  padding-top: 8px;
+  font-size: 12px;
+  color: var(--ink3);
+}
+.px-tb-all th,
+.px-tb-all td {
+  text-align: right;
+  padding: 5px 10px;
+  border-bottom: 1px solid var(--line);
+  white-space: nowrap;
+}
+.px-tb-all tbody th,
+.px-tb-all thead tr:first-child th:first-child {
+  text-align: left;
+  font-weight: 500;
+}
+.px-tb-all thead th {
+  font: 500 11px var(--font-mono);
+  color: var(--ink3);
+}
+@media (max-width: 900px) {
+  .px-tb-body {
+    grid-template-columns: 1fr;
+    padding: 14px 12px 0;
+  }
+  .px-tb-ctl {
+    padding: 12px 12px 0;
+  }
+  .px-tb-steps {
+    margin: 12px 12px 0;
+    display: flex;
+    overflow-x: auto;
+    gap: 4px;
+    scrollbar-width: none;
+  }
+  .px-tb-steps::before {
+    display: none;
+  }
+  .px-tb-steps li {
+    flex: 0 0 auto;
+  }
+  .px-tb-steps button {
+    padding: 6px 10px 6px 6px;
+    border: 1px solid var(--line);
+    border-radius: 10px;
+    flex-direction: row;
+    align-items: center;
+    gap: 8px;
+  }
+  .px-tb-steps .dot {
+    width: 24px;
+    height: 24px;
+    font-size: 12px;
+  }
+  .px-tb-steps .t {
+    margin: 0;
+  }
+  .px-tb-steps code {
+    display: none;
+  }
+  .px-tb-code {
+    min-height: 0;
+  }
+  .px-tb-ph,
+  .px-tb-panel > .px-src,
+  .px-tb-all {
+    margin-left: 12px !important;
+    margin-right: 12px !important;
+  }
+}
