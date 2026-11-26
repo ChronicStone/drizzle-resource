@@ -27,44 +27,26 @@ type ResourceProfileRow<TResource, TProfile extends PropertyKey> = TResource ext
 
 interface QuerySchemaResponse<TRow> {
   rows: TRow[];
-  pageInfo:
-    | {
-        mode: "offset";
-        pageIndex: number;
-        pageSize: number;
-        hasNextPage: boolean;
-        count: "none";
-        rowCount: null;
-      }
-    | {
-        mode: "offset";
-        pageIndex: number;
-        pageSize: number;
-        hasNextPage: boolean;
-        count: "exact";
-        rowCount: number;
-      }
-    | {
-        mode: "cursor";
-        pageSize: number;
-        nextCursor: string | null;
-        count: "none";
-        rowCount: null;
-      }
-    | {
-        mode: "cursor";
-        pageSize: number;
-        nextCursor: string | null;
-        count: "exact";
-        rowCount: number;
-      };
+  pageInfo: (
+    | { mode: "offset"; pageIndex: number; pageSize: number; hasNextPage: boolean }
+    | { mode: "cursor"; pageSize: number; nextCursor: string | null }
+  ) &
+    (
+      | { count: "none"; rowCount: null; reason?: "timeout" }
+      | { count: "exact"; rowCount: number }
+      | { count: "capped"; rowCount: number; exact: boolean }
+      | { count: "estimated"; rowCount: number }
+    );
   facets?: Array<{
     key: string;
     options: Array<{ value: unknown; count: number }>;
     nextCursor?: string | null;
     total?: number;
     missing?: number;
+    status: "ok" | "skipped" | "timeout";
+    reason?: "above-cap";
   }>;
+  summaryStatus?: "ok" | "timeout";
 }
 
 type RelationKey<TRow extends Record<string, unknown>> = {
@@ -140,7 +122,7 @@ interface QueryRequestSchemaOverride {
       mode?: "offset" | "cursor";
       pageIndex?: number;
       pageSize?: number;
-      count?: "none" | "exact";
+      count?: "none" | "exact" | "capped" | "estimated";
     };
     sorting?: readonly any[];
   };
@@ -157,6 +139,7 @@ interface QueryRequestSchemaOverride {
 const defaultLimits = () => ({
   maxPageSize: 100,
   maxCursorLength: 2048,
+  maxPageIndex: Infinity,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -426,10 +409,15 @@ export function requestSchema(
   );
   const offsetPagination = v.strictObject({
     mode: v.optional(v.literal("offset"), "offset"),
-    pageIndex: v.optional(v.pipe(v.number(), v.integer(), v.minValue(1)), defaultPageIndex),
+    pageIndex: v.optional(
+      Number.isFinite(contract.limits.maxPageIndex)
+        ? v.pipe(v.number(), v.integer(), v.minValue(1), v.maxValue(contract.limits.maxPageIndex))
+        : v.pipe(v.number(), v.integer(), v.minValue(1)),
+      defaultPageIndex,
+    ),
     pageSize: v.optional(pageSize, defaultPageSize),
     count: v.optional(
-      v.picklist(["none", "exact"]),
+      v.picklist(["none", "exact", "capped", "estimated"]),
       defaultMode === "offset" ? defaultCount : "exact",
     ),
   });
@@ -441,7 +429,7 @@ export function requestSchema(
     ),
     pageSize: v.optional(pageSize, defaultPageSize),
     count: v.optional(
-      v.picklist(["none", "exact"]),
+      v.picklist(["none", "exact", "capped", "estimated"]),
       defaultMode === "cursor" ? defaultCount : "none",
     ),
   });
@@ -703,38 +691,46 @@ export function responseSchema(
         }
       : {}),
     rows: v.array(row),
-    pageInfo: v.union([
-      v.strictObject({
-        mode: v.literal("offset"),
-        pageIndex: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        hasNextPage: v.boolean(),
-        count: v.literal("none"),
-        rowCount: v.null(),
-      }),
-      v.strictObject({
-        mode: v.literal("offset"),
-        pageIndex: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        hasNextPage: v.boolean(),
-        count: v.literal("exact"),
-        rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
-      }),
-      v.strictObject({
-        mode: v.literal("cursor"),
-        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        nextCursor: v.nullable(v.string()),
-        count: v.literal("none"),
-        rowCount: v.null(),
-      }),
-      v.strictObject({
-        mode: v.literal("cursor"),
-        pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
-        nextCursor: v.nullable(v.string()),
-        count: v.literal("exact"),
-        rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
-      }),
-    ]),
+    pageInfo: v.union(
+      (
+        [
+          {
+            mode: v.literal("offset"),
+            pageIndex: v.pipe(v.number(), v.integer(), v.minValue(1)),
+            pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+            hasNextPage: v.boolean(),
+          },
+          {
+            mode: v.literal("cursor"),
+            pageSize: v.pipe(v.number(), v.integer(), v.minValue(1)),
+            nextCursor: v.nullable(v.string()),
+          },
+        ] as const
+      ).flatMap((mode) =>
+        (
+          [
+            {
+              count: v.literal("none"),
+              rowCount: v.null(),
+              reason: v.optional(v.literal("timeout")),
+            },
+            {
+              count: v.literal("exact"),
+              rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+            },
+            {
+              count: v.literal("capped"),
+              rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+              exact: v.boolean(),
+            },
+            {
+              count: v.literal("estimated"),
+              rowCount: v.pipe(v.number(), v.integer(), v.minValue(0)),
+            },
+          ] as const
+        ).map((count) => v.strictObject({ ...mode, ...count })),
+      ) as any,
+    ),
     facets: v.optional(
       v.array(
         v.strictObject({
@@ -748,8 +744,11 @@ export function responseSchema(
           nextCursor: v.optional(v.nullable(v.string())),
           total: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
           missing: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
+          status: v.picklist(["ok", "skipped", "timeout"]),
+          reason: v.optional(v.literal("above-cap")),
         }),
       ),
     ),
+    summaryStatus: v.optional(v.picklist(["ok", "timeout"])),
   });
 }

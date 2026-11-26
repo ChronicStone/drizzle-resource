@@ -573,6 +573,7 @@ describe("defineResource", () => {
     expect(queryResult.facets).toEqual([
       {
         key: "fullName",
+        status: "ok",
         options: [
           {
             value: "fullName:value",
@@ -1161,6 +1162,7 @@ describe("defineResource", () => {
     expect(result.facets).toEqual([
       {
         key: "fullName",
+        status: "ok",
         options: [{ value: "Ada", count: 1 }],
       },
     ]);

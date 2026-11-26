@@ -24,12 +24,13 @@ import type {
   ResourceQueryDefaultsConfig,
   QueryScanRequest,
   QueryScanBatch,
-  QueryCountMode,
+  QueryScanCountMode,
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
 import { createQueryFilterBuilder } from "./filters.js";
-import { defaultQueryValidation } from "./contracts.js";
+import { defaultCountCap, defaultQueryValidation } from "./contracts.js";
 import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
+import { isAboveCap, skippedFacets, withFacetStatus } from "./capped.js";
 
 function normalizeRequest(
   request: QueryRequestInput,
@@ -92,6 +93,7 @@ function assertRequestLimits(
   limits: {
     maxPageSize: number;
     maxCursorLength: number;
+    maxPageIndex: number;
     maxFilterDepth: number;
     maxFilterNodes: number;
     maxFacetCount: number;
@@ -100,6 +102,9 @@ function assertRequestLimits(
 ) {
   if (request.pagination.pageSize > limits.maxPageSize) {
     throw new Error(`Page size cannot exceed ${limits.maxPageSize}`);
+  }
+  if (request.pagination.mode === "offset" && request.pagination.pageIndex > limits.maxPageIndex) {
+    throw new Error(`Page index cannot exceed ${limits.maxPageIndex}`);
   }
   if (
     request.pagination.mode === "cursor" &&
@@ -134,9 +139,34 @@ function assertRequestLimits(
   }
 }
 
+function assertGuardOptions(root: unknown, query: any) {
+  const name = String(root);
+  const positive = (value: unknown) =>
+    value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+  if (!positive(query?.pagination?.countCap)) {
+    throw new Error(`Count cap for resource "${name}" must be a positive safe integer`);
+  }
+  const maxPageIndex = query?.validation?.maxPageIndex;
+  if (maxPageIndex !== undefined && maxPageIndex !== Infinity && !positive(maxPageIndex)) {
+    throw new Error(`Max page index for resource "${name}" must be a positive safe integer`);
+  }
+  for (const stage of ["count", "facets", "summary"] as const) {
+    if (!positive(query?.timeouts?.[stage])) {
+      throw new Error(
+        `The ${stage} timeout for resource "${name}" must be a positive number of milliseconds`,
+      );
+    }
+  }
+  const whenCapped = query?.facets?.whenCapped;
+  if (whenCapped !== undefined && whenCapped !== "skip" && whenCapped !== "run") {
+    throw new Error(`Facets whenCapped for resource "${name}" must be "skip" or "run"`);
+  }
+}
+
 function resolveExecutionLimits(
   resourceLimits: Required<ResourceQueryExecutionOptions> & {
     maxCursorLength: number;
+    maxPageIndex: number;
     maxFilterDepth: number;
     maxFilterNodes: number;
     maxFacetCount: number;
@@ -267,13 +297,15 @@ async function executeFacetsForResource(
   assertKnownFacetFields(resource, facets);
 
   if (options.strategy?.facets) {
-    return options.strategy.facets({
-      request,
-      facets,
-      context,
-      resource,
-      utils,
-    });
+    return withFacetStatus(
+      await options.strategy.facets({
+        request,
+        facets,
+        context,
+        resource,
+        utils,
+      }),
+    );
   }
 
   return utils.resolveFacets({
@@ -497,6 +529,7 @@ export function createQueryEngine<
       const paginationModes = new Set<"offset" | "cursor">(
         options.query?.pagination?.modes ?? ["offset"],
       );
+      assertGuardOptions(root, options.query);
       const defaultPaginationMode = options.query?.defaults?.pagination?.mode ?? "offset";
       if (paginationModes.size === 0) {
         throw new Error(`Resource "${String(root)}" must allow at least one pagination mode`);
@@ -550,10 +583,13 @@ export function createQueryEngine<
           },
           facets: {
             allowed: allowedFacetFields,
+            whenCapped: options.query?.facets?.whenCapped ?? "run",
           },
           pagination: {
             modes: paginationModes,
+            countCap: options.query?.pagination?.countCap ?? defaultCountCap,
           },
+          timeouts: { ...options.query?.timeouts },
           defaults: {
             pagination: options.query?.defaults?.pagination,
             sorting: options.query?.sort?.defaults,
@@ -563,6 +599,8 @@ export function createQueryEngine<
               options.query?.validation?.maxPageSize ?? defaultQueryValidation.maxPageSize,
             maxCursorLength:
               options.query?.validation?.maxCursorLength ?? defaultQueryValidation.maxCursorLength,
+            maxPageIndex:
+              options.query?.validation?.maxPageIndex ?? defaultQueryValidation.maxPageIndex,
             maxFilterDepth:
               options.query?.validation?.maxFilterDepth ?? defaultQueryValidation.maxFilterDepth,
             maxFilterNodes:
@@ -739,7 +777,7 @@ export function createQueryEngine<
           context?: any;
           db?: QueryEngineDb;
           batchSize?: number;
-          count?: QueryCountMode;
+          count?: QueryScanCountMode;
           signal?: AbortSignal;
           view?: string;
           load?: string | Record<string, unknown>;
@@ -929,13 +967,16 @@ export function createQueryEngine<
         let response: QueryResponse<any>;
 
         if (customQueryStrategy) {
-          response = await customQueryStrategy({
+          const custom = await customQueryStrategy({
             request: normalizedRequest,
             context,
             resource,
             utils,
             relations: hydrationRelations,
           });
+          response = custom.facets
+            ? { ...custom, facets: withFacetStatus({ facets: custom.facets }).facets }
+            : (custom as QueryResponse<any>);
           if (projection) response.rows = response.rows.map((row) => projection.project(row));
         } else if (!options.strategy?.ids && !options.strategy?.rows && !options.strategy?.facets) {
           response = await utils.executeHydratedPage({
@@ -969,7 +1010,9 @@ export function createQueryEngine<
           };
         }
 
-        if (aggregate) Object.assign(response, { summary: aggregate.summary });
+        if (aggregate) {
+          Object.assign(response, { summary: aggregate.summary, summaryStatus: aggregate.status });
+        }
 
         if (
           !normalizedRequest.facets ||
@@ -977,6 +1020,13 @@ export function createQueryEngine<
           response.facets !== undefined
         ) {
           return response;
+        }
+
+        if (
+          resource.queryConfig.facets.whenCapped === "skip" &&
+          isAboveCap(response.pageInfo, resource.queryConfig.pagination.countCap)
+        ) {
+          return { ...response, facets: skippedFacets(normalizedRequest.facets) };
         }
 
         const facetsResponse = await executeFacetsForResource(

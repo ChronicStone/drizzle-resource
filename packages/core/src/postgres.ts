@@ -146,3 +146,53 @@ export async function scanPostgresCursor<TResult>(
     else await closing;
   }
 }
+
+function isStatementTimeout(error: unknown): boolean {
+  for (let current = error, depth = 0; current && depth < 5; depth++) {
+    const record = current as { code?: unknown; cause?: unknown };
+    if (record.code === "57014") return true;
+    current = record.cause;
+  }
+  return false;
+}
+
+/**
+ * Run `run` with `statement_timeout` set for its statements only. The setting is local to a
+ * transaction, so a connection never keeps it. Inside a caller's transaction the previous value
+ * is restored afterwards. A statement that exceeds the timeout resolves to `{ timedOut: true }`;
+ * any other error is thrown. Other databases run without a timeout.
+ */
+export async function withStatementTimeout<TResult>(
+  database: QueryEngineDb,
+  milliseconds: number | undefined,
+  run: (database: QueryEngineDb) => Promise<TResult>,
+): Promise<{ timedOut: false; value: TResult } | { timedOut: true }> {
+  if (milliseconds === undefined || !isPostgresDatabase(database)) {
+    return { timedOut: false, value: await run(database) };
+  }
+  const nested = is(database, PgAsyncTransaction);
+  try {
+    const value = await database.transaction(async (transaction) => {
+      let previous: string | undefined;
+      if (nested) {
+        const [row] = await transaction.execute(
+          sql`select current_setting('statement_timeout') as value`,
+          "objects",
+        );
+        previous = String(row?.value ?? "0");
+      }
+      await transaction.execute(
+        sql`select set_config('statement_timeout', ${String(Math.ceil(milliseconds))}, true)`,
+      );
+      const result = await run(transaction);
+      if (previous !== undefined) {
+        await transaction.execute(sql`select set_config('statement_timeout', ${previous}, true)`);
+      }
+      return result;
+    });
+    return { timedOut: false, value };
+  } catch (error) {
+    if (isStatementTimeout(error)) return { timedOut: true };
+    throw error;
+  }
+}

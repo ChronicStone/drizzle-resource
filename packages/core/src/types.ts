@@ -104,7 +104,19 @@ export type QueryFilterInput<TField extends string = string> =
 
 export type QueryFilters<TField extends string = string> = QueryFilterNode<TField>[];
 
-export type QueryCountMode = "none" | "exact";
+/**
+ * How the filtered row count is computed.
+ *
+ * - `none`: no count; offset pages use a one-row lookahead for `hasNextPage`.
+ * - `exact`: counts every matching row.
+ * - `capped`: counts at most the resource's `pagination.countCap` rows (10,000 by default).
+ * - `estimated`: reads PostgreSQL's row estimate, and falls back to `capped` when the estimate is
+ *   unreliable (filters or search through relations, small results, other databases).
+ */
+export type QueryCountMode = "none" | "exact" | "capped" | "estimated";
+
+/** Count modes a scan accepts: scans only read an exact total or none. */
+export type QueryScanCountMode = "none" | "exact";
 
 export interface QueryOffsetPagination {
   mode: "offset";
@@ -144,9 +156,27 @@ export type QueryPaginationInput =
       count?: QueryCountMode;
     };
 
+/**
+ * The count a page actually carries. `count` is what was used, which can differ from what was
+ * requested: `estimated` may fall back to `capped`, and a count that hits its timeout degrades to
+ * `none` with `reason: "timeout"`.
+ */
 export type QueryPageCount =
-  | { count: "none"; rowCount: null }
-  | { count: "exact"; rowCount: number };
+  | {
+      count: "none";
+      rowCount: null;
+      /** Present when a requested count was dropped because it exceeded `timeouts.count`. */
+      reason?: "timeout";
+    }
+  | { count: "exact"; rowCount: number }
+  | {
+      count: "capped";
+      /** At most `pagination.countCap`. */
+      rowCount: number;
+      /** `false` when the cap was hit: more rows match than `rowCount` (show "10,000+"). */
+      exact: boolean;
+    }
+  | { count: "estimated"; rowCount: number };
 
 export type QueryOffsetPageInfo = {
   mode: "offset";
@@ -233,6 +263,14 @@ export interface QueryResponse<TRow = Record<string, unknown>> {
 }
 
 /**
+ * What a custom `strategy.query` may return. Facets without `status` are treated as `ok`.
+ */
+export type QueryStrategyResponse<TRow = Record<string, unknown>> = Omit<
+  QueryResponse<TRow>,
+  "facets"
+> & { facets?: QueryFacetsStrategyResponse["facets"] };
+
+/**
  * IDs-only result returned by `resource.queryIds(...)`.
  */
 export interface QueryIdsResponse<TId = unknown> {
@@ -313,8 +351,16 @@ export interface QueryFacetOption {
 
 /**
  * Aggregated response for a single facet field.
+ *
+ * `status` narrows the result: `ok` carries buckets, `skipped` means the request's count was
+ * capped and `facets.whenCapped` is `"skip"`, `timeout` means the facet exceeded
+ * `timeouts.facets`. Skipped and timed-out facets come back with empty `options`.
  */
-export interface QueryFacetResult<TField extends string = string> {
+export type QueryFacetResult<TField extends string = string> = QueryFacetBase<TField> &
+  ({ status: "ok" } | { status: "skipped"; reason: "above-cap" } | { status: "timeout" });
+
+/** Facet payload before `status` is attached. Custom facet strategies may return this shape. */
+export interface QueryFacetBase<TField extends string = string> {
   /**
    * Faceted field path.
    */
@@ -342,6 +388,13 @@ export interface QueryFacetResult<TField extends string = string> {
  */
 export interface QueryFacetsResponse<TField extends string = string> {
   facets: QueryFacetResult<TField>[];
+}
+
+/**
+ * What a custom `strategy.facets` may return. A result without `status` is treated as `ok`.
+ */
+export interface QueryFacetsStrategyResponse<TField extends string = string> {
+  facets: Array<QueryFacetBase<TField> & { status?: "ok" }>;
 }
 
 export type QueryEngineDb = {
@@ -804,9 +857,16 @@ export interface QueryResourceUtils<
   executeIdsQuery: (args: {
     request: QueryRequest;
     rowCount?: number;
+    /** A count already resolved for this request, so the page does not count again. */
+    pageCount?: QueryPageCount;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   scanIds: <TResult>(
-    args: { request: QueryRequest; batchSize: number; count: QueryCountMode; signal?: AbortSignal },
+    args: {
+      request: QueryRequest;
+      batchSize: number;
+      count: QueryScanCountMode;
+      signal?: AbortSignal;
+    },
     consume: (batches: AsyncIterable<{ ids: unknown[]; totalRows?: number }>) => Promise<TResult>,
   ) => Promise<TResult>;
   /**
@@ -841,7 +901,12 @@ export interface QueryResourceUtils<
     request: QueryRequest;
     summary: (fields: Record<string, any>) => Record<string, SQL | SQL.Aliased>;
     includeCount?: boolean;
-  }) => Promise<{ summary: Record<string, unknown>; rowCount?: number }>;
+  }) => Promise<{
+    summary: Record<string, unknown>;
+    rowCount?: number;
+    /** `timeout`: `timeouts.summary` was exceeded and every summary value is `null`. */
+    status: "ok" | "timeout";
+  }>;
   resolveField: (path: string) => FieldRegistryEntry | undefined;
 }
 
@@ -911,11 +976,38 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
    * When omitted, every registered field is considered facetable.
    */
   allowed?: readonly TField[];
+  /**
+   * What to do with facets when the request's count is `capped` or `estimated` and the cap is hit.
+   *
+   * - `"run"` (default): compute the facets anyway.
+   * - `"skip"`: do not compute them; each requested facet comes back with `status: "skipped"`.
+   */
+  whenCapped?: "skip" | "run";
 }
 
 export interface ResourceQueryPaginationConfig {
   /** Pagination modes accepted by this resource. Offset pagination is enabled by default. */
   modes?: readonly QueryPagination["mode"][];
+  /**
+   * Most rows a `capped` count reads (default 10,000). Set by the resource, never by clients.
+   * `estimated` counts at or below this size are replaced by an exact `capped` count.
+   */
+  countCap?: number;
+}
+
+/**
+ * Per-stage statement timeouts in milliseconds, applied with `SET LOCAL statement_timeout` inside
+ * a transaction. Only configured stages pay for the transaction. A stage that times out degrades
+ * instead of failing the request:
+ *
+ * - `count`: `pageInfo` becomes `{ count: "none", rowCount: null, reason: "timeout" }`.
+ * - `facets`: the affected facets come back with `status: "timeout"` and empty `options`.
+ * - `summary`: the response carries `summaryStatus: "timeout"` and every summary value is `null`.
+ */
+export interface ResourceQueryTimeoutsConfig {
+  count?: number;
+  facets?: number;
+  summary?: number;
 }
 
 export interface ResourceQueryPaginationDefaultsConfig {
@@ -947,6 +1039,8 @@ export interface ResourceQueryDefaultsConfig {
 export interface ResourceQueryValidationConfig {
   maxPageSize?: number;
   maxCursorLength?: number;
+  /** Highest one-based offset page index accepted. Unlimited by default. */
+  maxPageIndex?: number;
   maxFilterDepth?: number;
   maxFilterNodes?: number;
   maxFacetCount?: number;
@@ -1070,7 +1164,7 @@ export interface ResourceQueryStrategyConfig<
    */
   query?: (
     args: ResourceQueryStrategyQueryArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
-  ) => Promise<QueryResponse<TRow>>;
+  ) => Promise<QueryStrategyResponse<TRow>>;
   /**
    * IDs-stage override.
    *
@@ -1101,7 +1195,7 @@ export interface ResourceQueryStrategyConfig<
       TRow,
       TFacetKey
     >,
-  ) => Promise<QueryFacetsResponse<TFacetKey>>;
+  ) => Promise<QueryFacetsStrategyResponse<TFacetKey>>;
 }
 
 /**
@@ -1149,6 +1243,8 @@ export interface ResourceQueryConfig<
   defaults?: ResourceQueryDefaultsConfig;
   /** Defensive limits for request complexity and result size. */
   validation?: ResourceQueryValidationConfig;
+  /** Statement timeouts per stage, in milliseconds. */
+  timeouts?: ResourceQueryTimeoutsConfig;
 }
 
 export interface ResourceRuntimeQueryConfig<TField extends string> {
@@ -1166,12 +1262,15 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   };
   facets: {
     allowed: Set<TField>;
+    whenCapped: "skip" | "run";
   };
   pagination: {
     modes: Set<QueryPagination["mode"]>;
+    countCap: number;
   };
   defaults: ResourceQueryDefaultsConfig;
   validation: Required<ResourceQueryValidationConfig>;
+  timeouts: ResourceQueryTimeoutsConfig;
 }
 
 type TypesEqual<TLeft, TRight> =
@@ -1290,7 +1389,7 @@ export interface QueryResource<
       context?: TContextOverride;
       db?: QueryEngineDb;
       batchSize?: number;
-      count?: QueryCountMode;
+      count?: QueryScanCountMode;
       signal?: AbortSignal;
       load?: TLoad;
     },

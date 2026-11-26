@@ -320,6 +320,7 @@ describe("facet SQL", () => {
     expect(result.facets).toEqual([
       {
         key: "name",
+        status: "ok",
         options: [{ value: "Ada", count: 2 }],
         nextCursor: null,
         total: 1,

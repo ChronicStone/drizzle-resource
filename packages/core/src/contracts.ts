@@ -6,9 +6,13 @@ import type {
   ResourceQueryValidationConfig,
 } from "./types.js";
 
+/** Rows a `capped` count reads when a resource does not set `pagination.countCap`. */
+export const defaultCountCap = 10_000;
+
 export const defaultQueryValidation: Required<ResourceQueryValidationConfig> = {
   maxPageSize: 100,
   maxCursorLength: 2048,
+  maxPageIndex: Infinity,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -25,6 +29,7 @@ function resolveLimits(
       resourceLimits.maxCursorLength,
       override?.maxCursorLength ?? Infinity,
     ),
+    maxPageIndex: Math.min(resourceLimits.maxPageIndex, override?.maxPageIndex ?? Infinity),
     maxFilterDepth: Math.min(resourceLimits.maxFilterDepth, override?.maxFilterDepth ?? Infinity),
     maxFilterNodes: Math.min(resourceLimits.maxFilterNodes, override?.maxFilterNodes ?? Infinity),
     maxFacetCount: Math.min(resourceLimits.maxFacetCount, override?.maxFacetCount ?? Infinity),

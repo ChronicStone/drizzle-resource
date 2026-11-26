@@ -23,7 +23,7 @@ import type {
   QueryResponse,
   QueryScanRequest,
   QueryScanBatch,
-  QueryCountMode,
+  QueryScanCountMode,
   QueryFieldPath,
   QueryScopeHandler,
   ResourceQueryConfig,
@@ -162,7 +162,13 @@ export type SummaryResult<S> = {
 type SummaryFields<S, M, K extends keyof S> = Omit<Columns<S, K>, Keys<M, K, "private">> & {
   [F in keyof Virtuals<M, K>]: SQL<Value<Virtuals<M, K>[F]>>;
 };
-type WithSummary<R, S, B> = B extends true ? R & { summary: SummaryResult<S> } : R;
+/**
+ * `summaryStatus` is `"timeout"` when `timeouts.summary` was exceeded. `summary` then holds `null`
+ * for every key, whatever the key's static type, so narrow on `summaryStatus` before reading it.
+ */
+type WithSummary<R, S, B> = B extends true
+  ? R & { summary: SummaryResult<S>; summaryStatus: "ok" | "timeout" }
+  : R;
 type SelectionArgs<N, L> = { view?: N; load?: never } | { view?: never; load?: L };
 type HasModelPolicies<R, M, K, W, Depth extends unknown[] = []> = Depth["length"] extends 8
   ? true
@@ -293,7 +299,7 @@ export type Resource<
       context?: C;
       db?: QueryEngineDb;
       batchSize?: number;
-      count?: QueryCountMode;
+      count?: QueryScanCountMode;
       signal?: AbortSignal;
     } & SelectionArgs<N, L>,
     consume: (

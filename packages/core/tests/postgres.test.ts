@@ -485,6 +485,7 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
     });
     expect(result.facets[0]).toEqual({
       key: "tags.label",
+      status: "ok",
       options: [{ value: "blue", count: 2 }],
       nextCursor: "1",
       total: 2,

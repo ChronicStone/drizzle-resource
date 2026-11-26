@@ -10,7 +10,11 @@ export type {
 } from "./src/model-types.js";
 export { createQueryEngine } from "./src/engine.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
-export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contracts.js";
+export {
+  defaultCountCap,
+  defaultQueryValidation,
+  resolveQueryRequestContract,
+} from "./src/contracts.js";
 export type {
   DefineResourceOptions,
   DefineQueryResourceOptions,
@@ -24,6 +28,11 @@ export type {
   QueryEngineRelations,
   QueryEngineSchema,
   QueryCountMode,
+  QueryScanCountMode,
+  QueryPageCount,
+  QueryFacetBase,
+  QueryFacetsStrategyResponse,
+  ResourceQueryTimeoutsConfig,
   QueryCursorPageInfo,
   QueryCursorPagination,
   QueryFieldPath,
@@ -72,6 +81,7 @@ export type {
   QueryResource,
   QueryResourceUtils,
   QueryResponse,
+  QueryStrategyResponse,
   QueryResultRowShape,
   QueryRowShape,
   QueryRootKey,
