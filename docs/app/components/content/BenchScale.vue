@@ -1,39 +1,30 @@
 <script setup lang="ts">
 // eslint-disable-next-line import/no-unassigned-import
 import "~/assets/css/pixel.css";
-import { benchScale, formatCount, formatMs, SIZE_LONG, verdictText } from "~/utils/bench-scale";
-import type { Series, Verdict } from "~/utils/bench-scale";
+import { benchScale, formatMs, methodSentences, SIZE_LONG } from "~/utils/bench-scale";
 
 /**
- * Requests by table size (200k, 1M, 10M rows), from data/bench-scale.json.
- * - `requests`: out of the box, or with `compare` next to tuned and the benchmark's verdict.
- * - `scoped`: the whole table next to one tenant (1% of rows).
- * - `counts`: the count statement alone, exact next to capped.
- * - `facets`: the four ways to run the facets of `facet`.
+ * One series by table size (200k, 1M, 10M rows), from data/bench-scale.json, as linear bars.
+ * - `requests`: out of the box, scaled per row, so a row shows how its time grows with the table.
+ * - `facets`: the four ways to run the facets of `facet`, scaled per column, so each size compares
+ *   the four ways.
+ * A before and after (tuned, one tenant, exact and capped) is drawn by BenchArrows instead.
  */
 const props = withDefaults(
   defineProps<{
-    source?: "requests" | "scoped" | "counts" | "facets";
+    source?: "requests" | "facets";
     keys?: string[];
     facet?: string;
-    compare?: boolean;
     title: string;
     caption?: string;
   }>(),
-  { source: "requests", keys: () => [], facet: "twoFacets", compare: false, caption: undefined },
+  { source: "requests", keys: () => [], facet: "twoFacets", caption: undefined },
 );
 
-interface Cell {
-  a: number;
-  b?: number;
-  verdict?: Verdict;
-  ratio?: number | null;
-  sub?: string;
-}
 interface Row {
   label: string;
   sub?: string;
-  cells: Cell[];
+  ms: number[];
 }
 
 const FACET_VARIANTS: Record<string, string> = {
@@ -43,121 +34,40 @@ const FACET_VARIANTS: Record<string, string> = {
   "separate/concurrent": "One statement per facet, in parallel",
 };
 
-/* every series a table shows, so its footnote can say how each was measured */
-function build(series: Series[]): Row[] {
+const table = computed(() => {
   const d = benchScale;
-  const sizes = d.sizes.map((_, i) => i);
+  const methods: string[] = [];
+  let rows: Row[];
   if (props.source === "requests") {
-    return props.keys.map((key) => {
+    rows = props.keys.map((key) => {
       const r = d.requests[key];
       if (!r) throw new Error(`bench-scale: no request "${key}"`);
-      series.push(r.outOfTheBox);
-      if (props.compare && r.tuned) series.push(r.tuned);
-      return {
-        label: r.label,
-        sub: props.compare ? (r.tuned?.how ?? "not tuned") : r.shape,
-        cells: sizes.map((i) =>
-          props.compare && r.tuned
-            ? {
-                a: r.outOfTheBox.ms[i]!,
-                b: r.tuned.ms[i]!,
-                verdict: r.tuned.verdict[i],
-                ratio: r.tuned.ratio[i],
-              }
-            : { a: r.outOfTheBox.ms[i]! },
-        ),
-      };
+      methods.push(r.outOfTheBox.method);
+      return { label: r.label, sub: r.shape, ms: r.outOfTheBox.ms };
+    });
+  } else {
+    const variants = d.facetVariants[props.facet];
+    if (!variants) throw new Error(`bench-scale: no facet comparison "${props.facet}"`);
+    rows = Object.entries(FACET_VARIANTS).map(([variant, label]) => {
+      const s = variants[variant];
+      if (!s) throw new Error(`bench-scale: no facet variant "${variant}"`);
+      methods.push(s.method);
+      return { label, ms: s.ms };
     });
   }
-  if (props.source === "scoped") {
-    return props.keys.map((key) => {
-      const r = d.scoped[key];
-      if (!r) throw new Error(`bench-scale: no scoped request "${key}"`);
-      series.push(r.outOfTheBox, r.scoped);
-      return {
-        label: r.label,
-        cells: sizes.map((i) => ({
-          a: r.outOfTheBox.ms[i]!,
-          b: r.scoped.ms[i]!,
-          verdict: r.scoped.verdict[i],
-          ratio: r.scoped.ratio[i],
-        })),
-      };
-    });
-  }
-  if (props.source === "counts") {
-    return props.keys.map((key) => {
-      const r = d.counts[key];
-      if (!r) throw new Error(`bench-scale: no count "${key}"`);
-      series.push(r.exact, r.capped);
-      return {
-        label: r.label,
-        cells: sizes.map((i) => ({
-          a: r.exact.ms[i]!,
-          b: r.capped.ms[i]!,
-          sub:
-            r.matches[i] === null
-              ? undefined
-              : `${formatCount(r.matches[i]!)} ${r.matches[i] === 1 ? "match" : "matches"}`,
-        })),
-      };
-    });
-  }
-  const variants = d.facetVariants[props.facet];
-  if (!variants) throw new Error(`bench-scale: no facet comparison "${props.facet}"`);
-  return Object.entries(FACET_VARIANTS).map(([variant, label]) => {
-    const s = variants[variant];
-    if (!s) throw new Error(`bench-scale: no facet variant "${variant}"`);
-    series.push(s);
-    return { label, cells: sizes.map((i) => ({ a: s.ms[i]! })) };
-  });
-}
-const table = computed(() => {
-  const series: Series[] = [];
-  return { rows: build(series), series };
+  return { rows, methods };
 });
 const rows = computed(() => table.value.rows);
 
-/* the accent colour means "tuned"; a pair without a verdict (exact and capped counts) stays neutral */
-const neutral = computed(() => props.source === "counts");
-const legend = computed<[string, string] | undefined>(() => {
-  if (props.source === "scoped") return ["whole table", "one tenant, 1% of rows"];
-  if (props.source === "counts") return ["exact", "capped at 10,000"];
-  if (props.source === "requests" && props.compare) return ["out of the box", "tuned"];
-  return undefined;
-});
-
-/* how each series was measured, in words; the sentences come from the methods in the file */
-const METHOD_TEXT: Record<string, string> = {
-  engine: "Through the engine, end to end, from Node over TCP.",
-  "hand-sql": "Measured as SQL with psql inside the database container: no network, no JavaScript.",
-  "engine+hand-sql":
-    "Tuned counts add the engine's page statement to the capped count statement run as SQL: the engine of this run predates capped counts.",
-};
-const methods = computed(() => {
-  const seen = new Set(table.value.series.flatMap((s) => s.method.split(", ")));
-  return [...seen].map((m) => METHOD_TEXT[m] ?? m);
-});
-
-/*
- * Linear bars. Each row is scaled to its own slowest time, so a row reads as "how much of the
- * worst case is left": 432 ms is a third of 1.31 s. The facet table compares four ways to run the
- * same facets, so there each column is scaled to the slowest way at that table size.
- */
+/* linear bars: per row for requests, per column for the facet comparison */
 const byColumn = computed(() => props.source === "facets");
-const slowest = (c: Cell) => Math.max(c.a, c.b ?? 0);
 const scaleMax = computed(() => {
   const all = rows.value;
   if (byColumn.value) {
-    const columns = (all[0]?.cells ?? []).map((_, i) =>
-      Math.max(...all.map((r) => slowest(r.cells[i]!))),
-    );
+    const columns = (all[0]?.ms ?? []).map((_, i) => Math.max(...all.map((r) => r.ms[i]!)));
     return all.map(() => columns);
   }
-  return all.map((r) => {
-    const max = Math.max(...r.cells.map(slowest));
-    return r.cells.map(() => max);
-  });
+  return all.map((r) => r.ms.map(() => Math.max(...r.ms)));
 });
 /* rounded so the server and the browser agree; 3px keeps a tiny value visible */
 const width = (ms: number, row: number, col: number) => {
@@ -170,28 +80,17 @@ const footnote = computed(() =>
     byColumn.value
       ? "Bars are linear: each column is scaled to the slowest way at that table size."
       : "Bars are linear: each row is scaled to that row's slowest time.",
-    ...methods.value,
+    ...methodSentences(table.value.methods),
   ]
     .filter(Boolean)
     .join(" "),
 );
-
-const verdictLabel = (c: Cell) =>
-  c.verdict === "improved" && typeof c.ratio === "number"
-    ? `${c.ratio >= 10 ? Math.round(c.ratio) : c.ratio.toFixed(1)}× faster`
-    : c.verdict
-      ? verdictText(c.verdict)
-      : "";
 </script>
 
 <template>
   <figure class="px-embed not-prose bsc">
     <figcaption class="bsc-cap">
       <span><b>{{ title }}</b>, median time per request</span>
-      <span v-if="legend" class="bsc-legend">
-        <span><i class="a" />{{ legend[0] }}</span>
-        <span><i class="b" :class="{ neutral }" />{{ legend[1] }}</span>
-      </span>
     </figcaption>
     <table>
       <thead>
@@ -201,27 +100,14 @@ const verdictLabel = (c: Cell) =>
         </tr>
       </thead>
       <tbody>
-        <tr v-for="(r, ri) in rows" :key="r.label + (r.sub ?? '')">
+        <tr v-for="(r, ri) in rows" :key="r.label">
           <th scope="row" class="bsc-req">
             <span class="bsc-label">{{ r.label }}</span>
             <span v-if="r.sub" class="bsc-sub">{{ r.sub }}</span>
           </th>
-          <td v-for="(c, i) in r.cells" :key="i">
-            <span class="bsc-val" :class="{ dim: c.b !== undefined }">{{ formatMs(c.a) }}</span>
-            <span class="bsc-bar"><i class="a" :style="{ width: width(c.a, ri, i) }" /></span>
-            <template v-if="c.b !== undefined">
-              <span class="bsc-val" :class="c.verdict">
-                {{ formatMs(c.b) }}
-                <em v-if="c.verdict" :class="c.verdict">{{ verdictLabel(c) }}</em>
-              </span>
-              <span class="bsc-bar"
-                ><i
-                  class="b"
-                  :class="[c.verdict, { neutral }]"
-                  :style="{ width: width(c.b, ri, i) }"
-              /></span>
-            </template>
-            <span v-if="c.sub" class="bsc-sub">{{ c.sub }}</span>
+          <td v-for="(ms, i) in r.ms" :key="i">
+            <span class="bsc-val">{{ formatMs(ms) }}</span>
+            <span class="bsc-bar"><i class="a" :style="{ width: width(ms, ri, i) }" /></span>
           </td>
         </tr>
       </tbody>
@@ -250,17 +136,6 @@ const verdictLabel = (c: Cell) =>
 .bsc-cap b {
   color: var(--ink);
   font-weight: 600;
-}
-.bsc-legend {
-  display: flex;
-  gap: 14px;
-}
-.bsc-legend i {
-  display: inline-block;
-  width: 9px;
-  height: 9px;
-  margin-right: 6px;
-  border-radius: 2px;
 }
 table {
   width: 100%;
@@ -315,25 +190,6 @@ thead th {
   font-weight: 600;
   color: var(--ink);
 }
-.bsc-val.dim {
-  font-weight: 400;
-  color: var(--ink2);
-}
-.bsc-val em {
-  margin-left: 4px;
-  font-style: normal;
-  font-size: 11px;
-  font-weight: 500;
-}
-em.improved {
-  color: var(--hit-text);
-}
-em.worse {
-  color: var(--ui-error);
-}
-em.unchanged {
-  color: var(--ink3);
-}
 .bsc-bar {
   display: block;
   height: 5px;
@@ -346,24 +202,8 @@ em.unchanged {
   height: 100%;
   border-radius: 3px;
 }
-i.a,
-.bsc-legend i.a {
+i.a {
   background: var(--ink3);
-}
-i.b,
-.bsc-legend i.b {
-  background: var(--hit);
-  box-shadow: inset 0 0 0 1px var(--hit-text);
-}
-i.b.worse {
-  background: var(--ui-error);
-  box-shadow: none;
-}
-i.b.unchanged,
-i.b.neutral,
-.bsc-legend i.b.neutral {
-  background: var(--ink);
-  box-shadow: none;
 }
 .bsc-foot {
   margin: 8px 0 2px;
@@ -396,12 +236,6 @@ i.b.neutral,
     grid-column: 1 / -1;
     width: auto;
     padding: 10px 0 0;
-  }
-  /* the verdict on a line of its own, so "26× faster" never breaks */
-  .bsc-val em {
-    display: block;
-    margin: 1px 0 0;
-    white-space: nowrap;
   }
 }
 </style>

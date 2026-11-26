@@ -111,3 +111,16 @@ export function benchValue(path: string): unknown {
   }
   return value;
 }
+
+/** How a series was measured, in words, keyed by the `method` the results file gives. */
+export const METHOD_TEXT: Record<string, string> = {
+  engine: "Through the engine, end to end, from Node over TCP.",
+  "hand-sql": "Measured as SQL with psql inside the database container: no network, no JavaScript.",
+  "engine+hand-sql":
+    "Tuned counts add the engine's page statement to the capped count statement run as SQL: the engine of this run predates capped counts.",
+};
+
+export function methodSentences(methods: string[]) {
+  const seen = new Set(methods.flatMap((m) => m.split(", ")));
+  return [...seen].map((m) => METHOD_TEXT[m] ?? m);
+}
