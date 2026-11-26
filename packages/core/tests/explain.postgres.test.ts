@@ -314,7 +314,7 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       request: pageRequest({ facets: [{ key: "status" }, { key: "region" }] }),
       analyze: true,
     });
-    expect(report.stages.map((stage) => stage.stage)).toEqual(["ids", "count", "facets", "facets"]);
+    expect(report.stages.map((stage) => stage.stage)).toEqual(["count", "facets", "facets", "ids"]);
     const count = report.stages.find((stage) => stage.stage === "count")!;
     expect(count.warnings.map((warning) => warning.code)).toEqual(["full-count"]);
     expect(count.warnings[0]!.message).toMatch(/rows to return one number$/);
