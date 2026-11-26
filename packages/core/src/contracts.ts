@@ -9,6 +9,9 @@ import type {
 /** Rows a `capped` count reads when a resource does not set `pagination.countCap`. */
 export const defaultCountCap = 10_000;
 
+/** Milliseconds a search without an exact count spends on its ordinary plan before trying the index. */
+export const defaultSearchPlanBudget = 25;
+
 export const defaultQueryValidation: Required<ResourceQueryValidationConfig> = {
   maxPageSize: 100,
   maxCursorLength: 2048,

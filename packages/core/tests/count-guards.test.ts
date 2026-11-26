@@ -6,6 +6,7 @@ import { Pool } from "pg";
 import { afterAll, beforeAll, describe, expect, expectTypeOf, it } from "vite-plus/test";
 
 import { createQueryEngine } from "../index.js";
+import { isStatementTimeout } from "../src/postgres.js";
 import type { QueryPageInfo, QueryRequestInput } from "../index.js";
 
 const connectionString = process.env.TEST_DATABASE_URL;
@@ -25,11 +26,18 @@ const labels = namespace.table("labels", {
   docId: integer().notNull(),
   label: text().notNull(),
 });
-const schema = { accounts, docs, labels };
+// `code` is not unique, so joining it repeats a doc once per matching row.
+const cats = namespace.table("cats", {
+  id: integer().primaryKey(),
+  code: text().notNull(),
+  label: text().notNull(),
+});
+const schema = { accounts, docs, labels, cats };
 const relations = defineRelations(schema, (r) => ({
   docs: {
     account: r.one.accounts({ from: r.docs.accountId, to: r.accounts.id }),
     labels: r.many.labels({ from: r.docs.id, to: r.labels.docId }),
+    byCat: r.one.cats({ from: r.docs.org, to: r.cats.code }),
   },
 }));
 const client = new Pool({ connectionString, max: 6 });
@@ -79,6 +87,21 @@ const timed = engine.defineResource("docs", {
     timeouts: { count: 40, facets: 40, summary: 40 },
   },
 });
+const skippingTimed = engine.defineResource("docs", {
+  query: {
+    pagination: { modes: ["offset"], countCap: 10 },
+    facets: { allowed: ["accountId"], whenCapped: "skip" },
+    timeouts: { count: 40 },
+  },
+});
+const manyFacets = engine.defineResource("docs", {
+  relations: { account: true, labels: true },
+  query: {
+    pagination: { modes: ["offset"], countCap: 10 },
+    facets: { allowed: ["org", "accountId", "account.name", "labels.label"] },
+    timeouts: { count: 40, facets: 40 },
+  },
+});
 const guarded = engine.defineResource("docs", {
   query: { pagination: { modes: ["offset"] }, validation: { maxPageIndex: 3 } },
 });
@@ -97,10 +120,13 @@ function request(
 }
 
 /** Holds a lock that makes every statement on `docs` wait, so a timeout is deterministic. */
-async function withBlockedDocs<T>(run: (release: () => Promise<void>) => Promise<T>) {
+async function withBlockedDocs<T>(
+  run: (release: () => Promise<void>) => Promise<T>,
+  table = `"${namespace.schemaName}"."docs"`,
+) {
   const locker = await client.connect();
   await locker.query("begin");
-  await locker.query(`lock table "${namespace.schemaName}"."docs" in access exclusive mode`);
+  await locker.query(`lock table ${table} in access exclusive mode`);
   let released = false;
   const release = async () => {
     if (released) return;
@@ -135,6 +161,14 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       select n, case when n <= 25 then 'a' else 'b' end, 'doc ' || n, 1 + n % 2
       from generate_series(1, 28) as n
     `);
+    await db.execute(
+      sql`create table ${cats} (id integer primary key, code text not null, label text not null)`,
+    );
+    await db.insert(cats).values([
+      { id: 1, code: "a", label: "x" },
+      { id: 2, code: "a", label: "y" },
+      { id: 3, code: "b", label: "x" },
+    ]);
     await db.insert(labels).values([
       { id: 1, docId: 1, label: "red" },
       { id: 2, docId: 1, label: "red" },
@@ -277,6 +311,45 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       expect(() => engine.defineResource("docs", { query: { pagination: { countCap } } })).toThrow(
         "Count cap",
       );
+    });
+  });
+
+  describe("capped count over a join that repeats roots", () => {
+    const repeating = engine.defineResource("docs", {
+      relations: { byCat: true },
+      query: { pagination: { modes: ["offset"], countCap: 20 } },
+    });
+    const onLabel = {
+      filters: [
+        {
+          type: "condition" as const,
+          key: "byCat.label",
+          operator: "isAnyOf" as const,
+          value: ["x", "y"],
+        },
+      ],
+    };
+
+    it("counts each root once, as the exact count does", async () => {
+      const exact = await repeating.queryIds({ request: request({ count: "exact" }, onLabel) });
+      expect(exact.pageInfo).toMatchObject({ count: "exact", rowCount: 28 });
+      const uncapped = engine.defineResource("docs", {
+        relations: { byCat: true },
+        query: { pagination: { modes: ["offset"], countCap: 100 } },
+      });
+      const result = await uncapped.queryIds({ request: request({ count: "capped" }, onLabel) });
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 28, exact: true });
+    });
+
+    it("stops at the cap through the distinct branch", async () => {
+      statements.length = 0;
+      const result = await repeating.queryIds({ request: request({ count: "capped" }, onLabel) });
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 20, exact: false });
+      expect(
+        statements.some(
+          (query) => query.includes("capped_matching_ids") && query.includes("distinct"),
+        ),
+      ).toBe(true);
     });
   });
 
@@ -550,6 +623,123 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       });
     });
 
+    const groups = [
+      [{ key: "org" as const }, { key: "accountId" as const }],
+      [{ key: "account.name" as const }, { key: "labels.label" as const }],
+      [
+        { key: "org" as const, missing: true },
+        { key: "accountId" as const, missing: true },
+      ],
+    ];
+
+    it.each(groups)(
+      "runs several timed facet statements in a caller's transaction: %j",
+      async (...facets) => {
+        await db.transaction(async (tx) => {
+          const result = await manyFacets.query({
+            db: tx as never,
+            request: request({ count: "capped" }, { facets }),
+          });
+          expect(result.facets?.map((facet) => facet.status)).toEqual(facets.map(() => "ok"));
+          const [row] = await tx.execute(sql`show statement_timeout`, "objects");
+          expect(row).toEqual({ statement_timeout: "0" });
+        });
+      },
+    );
+
+    it.each(groups)(
+      "times several facets out in a caller's transaction without aborting it: %j",
+      async (...facets) => {
+        await db.transaction(async (tx) => {
+          const result = await withBlockedDocs(async (release) => {
+            const pending = manyFacets.query({
+              db: tx as never,
+              request: request({ count: "none" }, { facets }),
+            });
+            await new Promise((resolve) => setTimeout(resolve, 600));
+            await release();
+            return pending;
+          });
+          expect(result.facets?.map((facet) => facet.status)).toEqual(facets.map(() => "timeout"));
+          const [row] = await tx.execute(sql`select 1 as ok`, "objects");
+          expect(row).toEqual({ ok: 1 });
+        });
+      },
+    );
+
+    it("runs a timed count and timed facets one after another in a caller's transaction", async () => {
+      await db.transaction(async (tx) => {
+        const result = await withBlockedDocs(async (release) => {
+          const pending = manyFacets.query({
+            db: tx as never,
+            request: request({ count: "capped" }, { facets: [{ key: "org" }] }),
+          });
+          await new Promise((resolve) => setTimeout(resolve, 600));
+          await release();
+          return pending;
+        });
+        expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
+        expect(result.facets?.[0]).toMatchObject({ status: "timeout" });
+        const [row] = await tx.execute(sql`select 1 as ok`, "objects");
+        expect(row).toEqual({ ok: 1 });
+      });
+    });
+
+    it("holds at most one connection per facet statement while facets are timed", async () => {
+      const facets = [
+        { key: "org" as const, missing: true },
+        { key: "accountId" as const },
+        { key: "account.name" as const },
+        { key: "labels.label" as const },
+      ];
+      const waiting = await withBlockedDocs(async (release) => {
+        const pending = manyFacets.query({ request: request({ count: "none" }, { facets }) });
+        await new Promise((resolve) => setTimeout(resolve, 20));
+        const [row] = await db.execute(
+          sql`select count(*)::int as waiting from pg_stat_activity
+              where wait_event_type = 'Lock' and datname = current_database()`,
+          "objects",
+        );
+        await release();
+        await pending;
+        return Number((row as { waiting: number }).waiting);
+      });
+      // Each facet statement waits in a transaction of its own, so they still run in parallel.
+      expect(waiting).toBeGreaterThanOrEqual(2);
+      expect(waiting).toBeLessThanOrEqual(facets.length + 1);
+    });
+
+    it("skips facets when the count times out under whenCapped skip", async () => {
+      const result = await withBlockedDocs(async (release) => {
+        const pending = skippingTimed.query({
+          request: request({ count: "capped" }, { facets: [{ key: "accountId" }] }),
+        });
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await release();
+        return pending;
+      });
+      expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
+      expect(result.facets).toEqual([
+        { key: "accountId", status: "skipped", reason: "above-cap", options: [] },
+      ]);
+    });
+
+    it("does not call a cancelled statement a timeout", async () => {
+      const cancelled = Object.assign(new Error("canceling statement due to user request"), {
+        code: "57014",
+      });
+      const timedOut = Object.assign(new Error("canceling statement due to statement timeout"), {
+        code: "57014",
+      });
+      expect(isStatementTimeout(cancelled)).toBe(false);
+      expect(isStatementTimeout(timedOut)).toBe(true);
+      expect(isStatementTimeout(new Error("Failed query", { cause: timedOut }))).toBe(true);
+      expect(isStatementTimeout(new Error("Failed query", { cause: cancelled }))).toBe(false);
+      expect(isStatementTimeout(new Error("canceling statement due to statement timeout"))).toBe(
+        false,
+      );
+    });
+
     it.each([0, -5, 2.5])("rejects a timeout of %s", (value) => {
       expect(() =>
         engine.defineResource("docs", { query: { timeouts: { count: value } } }),
@@ -588,8 +778,16 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       relations: planRelations,
     }).defineResource("notes", {
       relations: { owner: true },
-      query: { search: { allowed: ["body", "owner.name"] } },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 40 } },
     });
+    const blockedNotes = () => `"${plansNamespace.schemaName}"."notes"`;
+    const afterBlocked = (run: () => Promise<unknown>) =>
+      withBlockedDocs(async (release) => {
+        const pending = run();
+        await new Promise((resolve) => setTimeout(resolve, 400));
+        await release();
+        return pending;
+      }, blockedNotes());
 
     beforeAll(async () => {
       await db.execute(sql`create extension if not exists pg_trgm`);
@@ -628,30 +826,83 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       };
     }
 
-    it("takes the indexed plan for a rare term and returns its rows", async () => {
-      planStatements.length = 0;
-      const result = await search.queryIds({ request: searching("zebra", "none") });
-      expect(result.ids).toEqual([5, 600, 12000]);
-      expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: false });
-      expect(planStatements.some((query) => query.includes("as matches"))).toBe(true);
-      expect(planStatements.some((query) => query.startsWith("explain"))).toBe(false);
-      expect(planStatements.at(-1)).toContain(" union ");
-    });
-
-    it("keeps the ordinary plan for a common term", async () => {
+    it("keeps the ordinary plan for a common term without extra statements", async () => {
       planStatements.length = 0;
       const result = await search.queryIds({ request: searching("common", "none") });
       expect(result.ids).toEqual([1, 2, 3, 4, 5]);
       expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: true });
-      expect(planStatements.at(-1)).not.toContain(" union ");
+      expect(planStatements.some((query) => query.includes(" union "))).toBe(false);
+      expect(planStatements.some((query) => query.startsWith("explain"))).toBe(false);
+      expect(planStatements.filter((query) => query.includes('"notes"."id"'))).toHaveLength(1);
     });
 
-    it("decides the same way for a capped count", async () => {
-      const rare = await search.queryIds({ request: searching("zebra", "capped") });
-      expect(rare.ids).toEqual([5, 600, 12000]);
-      expect(rare.pageInfo).toMatchObject({ count: "capped", rowCount: 3, exact: true });
-      const common = await search.queryIds({ request: searching("common", "capped") });
-      expect(common.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+    it("retries with the indexed plan when the ordinary plan runs out of budget", async () => {
+      planStatements.length = 0;
+      const result = (await afterBlocked(() =>
+        search.queryIds({ request: searching("zebra", "none") }),
+      )) as Awaited<ReturnType<typeof search.queryIds>>;
+      expect(result.ids).toEqual([5, 600, 12000]);
+      expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: false });
+      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
+      expect(pages).toHaveLength(2);
+      expect(pages[0]).not.toContain(" union ");
+      expect(pages[1]).toContain(" union ");
+    });
+
+    it("decides once per request: later statements reuse the indexed plan", async () => {
+      planStatements.length = 0;
+      const result = (await afterBlocked(() =>
+        search.query({
+          request: searching("zebra", "capped"),
+        }),
+      )) as Awaited<ReturnType<typeof search.query>>;
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 3, exact: true });
+      expect(result.rows.map((row) => row.id)).toEqual([5, 600, 12000]);
+      const counts = planStatements.filter(
+        (query) => query.includes("count(*)") && query.includes('"notes"'),
+      );
+      expect(counts).toHaveLength(2);
+      expect(counts[0]).not.toContain(" union ");
+      expect(counts[1]).toContain(" union ");
+      // The page statement decided nothing: it already found the indexed plan.
+      const pages = planStatements.filter(
+        (query) => query.includes('"notes"."id"') && !query.includes("count(*)"),
+      );
+      expect(pages).toHaveLength(1);
+      expect(pages[0]).toContain(" union ");
+    });
+
+    it("keeps a caller's transaction usable when the budget runs out", async () => {
+      await db.transaction(async (tx) => {
+        const result = (await afterBlocked(() =>
+          search.queryIds({ db: tx as never, request: searching("zebra", "none") }),
+        )) as Awaited<ReturnType<typeof search.queryIds>>;
+        expect(result.ids).toEqual([5, 600, 12000]);
+        const [row] = await tx.execute(sql`select 1 as ok`, "objects");
+        expect(row).toEqual({ ok: 1 });
+      });
+    });
+
+    it("runs the ordinary plan in a caller's transaction when it fits the budget", async () => {
+      await db.transaction(async (tx) => {
+        const result = await search.queryIds({
+          db: tx as never,
+          request: searching("common", "capped"),
+        });
+        expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+        const [row] = await tx.execute(sql`show statement_timeout`, "objects");
+        expect(row).toEqual({ statement_timeout: "0" });
+      });
+    });
+
+    it.each([0, -1, 2.5])("rejects a plan budget of %s", (planBudget) => {
+      expect(() =>
+        createQueryEngine({
+          db: planDb,
+          schema: planSchema,
+          relations: planRelations,
+        }).defineResource("notes", { query: { search: { planBudget } } }),
+      ).toThrow("plan budget");
     });
 
     it("still compares plan costs when the count is exact", async () => {
@@ -659,7 +910,6 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       const result = await search.queryIds({ request: searching("zebra", "exact") });
       expect(result.pageInfo).toMatchObject({ count: "exact", rowCount: 3 });
       expect(planStatements.filter((query) => query.startsWith("explain"))).toHaveLength(2);
-      expect(planStatements.some((query) => query.includes("as matches"))).toBe(false);
     });
   });
 

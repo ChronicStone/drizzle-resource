@@ -43,7 +43,7 @@ interface QuerySchemaResponse<TRow> {
     nextCursor?: string | null;
     total?: number;
     missing?: number;
-    status: "ok" | "skipped" | "timeout";
+    status?: "ok" | "skipped" | "timeout";
     reason?: "above-cap";
   }>;
   summaryStatus?: "ok" | "timeout";
@@ -687,7 +687,7 @@ export function responseSchema(
           nextCursor: z.string().nullable().optional(),
           missing: z.number().int().nonnegative().optional(),
           total: z.number().int().nonnegative().optional(),
-          status: z.enum(["ok", "skipped", "timeout"]),
+          status: z.enum(["ok", "skipped", "timeout"]).optional(),
           reason: z.literal("above-cap").optional(),
         }),
       )

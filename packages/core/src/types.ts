@@ -115,7 +115,7 @@ export type QueryFilters<TField extends string = string> = QueryFilterNode<TFiel
  */
 export type QueryCountMode = "none" | "exact" | "capped" | "estimated";
 
-/** Count modes a scan accepts: scans only read an exact total or none. */
+/** Count modes a scan reports: an exact total or none. */
 export type QueryScanCountMode = "none" | "exact";
 
 export interface QueryOffsetPagination {
@@ -262,13 +262,8 @@ export interface QueryResponse<TRow = Record<string, unknown>> {
   facets?: QueryFacetResult[];
 }
 
-/**
- * What a custom `strategy.query` may return. Facets without `status` are treated as `ok`.
- */
-export type QueryStrategyResponse<TRow = Record<string, unknown>> = Omit<
-  QueryResponse<TRow>,
-  "facets"
-> & { facets?: QueryFacetsStrategyResponse["facets"] };
+/** What a custom `strategy.query` returns: the same shape as {@link QueryResponse}. */
+export type QueryStrategyResponse<TRow = Record<string, unknown>> = QueryResponse<TRow>;
 
 /**
  * IDs-only result returned by `resource.queryIds(...)`.
@@ -355,11 +350,14 @@ export interface QueryFacetOption {
  * `status` narrows the result: `ok` carries buckets, `skipped` means the request's count was
  * capped and `facets.whenCapped` is `"skip"`, `timeout` means the facet exceeded
  * `timeouts.facets`. Skipped and timed-out facets come back with empty `options`.
+ *
+ * The engine always sets `status`. It is optional in the type so that facets built by hand, such
+ * as the ones a custom strategy returns, keep compiling: an absent `status` means `ok`.
  */
 export type QueryFacetResult<TField extends string = string> = QueryFacetBase<TField> &
-  ({ status: "ok" } | { status: "skipped"; reason: "above-cap" } | { status: "timeout" });
+  ({ status?: "ok" } | { status: "skipped"; reason: "above-cap" } | { status: "timeout" });
 
-/** Facet payload before `status` is attached. Custom facet strategies may return this shape. */
+/** Facet payload without `status`. */
 export interface QueryFacetBase<TField extends string = string> {
   /**
    * Faceted field path.
@@ -390,12 +388,9 @@ export interface QueryFacetsResponse<TField extends string = string> {
   facets: QueryFacetResult<TField>[];
 }
 
-/**
- * What a custom `strategy.facets` may return. A result without `status` is treated as `ok`.
- */
-export interface QueryFacetsStrategyResponse<TField extends string = string> {
-  facets: Array<QueryFacetBase<TField> & { status?: "ok" }>;
-}
+/** What a custom `strategy.facets` returns: the same shape as {@link QueryFacetsResponse}. */
+export type QueryFacetsStrategyResponse<TField extends string = string> =
+  QueryFacetsResponse<TField>;
 
 export type QueryEngineDb = {
   query: Record<string, { findMany: (args?: any) => Promise<any[]> }>;
@@ -929,6 +924,12 @@ export interface ResourceQuerySearchConfig<TField extends string> {
    * ```
    */
   defaults?: readonly TField[];
+  /**
+   * Milliseconds a search request without an exact count may spend on its ordinary plan before the
+   * engine retries with the trigram-indexed plan (default 25). Only applies when every searched
+   * column has a `pg_trgm` index; see the search guide for what it costs.
+   */
+  planBudget?: number;
 }
 
 /**
@@ -1251,6 +1252,7 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   search: {
     allowed: Set<TField>;
     defaults: TField[];
+    planBudget: number;
   };
   sort: {
     disabled: Set<TField>;
@@ -1389,7 +1391,8 @@ export interface QueryResource<
       context?: TContextOverride;
       db?: QueryEngineDb;
       batchSize?: number;
-      count?: QueryScanCountMode;
+      /** A scan reports an exact total or none; `capped` and `estimated` are rejected. */
+      count?: QueryCountMode;
       signal?: AbortSignal;
       load?: TLoad;
     },

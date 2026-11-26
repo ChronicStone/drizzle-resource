@@ -23,7 +23,7 @@ import type {
   QueryResponse,
   QueryScanRequest,
   QueryScanBatch,
-  QueryScanCountMode,
+  QueryCountMode,
   QueryFieldPath,
   QueryScopeHandler,
   ResourceQueryConfig,
@@ -299,7 +299,7 @@ export type Resource<
       context?: C;
       db?: QueryEngineDb;
       batchSize?: number;
-      count?: QueryScanCountMode;
+      count?: QueryCountMode;
       signal?: AbortSignal;
     } & SelectionArgs<N, L>,
     consume: (

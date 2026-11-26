@@ -43,7 +43,7 @@ interface QuerySchemaResponse<TRow> {
     nextCursor?: string | null;
     total?: number;
     missing?: number;
-    status: "ok" | "skipped" | "timeout";
+    status?: "ok" | "skipped" | "timeout";
     reason?: "above-cap";
   }>;
   summaryStatus?: "ok" | "timeout";
@@ -744,7 +744,7 @@ export function responseSchema(
           nextCursor: v.optional(v.nullable(v.string())),
           total: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
           missing: v.optional(v.pipe(v.number(), v.integer(), v.minValue(0))),
-          status: v.picklist(["ok", "skipped", "timeout"]),
+          status: v.optional(v.picklist(["ok", "skipped", "timeout"])),
           reason: v.optional(v.literal("above-cap")),
         }),
       ),

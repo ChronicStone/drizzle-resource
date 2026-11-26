@@ -49,14 +49,12 @@ import { decodeCursor, encodeCursor } from "./cursor.js";
 import {
   estimatePostgresQuery,
   isPostgresDatabase,
+  isTransactionDatabase,
   probePostgresSearch,
   scanPostgresCursor,
   withStatementTimeout,
 } from "./postgres.js";
 import { isAboveCap, skippedFacets, timedOutFacet } from "./capped.js";
-
-/** Indexed search matches below this many rows are cheaper to fetch than to walk the sort index. */
-const searchProbeRows = 10_000;
 
 function isExactCount(count: QueryPageCount) {
   return count.count === "exact" || (count.count === "capped" && count.exact);
@@ -551,6 +549,7 @@ export function createQueryResourceUtils<
   const indexedSearchColumns = new Set<PgColumn>();
   const searchPlans = new WeakMap<QueryRequest, Promise<void>>();
   const indexedSearchRequests = new WeakSet<QueryRequest>();
+  const undecidedSearches = new WeakSet<QueryRequest>();
 
   function resolveField(path: string) {
     return resource.fields.get(path);
@@ -743,8 +742,9 @@ export function createQueryResourceUtils<
     if (request.pagination.count !== "exact") {
       // Without an exact count PostgreSQL's estimate cannot tell a rare term from a common one
       // (it assumes millions of matches for both), so it walks the sort index for a rare term.
-      // A bounded probe of the indexed matches tells them apart.
-      if (await hasFewIndexedMatches(request)) indexedSearchRequests.add(request);
+      // The first statement of the request runs the ordinary plan with a time budget instead,
+      // and `plannedSearch` switches to the indexed plan only when the budget runs out.
+      undecidedSearches.add(request);
       return;
     }
     const filter = compileFilterNode(normalizeFilters(request.filters));
@@ -777,19 +777,22 @@ export function createQueryResourceUtils<
     }
   }
 
-  async function hasFewIndexedMatches(request: QueryRequest) {
-    const branches = compileIndexedBranches(request, searchProbeRows + 1);
-    if (!branches) return false;
-    try {
-      const [row] = await (database as any).execute(
-        sql`select count(*) as matches from (${sql.join(branches, sql` union `)}) as probe`,
-        "objects",
-      );
-      return Number(row?.matches ?? Number.POSITIVE_INFINITY) <= searchProbeRows;
-    } catch {
-      // a probe only picks between equivalent plans, so any failure keeps the ordinary one
-      return false;
-    }
+  /**
+   * Run the first statement of a search that has no exact count. The ordinary plan gets
+   * `search.planBudget` milliseconds: a common term finishes within it and costs what it always
+   * cost, while a rare term makes PostgreSQL walk the whole sort index, runs out of budget and is
+   * retried with the indexed plan, which then holds for every later statement of the request.
+   */
+  async function plannedSearch<TResult>(
+    request: QueryRequest,
+    db: QueryEngineDb,
+    run: (db: QueryEngineDb) => Promise<TResult>,
+  ): Promise<TResult> {
+    if (!undecidedSearches.delete(request)) return run(db);
+    const outcome = await withStatementTimeout(db, resource.queryConfig.search.planBudget, run);
+    if (!outcome.timedOut) return outcome.value;
+    indexedSearchRequests.add(request);
+    return run(db);
   }
 
   function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
@@ -825,11 +828,6 @@ export function createQueryResourceUtils<
   }
 
   function compileIndexedSearch(request: QueryRequest) {
-    const branches = compileIndexedBranches(request);
-    return branches ? inArray(rootTable.id, sql`(${sql.join(branches, sql` union `)})`) : undefined;
-  }
-
-  function compileIndexedBranches(request: QueryRequest, limit?: number) {
     const { search } = request;
     const entries = search.fields.map(resolveField);
     const indexed =
@@ -869,9 +867,9 @@ export function createQueryResourceUtils<
           ),
         ),
       );
-      return sql`(${limit === undefined ? query : query.limit(limit)})`;
+      return sql`(${query})`;
     });
-    return branches;
+    return inArray(rootTable.id, sql`(${sql.join(branches, sql` union `)})`);
   }
 
   function compileOrderBy(
@@ -1059,7 +1057,9 @@ export function createQueryResourceUtils<
           const [total] = await buildCountQuery(request, db);
           return { count: "exact", rowCount: Number(total?.rowCount ?? 0) };
         }
-        const [total] = await buildCappedCountQuery(request, db);
+        const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(request, db, (planned) =>
+          buildCappedCountQuery(request, planned),
+        );
         const found = Number(total?.rowCount ?? 0);
         return { count: "capped", rowCount: Math.min(found, cap), exact: found <= cap };
       },
@@ -1132,7 +1132,6 @@ export function createQueryResourceUtils<
     const sorting = compileOrderBy(request.sorting);
     const orderBy = sorting.length ? sorting : [asc(rootTable.id)];
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
-    const whereClause = buildWhereClause(request);
 
     const firstPage =
       request.pagination.mode === "cursor"
@@ -1179,28 +1178,6 @@ export function createQueryResourceUtils<
           )
         : {};
 
-    let idsQuery: any;
-    if (direct) {
-      idsQuery = (database as any).select({ id: rootTable.id, ...cursorSelection }).from(rootTable);
-    } else {
-      const matchingIds = (database as any)
-        .$with("matching_ids")
-        .as(buildMatchingIdsSelect(request));
-      idsQuery = (database as any)
-        .with(matchingIds)
-        .select({ id: matchingIds.id, ...cursorSelection })
-        .from(matchingIds)
-        .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
-    }
-
-    idsQuery = applyOuterJoins(idsQuery, request);
-
-    const cursorPredicate =
-      request.pagination.mode === "cursor" && request.pagination.cursor
-        ? buildCursorBoundary(request, request.pagination.cursor)
-        : undefined;
-    idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
-
     const offset =
       request.pagination.mode === "offset"
         ? (Math.max(request.pagination.pageIndex, 1) - 1) * pageSize
@@ -1208,12 +1185,32 @@ export function createQueryResourceUtils<
     // Only a count that is exact tells whether a next page exists; every other page looks ahead.
     const needsLookahead =
       request.pagination.mode === "cursor" || (!isExactCount(count) && !inferCount);
-    idsQuery = idsQuery
-      .orderBy(...orderBy)
-      .limit(pageSize + (needsLookahead ? 1 : 0))
-      .offset(offset);
-
-    const queriedRows = await idsQuery;
+    // The search plan is read while the query is built, so a retry builds it again.
+    const fetchPage = async (db: QueryEngineDb) => {
+      const whereClause = buildWhereClause(request);
+      let idsQuery: any;
+      if (direct) {
+        idsQuery = (db as any).select({ id: rootTable.id, ...cursorSelection }).from(rootTable);
+      } else {
+        const matchingIds = (db as any).$with("matching_ids").as(buildMatchingIdsSelect(request));
+        idsQuery = (db as any)
+          .with(matchingIds)
+          .select({ id: matchingIds.id, ...cursorSelection })
+          .from(matchingIds)
+          .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
+      }
+      idsQuery = applyOuterJoins(idsQuery, request);
+      const cursorPredicate =
+        request.pagination.mode === "cursor" && request.pagination.cursor
+          ? buildCursorBoundary(request, request.pagination.cursor)
+          : undefined;
+      idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
+      return (await idsQuery
+        .orderBy(...orderBy)
+        .limit(pageSize + (needsLookahead ? 1 : 0))
+        .offset(offset)) as any[];
+    };
+    const queriedRows = await plannedSearch(request, database, fetchPage);
     if (inferCount) count = { count: "exact", rowCount: queriedRows.length };
     const hasNextPage =
       request.pagination.mode === "offset" && isExactCount(count)
@@ -1441,6 +1438,10 @@ export function createQueryResourceUtils<
       aggregates = isAboveCap(pageCount, countCap())
         ? { facets: skippedFacets(facets) }
         : await resolveAggregates({ request, facets });
+    } else if (isTransactionDatabase(database)) {
+      // One connection runs one statement at a time, and a timed count must not time the facets.
+      pageCount = await resolveCount(request);
+      aggregates = await resolveAggregates({ request, facets });
     } else {
       [pageCount, aggregates] = await Promise.all([
         resolveCount(request),

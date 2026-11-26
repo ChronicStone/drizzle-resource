@@ -147,20 +147,59 @@ export async function scanPostgresCursor<TResult>(
   }
 }
 
-function isStatementTimeout(error: unknown): boolean {
+/** True for PostgreSQL's "canceling statement due to statement timeout", not for any cancel. */
+export function isStatementTimeout(error: unknown): boolean {
   for (let current = error, depth = 0; current && depth < 5; depth++) {
-    const record = current as { code?: unknown; cause?: unknown };
-    if (record.code === "57014") return true;
+    const record = current as { code?: unknown; message?: unknown; cause?: unknown };
+    if (
+      record.code === "57014" &&
+      typeof record.message === "string" &&
+      /statement timeout/i.test(record.message)
+    ) {
+      return true;
+    }
     current = record.cause;
   }
   return false;
 }
 
+// A transaction runs one statement at a time, and Drizzle names every sibling savepoint `sp1`.
+// Timed statements inside a caller's transaction therefore wait for each other.
+const transactionQueues = new WeakMap<object, Promise<unknown>>();
+
+async function runTimed<TResult>(
+  database: QueryEngineDb,
+  milliseconds: number,
+  run: (database: QueryEngineDb) => Promise<TResult>,
+): Promise<TResult> {
+  const nested = is(database, PgAsyncTransaction);
+  return (database as any).transaction(async (transaction: any) => {
+    let previous: string | undefined;
+    if (nested) {
+      const [row] = await transaction.execute(
+        sql`select current_setting('statement_timeout') as value`,
+        "objects",
+      );
+      previous = String(row?.value ?? "0");
+    }
+    await transaction.execute(
+      sql`select set_config('statement_timeout', ${String(Math.ceil(milliseconds))}, true)`,
+    );
+    const result = await run(transaction);
+    // RELEASE SAVEPOINT keeps a SET LOCAL until the caller's transaction ends.
+    if (previous !== undefined) {
+      await transaction.execute(sql`select set_config('statement_timeout', ${previous}, true)`);
+    }
+    return result;
+  });
+}
+
 /**
- * Run `run` with `statement_timeout` set for its statements only. The setting is local to a
- * transaction, so a connection never keeps it. Inside a caller's transaction the previous value
- * is restored afterwards. A statement that exceeds the timeout resolves to `{ timedOut: true }`;
- * any other error is thrown. Other databases run without a timeout.
+ * Run `run` with `statement_timeout` set for its statements only. On a pooled connection the
+ * setting lives in a transaction of its own. Inside a caller's transaction it lives in a savepoint
+ * that is rolled back on a timeout, so the caller's transaction is never aborted, and the previous
+ * value is restored on success. A statement that exceeds the timeout resolves to
+ * `{ timedOut: true }`; any other error is thrown. Other databases run without a timeout.
  */
 export async function withStatementTimeout<TResult>(
   database: QueryEngineDb,
@@ -170,29 +209,25 @@ export async function withStatementTimeout<TResult>(
   if (milliseconds === undefined || !isPostgresDatabase(database)) {
     return { timedOut: false, value: await run(database) };
   }
-  const nested = is(database, PgAsyncTransaction);
-  try {
-    const value = await database.transaction(async (transaction) => {
-      let previous: string | undefined;
-      if (nested) {
-        const [row] = await transaction.execute(
-          sql`select current_setting('statement_timeout') as value`,
-          "objects",
-        );
-        previous = String(row?.value ?? "0");
-      }
-      await transaction.execute(
-        sql`select set_config('statement_timeout', ${String(Math.ceil(milliseconds))}, true)`,
-      );
-      const result = await run(transaction);
-      if (previous !== undefined) {
-        await transaction.execute(sql`select set_config('statement_timeout', ${previous}, true)`);
-      }
-      return result;
-    });
-    return { timedOut: false, value };
-  } catch (error) {
-    if (isStatementTimeout(error)) return { timedOut: true };
-    throw error;
-  }
+  const attempt = async (): Promise<{ timedOut: false; value: TResult } | { timedOut: true }> => {
+    try {
+      return { timedOut: false, value: await runTimed(database, milliseconds, run) };
+    } catch (error) {
+      if (isStatementTimeout(error)) return { timedOut: true };
+      throw error;
+    }
+  };
+  if (!is(database, PgAsyncTransaction)) return attempt();
+  const previous = transactionQueues.get(database) ?? Promise.resolve();
+  const next = previous.then(attempt, attempt);
+  transactionQueues.set(
+    database,
+    next.catch(() => undefined),
+  );
+  return next;
+}
+
+/** Whether statements on this database share one connection and cannot overlap. */
+export function isTransactionDatabase(database: QueryEngineDb) {
+  return is(database, PgAsyncTransaction);
 }

@@ -24,11 +24,11 @@ import type {
   ResourceQueryDefaultsConfig,
   QueryScanRequest,
   QueryScanBatch,
-  QueryScanCountMode,
+  QueryCountMode,
 } from "./types.js";
 import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
 import { createQueryFilterBuilder } from "./filters.js";
-import { defaultCountCap, defaultQueryValidation } from "./contracts.js";
+import { defaultCountCap, defaultQueryValidation, defaultSearchPlanBudget } from "./contracts.js";
 import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
 import { isAboveCap, skippedFacets, withFacetStatus } from "./capped.js";
 
@@ -156,6 +156,9 @@ function assertGuardOptions(root: unknown, query: any) {
         `The ${stage} timeout for resource "${name}" must be a positive number of milliseconds`,
       );
     }
+  }
+  if (!positive(query?.search?.planBudget)) {
+    throw new Error(`The search plan budget for resource "${name}" must be a positive integer`);
   }
   const whenCapped = query?.facets?.whenCapped;
   if (whenCapped !== undefined && whenCapped !== "skip" && whenCapped !== "run") {
@@ -572,6 +575,7 @@ export function createQueryEngine<
           search: {
             allowed: allowedSearchFields,
             defaults: defaultFields as any[],
+            planBudget: options.query?.search?.planBudget ?? defaultSearchPlanBudget,
           },
           sort: {
             disabled: disabledSortFields,
@@ -777,7 +781,7 @@ export function createQueryEngine<
           context?: any;
           db?: QueryEngineDb;
           batchSize?: number;
-          count?: QueryScanCountMode;
+          count?: QueryCountMode;
           signal?: AbortSignal;
           view?: string;
           load?: string | Record<string, unknown>;
@@ -792,6 +796,9 @@ export function createQueryEngine<
         }
         args.signal?.throwIfAborted();
         const count = args.count ?? "none";
+        if (count !== "none" && count !== "exact") {
+          throw new Error(`A scan reports an exact total or none, not "${count}"`);
+        }
         const request = prepareRequest(
           {
             filters: args.request?.filters ?? [],

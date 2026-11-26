@@ -60,7 +60,7 @@ describe("Zod count modes and page limits", () => {
     expect(requestSchema(open).safeParse(page({ pageIndex: 1_000_000 })).success).toBe(true);
   });
 
-  it("validates every pageInfo count variant and the new facet and summary fields", () => {
+  it("validates every pageInfo count variant and the new facet and summary fields, with status optional", () => {
     const response = responseSchema(resource);
     const base = { mode: "offset", pageIndex: 1, pageSize: 10, hasNextPage: true };
     for (const count of [
@@ -99,6 +99,6 @@ describe("Zod count modes and page limits", () => {
         pageInfo: { ...base, count: "none", rowCount: null },
         facets: [{ key: "status", options: [] }],
       }).success,
-    ).toBe(false);
+    ).toBe(true);
   });
 });

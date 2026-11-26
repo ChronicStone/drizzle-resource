@@ -1,5 +1,4 @@
 import type {
-  QueryFacetBase,
   QueryFacetRequest,
   QueryFacetResult,
   QueryFacetsResponse,
@@ -9,6 +8,8 @@ import type {
 
 /** Whether a count says "more rows match than the cap reads", which `facets.whenCapped` acts on. */
 export function isAboveCap(count: QueryPageCount, cap: number): boolean {
+  // A count that timed out is at least as big as one that hit the cap.
+  if (count.count === "none") return count.reason === "timeout";
   if (count.count === "capped") return !count.exact;
   if (count.count === "estimated") return count.rowCount > cap;
   return false;
@@ -33,9 +34,6 @@ export function timedOutFacet(key: string): QueryFacetResult {
 export function withFacetStatus(response: QueryFacetsStrategyResponse): QueryFacetsResponse {
   return {
     ...response,
-    facets: response.facets.map(
-      (facet: QueryFacetBase & { status?: "ok" }) =>
-        ({ ...facet, status: facet.status ?? "ok" }) as QueryFacetResult,
-    ),
-  };
+    facets: response.facets.map((facet) => ({ ...facet, status: facet.status ?? "ok" })),
+  } as QueryFacetsResponse;
 }
