@@ -2,23 +2,32 @@ import { is, sql } from "drizzle-orm";
 import type { SQL } from "drizzle-orm";
 import { PgAsyncDatabase, PgAsyncTransaction } from "drizzle-orm/pg-core/async";
 import { PgDialect, PgTable } from "drizzle-orm/pg-core";
-import type { QueryEngineDb } from "./types.js";
+import type { StatementObserver } from "./observe.js";
+import type { QueryEngineDb, QueryRequest } from "./types.js";
 
 const searchIndexes = new WeakMap<object, WeakMap<PgTable, Promise<Set<string>>>>();
 const dialect = new PgDialect();
+
+/** What a planning statement reports to `onQuery`. */
+export interface PlanningObserver {
+  observer: StatementObserver;
+  request?: QueryRequest;
+}
 
 export async function estimatePostgresQuery(
   database: QueryEngineDb,
   query: SQL,
   metric: "Total Cost" | "Plan Rows" = "Total Cost",
+  observing?: PlanningObserver,
 ) {
   if (!isPostgresDatabase(database)) return undefined;
   /* an estimate only picks between equivalent plans, so any failure keeps the ordinary one */
   try {
-    const rows = await database.execute<{ "QUERY PLAN": unknown }>(
-      sql`explain (format json) ${query}`,
-      "objects",
-    );
+    const explained = sql`explain (format json) ${query}`;
+    const execution = database.execute<{ "QUERY PLAN": unknown }>(explained, "objects");
+    const rows = await (observing
+      ? observing.observer.raw("plan", observing.request, explained, execution)
+      : execution);
     const raw = rows[0]?.["QUERY PLAN"];
     const plans = (typeof raw === "string" ? JSON.parse(raw) : raw) as
       | Array<{ Plan?: Record<string, unknown> }>
@@ -30,7 +39,11 @@ export async function estimatePostgresQuery(
   }
 }
 
-export async function probePostgresSearch(database: QueryEngineDb, table: PgTable) {
+export async function probePostgresSearch(
+  database: QueryEngineDb,
+  table: PgTable,
+  observing?: PlanningObserver,
+) {
   if (!isPostgresDatabase(database)) return new Set<string>();
   let tables = searchIndexes.get(database);
   if (!tables) {
@@ -40,9 +53,7 @@ export async function probePostgresSearch(database: QueryEngineDb, table: PgTabl
   const cached = tables.get(table);
   if (cached) return cached;
   const name = dialect.sqlToQuery(sql`${table}`).sql;
-  const pending = database
-    .execute<{ column: string }>(
-      sql`
+  const catalog = sql`
     select distinct attribute.attname as column
     from pg_catalog.pg_index as index
     join pg_catalog.pg_class as relation on relation.oid = index.indrelid
@@ -62,9 +73,11 @@ export async function probePostgresSearch(database: QueryEngineDb, table: PgTabl
         format('lower(%I)', attribute.attname),
         format('lower((%I)::text)', attribute.attname)
       )
-  `,
-      "objects",
-    )
+  `;
+  const execution = database.execute<{ column: string }>(catalog, "objects");
+  const pending = Promise.resolve(
+    observing ? observing.observer.raw("plan", observing.request, catalog, execution) : execution,
+  )
     .then((rows) => new Set(rows.map((row) => row.column)))
     .catch((error: unknown) => {
       tables.delete(table);
@@ -105,6 +118,7 @@ export async function scanPostgresCursor<TResult>(
     query: SQL;
     batchSize: number;
     signal?: AbortSignal;
+    observing?: PlanningObserver;
   },
   consume: (batches: AsyncIterable<Record<string, unknown>[]>) => Promise<TResult>,
 ): Promise<TResult> {
@@ -115,14 +129,24 @@ export async function scanPostgresCursor<TResult>(
   const transaction = database;
   options.signal?.throwIfAborted();
   const name = sql.identifier(`resource_scan_${crypto.randomUUID().replaceAll("-", "")}`);
-  await database.execute(sql`declare ${name} no scroll cursor for ${options.query}`);
+  const { observing } = options;
+  /** A scan reports its cursor statements as `scan`: declare, each fetch, close. */
+  function execute<TRows = unknown>(statement: SQL, mapping?: "objects"): PromiseLike<TRows> {
+    const execution = (
+      mapping ? transaction.execute(statement, mapping) : transaction.execute(statement)
+    ) as PromiseLike<TRows>;
+    return observing
+      ? observing.observer.raw("scan", observing.request, statement, execution)
+      : execution;
+  }
+  await execute(sql`declare ${name} no scroll cursor for ${options.query}`);
   let active = true;
   let failed = false;
   async function* read() {
     while (true) {
       if (!active) throw new Error("Scan batches cannot be read outside the scan callback");
       options.signal?.throwIfAborted();
-      const rows = await transaction.execute(
+      const rows = await execute<Record<string, unknown>[]>(
         sql`fetch forward ${sql.raw(String(options.batchSize))} from ${name}`,
         "objects",
       );
@@ -141,7 +165,7 @@ export async function scanPostgresCursor<TResult>(
   } finally {
     active = false;
     await batches.return();
-    const closing = database.execute(sql`close ${name}`);
+    const closing = Promise.resolve(execute(sql`close ${name}`));
     if (failed) await closing.catch(() => undefined);
     else await closing;
   }
@@ -188,29 +212,28 @@ export function isCallerTransaction(database: QueryEngineDb) {
   return is(database, PgAsyncTransaction) && !ownedTransactions.has(database);
 }
 
+/** What a run under a `statement_timeout` came to. */
+export type TimedOutcome<TResult> =
+  | { kind: "ok"; value: TResult; effective: number; elapsed: number }
+  /** The timeout we set cancelled it. */
+  | { kind: "exceeded"; effective: number; elapsed: number }
+  /** Something else cancelled it, such as a smaller `statement_timeout` of the connection. */
+  | { kind: "cancelled"; error: unknown; effective: number; elapsed: number };
+
 /**
  * Run `run` with `statement_timeout` set for its statements only, in a transaction the engine
- * owns. With `capToCurrent` the timeout is the smaller of `milliseconds` and the setting already
- * in force. A statement that exceeds the timeout resolves to `{ timedOut: true }`; any other
- * error, including a cancel that came from somewhere else, is thrown. In a caller's transaction
- * and on other databases `run` executes without a timeout.
+ * owns (a savepoint when `database` is already a transaction). With `capToCurrent` the timeout is
+ * the smaller of `milliseconds` and the setting already in force, and `effective` is the one that
+ * applies. The clock starts once the timeout is set, so waiting for a pooled connection or
+ * setting it up is not counted. Errors other than a cancel are thrown.
  */
-export async function withStatementTimeout<TResult>(
+export async function runTimed<TResult>(
   database: QueryEngineDb,
-  milliseconds: number | undefined,
+  milliseconds: number,
   run: (database: QueryEngineDb) => Promise<TResult>,
   options: { capToCurrent?: boolean } = {},
-): Promise<{ timedOut: false; value: TResult } | { timedOut: true }> {
-  if (
-    milliseconds === undefined ||
-    !isPostgresDatabase(database) ||
-    isCallerTransaction(database)
-  ) {
-    return { timedOut: false, value: await run(database) };
-  }
+): Promise<TimedOutcome<TResult>> {
   const nested = is(database, PgAsyncTransaction);
-  // The timeout that is really in force can be smaller than `milliseconds` (`capToCurrent`), and
-  // the clock must not count the time spent waiting for a pooled connection or setting it up.
   let effective = milliseconds;
   let started = performance.now();
   try {
@@ -241,9 +264,37 @@ export async function withStatementTimeout<TResult>(
       }
       return result;
     });
-    return { timedOut: false, value };
+    return { kind: "ok", value, effective, elapsed: performance.now() - started };
   } catch (error) {
-    if (isOurTimeout(error, performance.now() - started, effective)) return { timedOut: true };
+    const elapsed = performance.now() - started;
+    if (isOurTimeout(error, elapsed, effective)) return { kind: "exceeded", effective, elapsed };
+    if (isQueryCanceled(error)) return { kind: "cancelled", error, effective, elapsed };
     throw error;
   }
+}
+
+/**
+ * Run `run` with `statement_timeout` set for its statements only, in a transaction the engine
+ * owns. With `capToCurrent` the timeout is the smaller of `milliseconds` and the setting already
+ * in force. A statement that exceeds the timeout resolves to `{ timedOut: true }`; any other
+ * error, including a cancel that came from somewhere else, is thrown. In a caller's transaction
+ * and on other databases `run` executes without a timeout.
+ */
+export async function withStatementTimeout<TResult>(
+  database: QueryEngineDb,
+  milliseconds: number | undefined,
+  run: (database: QueryEngineDb) => Promise<TResult>,
+  options: { capToCurrent?: boolean } = {},
+): Promise<{ timedOut: false; value: TResult } | { timedOut: true }> {
+  if (
+    milliseconds === undefined ||
+    !isPostgresDatabase(database) ||
+    isCallerTransaction(database)
+  ) {
+    return { timedOut: false, value: await run(database) };
+  }
+  const outcome = await runTimed(database, milliseconds, run, options);
+  if (outcome.kind === "ok") return { timedOut: false, value: outcome.value };
+  if (outcome.kind === "exceeded") return { timedOut: true };
+  throw outcome.error;
 }

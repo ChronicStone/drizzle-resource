@@ -55,6 +55,8 @@ import {
   withStatementTimeout,
 } from "./postgres.js";
 import { isAboveCap, skippedFacets, timedOutFacet } from "./capped.js";
+import { createStatementObserver } from "./observe.js";
+import type { CapturedStatement, QueryObserver } from "./observe.js";
 
 /** The indexed search plan gets this many times `search.planBudget` before the ordinary plan returns. */
 const indexedBudgetFactor = 4;
@@ -521,13 +523,32 @@ export function createQueryResourceUtils<
   {
     resource,
     db: database = config.db,
+    tap,
+    capture,
   }: {
     resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>;
     db?: QueryEngineDb;
+    /** Also sees every statement, next to the engine's `onQuery`. */
+    tap?: QueryObserver;
+    /** A dry run: stage statements are captured here instead of being executed. */
+    capture?: CapturedStatement[];
   },
 ): QueryResourceUtils<TRow, TWith> {
-  const cached = database === config.db ? utilsCache.get(resource) : undefined;
+  const shared = tap === undefined && capture === undefined;
+  const cached = shared && database === config.db ? utilsCache.get(resource) : undefined;
   if (cached) return cached as QueryResourceUtils<TRow, TWith>;
+  const observer = createStatementObserver(String(resource.key), [config.onQuery, tap], {
+    ignoreFilter: isScopeFilterNode,
+    capture,
+  });
+  /** A dry run applies no timeouts: it runs nothing. */
+  async function withTimeout<TResult>(
+    milliseconds: number | undefined,
+    run: (db: QueryEngineDb) => Promise<TResult>,
+  ) {
+    if (observer.dry) return { timedOut: false as const, value: await run(database) };
+    return withStatementTimeout(database, milliseconds, run);
+  }
 
   if (database !== config.db && config.models) {
     resource = {
@@ -732,7 +753,7 @@ export function createQueryResourceUtils<
     );
     await Promise.all(
       [...tables].map(async (table) => {
-        const indexed = await probePostgresSearch(database, table);
+        const indexed = await probePostgresSearch(database, table, { observer, request });
         for (const entry of entries) {
           const column = entry.column as PgColumn;
           if (config.schema[entry.tableName] === table && indexed.has(column.name))
@@ -773,7 +794,9 @@ export function createQueryResourceUtils<
       return sql`select (${count}) as total, array(select id from (${page}) as page) as ids`;
     });
     const [ordinaryCost, indexedCost] = await Promise.all(
-      queries.map((query) => estimatePostgresQuery(database, query)),
+      queries.map((query) =>
+        estimatePostgresQuery(database, query, "Total Cost", { observer, request }),
+      ),
     );
     if (ordinaryCost !== undefined && indexedCost !== undefined && indexedCost < ordinaryCost) {
       indexedSearchRequests.add(request);
@@ -806,6 +829,23 @@ export function createQueryResourceUtils<
   ): Promise<TResult> {
     if (!budgetedSearches.has(request)) return run(db, request);
     const budget = resource.queryConfig.search.planBudget;
+    if (observer.dry) {
+      // A dry run cannot tell which attempt a statement ends on. It captures the statements the
+      // attempts build, the ordinary plan and the indexed plan, and `explain` runs them in the
+      // order the engine does. Facets and the summary never take part: they keep the ordinary plan.
+      const from = observer.captured();
+      const ordinary = run(db, request);
+      const between = observer.captured();
+      const indexedRequest = { ...request };
+      indexedSearchRequests.add(indexedRequest);
+      void run(db, indexedRequest);
+      observer.annotate(from, between, { attempt: "ordinary", budget });
+      observer.annotate(between, observer.captured(), {
+        attempt: "indexed",
+        budget: budget * indexedBudgetFactor,
+      });
+      return ordinary;
+    }
     if (first === "ordinary") {
       const ordinary = await withStatementTimeout(db, budget, (d) => run(d, request), {
         capToCurrent: true,
@@ -1020,6 +1060,9 @@ export function createQueryResourceUtils<
         );
   }
 
+  /** What a dry run answers for an exact count: large, so the page behind it is not skipped. */
+  const dryExactCount = 1_000_000_000;
+
   function countCap() {
     return resource.queryConfig.pagination.countCap;
   }
@@ -1062,7 +1105,19 @@ export function createQueryResourceUtils<
     const plan = buildAggregatePlan(request);
     if (plan.joins.length > 0) return undefined;
     const query = (database as any).select({ id: rootTable.id }).from(rootTable).where(plan.where);
-    return estimatePostgresQuery(database, query.getSQL(), "Plan Rows");
+    const estimate = await estimatePostgresQuery(database, query.getSQL(), "Plan Rows", {
+      observer,
+      request,
+    });
+    // The estimate is read from this statement's plan, so a dry run reports the statement itself.
+    if (estimate !== undefined && estimate > countCap()) {
+      observer.record({
+        stage: "count",
+        statement: query.getSQL(),
+        note: "the count is the planner's row estimate for this statement, nothing is counted",
+      });
+    }
+    return estimate;
   }
 
   /** Resolve the request's count mode into the count a page reports. */
@@ -1078,18 +1133,28 @@ export function createQueryResourceUtils<
         return { count: "estimated", rowCount: Math.round(estimate) };
       }
     }
-    const outcome = await withStatementTimeout(
-      database,
+    const outcome = await withTimeout(
       resource.queryConfig.timeouts.count,
       async (db): Promise<QueryPageCount> => {
         if (mode === "exact") {
-          const [total] = await buildCountQuery(request, db);
+          const [total] = await observer.run(
+            "count",
+            request,
+            buildCountQuery(request, db),
+            observer.dry ? { dry: [{ rowCount: dryExactCount }] } : undefined,
+          );
           return { count: "exact", rowCount: Number(total?.rowCount ?? 0) };
         }
         const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(
           request,
           db,
-          (planned, plannedRequest) => buildCappedCountQuery(plannedRequest, planned),
+          async (planned, plannedRequest) =>
+            observer.run(
+              "count",
+              request,
+              buildCappedCountQuery(plannedRequest, planned),
+              observer.dry ? { dry: [{ rowCount: cap }] } : undefined,
+            ),
         );
         const found = Number(total?.rowCount ?? 0);
         return { count: "capped", rowCount: Math.min(found, cap), exact: found <= cap };
@@ -1236,10 +1301,15 @@ export function createQueryResourceUtils<
           ? buildCursorBoundary(request, request.pagination.cursor)
           : undefined;
       idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
-      return (await idsQuery
-        .orderBy(...orderBy)
-        .limit(pageSize + (needsLookahead ? 1 : 0))
-        .offset(offset)) as any[];
+      return (await observer.run(
+        "ids",
+        request,
+        idsQuery
+          .orderBy(...orderBy)
+          .limit(pageSize + (needsLookahead ? 1 : 0))
+          .offset(offset),
+        observer.dry ? { dry: [] } : undefined,
+      )) as any[];
     };
     // A capped count that fits under its cap is exact and small, so the indexed plan reads at most
     // that many matches. A count that hit the cap says the matches are common: walk the sort index.
@@ -1287,6 +1357,7 @@ export function createQueryResourceUtils<
 
   async function executeRowsQuery({
     ids,
+    request,
     relations = resource.relations as QueryRelationsSubset<TWith> | undefined,
     projection,
   }: {
@@ -1298,15 +1369,20 @@ export function createQueryResourceUtils<
     const orderedIds = dedupeIds(ids);
     if (orderedIds.length === 0) return [];
 
-    const rows = await (database.query as any)[resource.key].findMany({
-      where: {
-        id: {
-          in: orderedIds,
+    const rows = await observer.run<any[]>(
+      "rows",
+      request,
+      (database.query as any)[resource.key].findMany({
+        where: {
+          id: {
+            in: orderedIds,
+          },
         },
-      },
-      with: relations,
-      ...projection?.config(database, true),
-    });
+        with: relations,
+        ...projection?.config(database, true),
+      }),
+      observer.dry ? { dry: [] } : undefined,
+    );
 
     const orderIndex = new Map(orderedIds.map((id: unknown, index: number) => [id, index]));
     rows.sort(
@@ -1370,6 +1446,7 @@ export function createQueryResourceUtils<
         query: query.getSQL(),
         batchSize: options.batchSize,
         signal: options.signal,
+        observing: { observer, request },
       },
       async (batches) => {
         async function* decode() {
@@ -1414,18 +1491,22 @@ export function createQueryResourceUtils<
       : selection;
     const joins = buildOuterJoins(resource, aggregateRequest);
     const direct = preservesRootCardinality(joins);
-    const outcome = await withStatementTimeout(
-      database,
-      resource.queryConfig.timeouts.summary,
-      async (db) => {
-        const query = (db as any).select(selected).from(rootTable);
-        return (await (direct
+    const outcome = await withTimeout(resource.queryConfig.timeouts.summary, async (db) => {
+      const query = (db as any).select(selected).from(rootTable);
+      return (await observer.run(
+        "summary",
+        request,
+        direct
           ? joinRelationSteps(query, config.schema, joins).where(buildWhereClause(aggregateRequest))
-          : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))))) as Array<
-          Record<string, unknown>
-        >;
-      },
-    );
+          : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))),
+        observer.dry
+          ? {
+              dry: [{ ...(includeCount ? { [countKey]: dryExactCount } : {}) }],
+              carriesCount: includeCount,
+            }
+          : undefined,
+      )) as Array<Record<string, unknown>>;
+    });
     if (outcome.timedOut) {
       return {
         summary: Object.fromEntries(Object.keys(selection).map((key) => [key, null])),
@@ -1600,7 +1681,10 @@ export function createQueryResourceUtils<
       let estimate = distinctEstimates.get(key);
       if (!estimate) {
         const distinct = (database as any).select({ key }).from(rootTable).groupBy(key);
-        estimate = estimatePostgresQuery(database, distinct.getSQL(), "Plan Rows");
+        estimate = estimatePostgresQuery(database, distinct.getSQL(), "Plan Rows", {
+          observer,
+          request,
+        });
         distinctEstimates.set(key, estimate);
       }
       const groups = await estimate;
@@ -1666,7 +1750,15 @@ export function createQueryResourceUtils<
         }
       }
 
-      results[index] = formatResult(plan, await facetQuery);
+      results[index] = formatResult(
+        plan,
+        await observer.run(
+          "facets",
+          request,
+          facetQuery,
+          observer.dry ? { dry: [], facets: [String(facet.key)] } : undefined,
+        ),
+      );
     }
 
     async function resolveGroupingSets(group: typeof plans, db: QueryEngineDb, count = false) {
@@ -1720,7 +1812,7 @@ export function createQueryResourceUtils<
       const masks = group.map(
         (_, index) => 2 ** group.length - 1 - 2 ** (group.length - index - 1),
       );
-      const rows = await (db as any)
+      const rowsQuery = (db as any)
         .with(buckets, ranked)
         .select()
         .from(ranked)
@@ -1741,6 +1833,20 @@ export function createQueryResourceUtils<
           ),
         )
         .orderBy(asc(ranked.mask), asc(ranked.position));
+      const rows = await observer.run(
+        "facets",
+        request,
+        rowsQuery,
+        observer.dry
+          ? {
+              // A dry run answers the exact count the grouping sets would carry, so the page is not skipped.
+              dry: count ? [{ mask: 2 ** group.length - 1, count: dryExactCount }] : [],
+              facets: group.map(({ facet }) => String(facet.key)),
+              groupingSets: true,
+              carriesCount: count,
+            }
+          : undefined,
+      );
       if (count) {
         rowCount = Number(
           rows.find((row: any) => Number(row.mask) === 2 ** group.length - 1)?.count ?? 0,
@@ -1823,10 +1929,21 @@ export function createQueryResourceUtils<
           { type: "condition", key: plan.facet.key, operator: "isEmpty", value: null },
         ],
       };
-      const [row] = await applyOuterJoins(
-        (db as any).select({ count: sql<number>`count(*)` }).from(rootTable),
-        empty,
-      ).where(buildWhereClause(empty));
+      const [row] = await observer.run(
+        "facets",
+        request,
+        applyOuterJoins(
+          (db as any).select({ count: sql<number>`count(*)` }).from(rootTable),
+          empty,
+        ).where(buildWhereClause(empty)),
+        observer.dry
+          ? {
+              dry: [{ count: 0 }],
+              facets: [String(plan.facet.key)],
+              note: `rows where ${String(plan.facet.key)} is empty`,
+            }
+          : undefined,
+      );
       return Number(row?.count ?? 0);
     }
 
@@ -1836,11 +1953,7 @@ export function createQueryResourceUtils<
       members: typeof plans,
       run: (db: QueryEngineDb) => Promise<void>,
     ): Promise<void> {
-      const outcome = await withStatementTimeout(
-        database,
-        resource.queryConfig.timeouts.facets,
-        run,
-      );
+      const outcome = await withTimeout(resource.queryConfig.timeouts.facets, run);
       if (outcome.timedOut) for (const member of members) timedOut.add(member.index);
     }
     const missing = new Map<number, number>();
@@ -1895,10 +2008,15 @@ export function createQueryResourceUtils<
     resolveField,
   } satisfies QueryResourceUtils<TRow, TWith>;
 
-  if (database === config.db) {
+  if (shared && database === config.db) {
     utilsCache.set(resource, utils);
   }
   return utils;
+}
+
+/** Whether a filter node came from the resource's scope rather than from the request. */
+export function isScopeFilterNode(node: object) {
+  return scopeFilterNodes.has(node as QueryFilterNode);
 }
 
 export { mergeScopeFilters };

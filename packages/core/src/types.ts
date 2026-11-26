@@ -1,3 +1,5 @@
+import type { ExplainReport } from "./explain.js";
+import type { QueryObserver } from "./observe.js";
 import type { Projection, RuntimeModel, VirtualField } from "./models.js";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -1388,6 +1390,21 @@ export interface QueryResource<
       >
     >
   >;
+  /**
+   * Run `EXPLAIN` on the statements `query` would run for this request and report what is slow.
+   * With `analyze: true` the statements run for real inside a transaction that is rolled back.
+   * PostgreSQL only.
+   */
+  explain: <TContextOverride extends TContext = TContext>(args: {
+    request: QueryRequestInput;
+    context?: TContextOverride;
+    db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
+    /** Run the statements under `EXPLAIN ANALYZE, BUFFERS` for real timings and row counts. */
+    analyze?: boolean;
+    /** Also explain the summary, as `query({ summary: true })` runs it. */
+    summary?: boolean;
+  }) => Promise<ExplainReport>;
   scan: <
     TResult,
     const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
@@ -1560,6 +1577,12 @@ export interface QueryEngineConfig<
    * Drizzle relations object created from the same schema.
    */
   relations: TRelations;
+  /**
+   * Called once for every statement the engine runs, with its stage, request shape, duration and
+   * SQL. The SQL keeps its `$1` placeholders: parameter values are never included. An error thrown
+   * by the hook is ignored and never reaches the request.
+   */
+  onQuery?: QueryObserver;
 }
 
 /**
