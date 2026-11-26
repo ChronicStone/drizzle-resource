@@ -993,6 +993,20 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
    * - `"skip"`: do not compute them; each requested facet comes back with `status: "skipped"`.
    */
   whenCapped?: "skip" | "run";
+  /**
+   * Estimated rows the facets read, above which every facet runs as its own statement (at most
+   * four at a time) instead of facets sharing one `GROUPING SETS` statement. A `GROUPING SETS`
+   * statement runs on one CPU; a single-facet statement can use parallel workers, and the
+   * statements overlap. Default 100,000.
+   *
+   * The estimate is the root table's `pg_class.reltuples`, read once and reused for five minutes.
+   * A request that filters or searches is judged by the planner's estimate of the rows it matches,
+   * so a narrow request keeps the cheaper shared statement. `0` always runs facets separately and
+   * `Infinity` always shares one statement. The engine shares one statement when PostgreSQL has no
+   * estimate. In a transaction the caller passed in (`db: tx`) the statements follow each other
+   * on its one connection, which makes splitting worth less below about 200,000 rows.
+   */
+  splitAbove?: number;
 }
 
 export interface ResourceQueryPaginationConfig {
@@ -1274,6 +1288,7 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   facets: {
     allowed: Set<TField>;
     whenCapped: "skip" | "run";
+    splitAbove: number;
   };
   pagination: {
     modes: Set<QueryPagination["mode"]>;

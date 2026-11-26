@@ -190,6 +190,7 @@ function input(
     analyzed: true,
     tables: new Map([["public.orders", 1_000_000]]),
     countCap: 10_000,
+    facetSplitAbove: 100_000,
     root: "orders",
     pagination: { mode: "offset", offset: 0, pageSize: 25, pageIndex: 1 },
     allowsCursor: true,
@@ -411,6 +412,21 @@ describe("plan analysis", () => {
     );
     expect(single.warnings[0]!.message).toBe(
       "3 facets (status, region, country) share one GROUPING SETS statement, which PostgreSQL runs on one CPU while it reads 5,000,000 rows",
+    );
+    expect(single.warnings[0]!.fix).toBe(
+      "lower query.facets.splitAbove (now 100,000): above it each facet runs as its own statement, which can use parallel workers",
+    );
+    const never = analyzePlan(
+      input({
+        stage: "facets",
+        plan: plan({ "Node Type": "Aggregate", Plans: [scan] }),
+        groupingSets: true,
+        facetSplitAbove: Infinity,
+        facets: ["status", "region"],
+      }),
+    );
+    expect(never.warnings[0]!.fix).toBe(
+      "set query.facets.splitAbove to a number of rows: above it each facet runs as its own statement, which can use parallel workers",
     );
     const parallel = analyzePlan(
       input({

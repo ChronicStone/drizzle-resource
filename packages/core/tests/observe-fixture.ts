@@ -75,6 +75,14 @@ export function createObserveFixture(options: {
       facets: { allowed: ["status", "region", "customer.country"] },
     },
   });
+  /** Same table with facets that always share one GROUPING SETS statement. */
+  const groupedResource = engine.defineResource("orders", {
+    relations: { customer: true },
+    query: {
+      pagination: { modes: ["offset", "cursor"] },
+      facets: { allowed: ["status", "region", "customer.country"], splitAbove: Infinity },
+    },
+  });
   /** Same table, no cursor mode, scoped: for shapes and for the "allow cursor" advice. */
   const scopedResource = engine.withContext<{ region: string }>().defineResource("orders", {
     query: {
@@ -135,6 +143,7 @@ export function createObserveFixture(options: {
     events,
     statements,
     ordersResource,
+    groupedResource,
     scopedResource,
     orders,
     schema,

@@ -175,6 +175,8 @@ export interface AnalysisInput {
   /** `reltuples` of the relations in the plan, by `schema.relation`. */
   tables: ReadonlyMap<string, number>;
   countCap: number;
+  /** `query.facets.splitAbove` of the resource. */
+  facetSplitAbove: number;
   /** The root table of the resource. */
   root: string;
   pagination: { mode: "offset" | "cursor"; offset: number; pageSize: number; pageIndex: number };
@@ -543,7 +545,10 @@ export function analyzePlan(input: AnalysisInput): Analysis {
       warnings.push({
         code: "single-cpu-facets",
         message: `${count} facets (${input.facets?.join(", ")}) share one GROUPING SETS statement, which PostgreSQL runs on one CPU while it reads ${about}${formatNumber(read)} rows`,
-        fix: "request fewer facets at once, or load each facet in its own request: a statement with one facet can use parallel workers",
+        fix:
+          input.facetSplitAbove === Infinity
+            ? "set query.facets.splitAbove to a number of rows: above it each facet runs as its own statement, which can use parallel workers"
+            : `lower query.facets.splitAbove (now ${formatNumber(input.facetSplitAbove)}): above it each facet runs as its own statement, which can use parallel workers`,
         basis,
       });
     }
@@ -624,6 +629,7 @@ export interface ExplainRun {
   planning: QueryEvent[];
   analyze: boolean;
   countCap: number;
+  facetSplitAbove: number;
   allowsCursor: boolean;
   relationSorts: readonly string[];
   ignoreFilter: (node: object) => boolean;
@@ -750,6 +756,7 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       analyzed: measured,
       tables,
       countCap: run.countCap,
+      facetSplitAbove: run.facetSplitAbove,
       root: run.resource,
       pagination: {
         mode: pagination.mode,

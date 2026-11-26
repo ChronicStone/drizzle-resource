@@ -12,6 +12,12 @@ export const defaultCountCap = 10_000;
 /** Milliseconds a search without an exact count spends on its ordinary plan before trying the index. */
 export const defaultSearchPlanBudget = 25;
 
+/**
+ * Estimated rows the facets read above which each facet runs as its own statement instead of
+ * sharing one `GROUPING SETS` statement (`query.facets.splitAbove`).
+ */
+export const defaultFacetSplitRows = 100_000;
+
 export const defaultQueryValidation: Required<ResourceQueryValidationConfig> = {
   maxPageSize: 100,
   maxCursorLength: 2048,

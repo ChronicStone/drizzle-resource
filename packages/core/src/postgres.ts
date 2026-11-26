@@ -6,6 +6,12 @@ import type { StatementObserver } from "./observe.js";
 import type { QueryEngineDb, QueryRequest } from "./types.js";
 
 const searchIndexes = new WeakMap<object, WeakMap<PgTable, Promise<Set<string>>>>();
+const tableRows = new WeakMap<
+  object,
+  WeakMap<PgTable, { at: number; rows: Promise<number | undefined> }>
+>();
+/** How long a table's row estimate is reused before the catalog is read again. */
+const tableRowsTtl = 5 * 60_000;
 const dialect = new PgDialect();
 
 /** What a planning statement reports to `onQuery`. */
@@ -84,6 +90,46 @@ export async function probePostgresSearch(
       throw error;
     });
   tables.set(table, pending);
+  return pending;
+}
+
+/**
+ * `pg_class.reltuples` of a table: the row count PostgreSQL last recorded with `ANALYZE` or
+ * `VACUUM`. It reads one catalog row and never the table. Cached per database and table for a few
+ * minutes, so a table that grows is noticed. `undefined` when PostgreSQL has no estimate (a table
+ * never analyzed, a view) or the catalog cannot be read.
+ */
+export async function estimatePostgresTableRows(
+  database: QueryEngineDb,
+  table: PgTable,
+  observing?: PlanningObserver,
+  /** What the estimate is cached under: the engine's database, so transactions share it. */
+  cacheKey: object = database,
+): Promise<number | undefined> {
+  if (!isPostgresDatabase(database)) return undefined;
+  let tables = tableRows.get(cacheKey);
+  if (!tables) {
+    tables = new WeakMap();
+    tableRows.set(cacheKey, tables);
+  }
+  const cached = tables.get(table);
+  if (cached && Date.now() - cached.at < tableRowsTtl) return cached.rows;
+  const name = dialect.sqlToQuery(sql`${table}`).sql;
+  const catalog = sql`select reltuples::float8 as rows from pg_catalog.pg_class where oid = to_regclass(${name})`;
+  const execution = database.execute<{ rows: unknown }>(catalog, "objects");
+  const pending = Promise.resolve(
+    observing ? observing.observer.raw("plan", observing.request, catalog, execution) : execution,
+  )
+    .then((rows) => {
+      const value = Number(rows[0]?.rows);
+      return Number.isFinite(value) && value > 0 ? value : undefined;
+    })
+    .catch(() => {
+      // An estimate only picks between equivalent plans.
+      tables.delete(table);
+      return undefined;
+    });
+  tables.set(table, { at: Date.now(), rows: pending });
   return pending;
 }
 
