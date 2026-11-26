@@ -757,7 +757,20 @@ describe.skipIf(!connectionString)("PostgreSQL query pipeline", () => {
         }),
       );
     }
-    await db.execute(sql`create extension if not exists pg_trgm`);
+    // Another test file may create the extension at the same moment.
+    for (let attempt = 0; attempt < 5; attempt += 1) {
+      try {
+        await db.execute(sql`create extension if not exists pg_trgm`);
+        break;
+      } catch (error) {
+        const present = await db.execute(
+          sql`select 1 as present from pg_extension where extname = 'pg_trgm'`,
+          "objects",
+        );
+        if (present.length > 0) break;
+        if (attempt === 4) throw error;
+      }
+    }
     await db.execute(sql`create index on ${items} using gin (lower(name) gin_trgm_ops)`);
     await db.execute(sql`create index on ${categories} using gin (lower(name) gin_trgm_ops)`);
     const indexedDb = drizzle({

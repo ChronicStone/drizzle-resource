@@ -40,7 +40,7 @@ const relations = defineRelations(schema, (r) => ({
     byCat: r.one.cats({ from: r.docs.org, to: r.cats.code }),
   },
 }));
-const client = new Pool({ connectionString, max: 6 });
+const client = new Pool({ connectionString, max: 12 });
 const statements: string[] = [];
 const db = drizzle({
   client,
@@ -84,14 +84,14 @@ const timed = engine.defineResource("docs", {
   query: {
     pagination: { modes: ["offset"] },
     facets: { allowed: ["accountId"] },
-    timeouts: { count: 40, facets: 40, summary: 40 },
+    timeouts: { count: 100, facets: 100, summary: 100 },
   },
 });
 const skippingTimed = engine.defineResource("docs", {
   query: {
     pagination: { modes: ["offset"], countCap: 10 },
     facets: { allowed: ["accountId"], whenCapped: "skip" },
-    timeouts: { count: 40 },
+    timeouts: { count: 100 },
   },
 });
 const manyFacets = engine.defineResource("docs", {
@@ -99,7 +99,16 @@ const manyFacets = engine.defineResource("docs", {
   query: {
     pagination: { modes: ["offset"], countCap: 10 },
     facets: { allowed: ["org", "accountId", "account.name", "labels.label"] },
-    timeouts: { count: 40, facets: 40 },
+    timeouts: { count: 100, facets: 100 },
+  },
+});
+// Generous stage timeouts for the tests that must finish in time on a loaded machine.
+const roomy = engine.defineResource("docs", {
+  summary: () => ({ total: sql<number>`count(*)`.mapWith(Number) }),
+  query: {
+    pagination: { modes: ["offset"] },
+    facets: { allowed: ["accountId"] },
+    timeouts: { count: 30_000, facets: 30_000, summary: 30_000 },
   },
 });
 const guarded = engine.defineResource("docs", {
@@ -119,6 +128,40 @@ function request(
   };
 }
 
+/** Poll until `count` sessions wait on a lock; resolves with how many do when time runs out. */
+async function waitForLockWaiters(count: number, timeoutMs: number) {
+  const deadline = Date.now() + timeoutMs;
+  let waiting = 0;
+  while (Date.now() < deadline) {
+    const [row] = await db.execute(
+      sql`select count(*)::int as waiting from pg_stat_activity
+          where wait_event_type = 'Lock' and datname = current_database()`,
+      "objects",
+    );
+    waiting = Number((row as { waiting: number }).waiting);
+    if (waiting >= count) return waiting;
+    await new Promise((resolve) => setTimeout(resolve, 10));
+  }
+  return waiting;
+}
+
+/** Create pg_trgm once, even when another test file creates it at the same moment. */
+async function ensureTrigramExtension() {
+  for (let attempt = 0; attempt < 5; attempt += 1) {
+    try {
+      await db.execute(sql`create extension if not exists pg_trgm`);
+      return;
+    } catch (error) {
+      const [row] = await db.execute(
+        sql`select 1 as present from pg_extension where extname = 'pg_trgm'`,
+        "objects",
+      );
+      if (row) return;
+      if (attempt === 4) throw error;
+    }
+  }
+}
+
 /** Holds a lock that makes every statement on `docs` wait, so a timeout is deterministic. */
 async function withBlockedDocs<T>(
   run: (release: () => Promise<void>) => Promise<T>,
@@ -131,6 +174,10 @@ async function withBlockedDocs<T>(
   const release = async () => {
     if (released) return;
     released = true;
+    // Let a statement reach the lock, then keep holding it well past every timeout in these
+    // tests, so a slow machine cannot release the table before a timeout fires.
+    await waitForLockWaiters(1, 5000);
+    await new Promise((resolve) => setTimeout(resolve, 600));
     await locker.query("rollback");
     locker.release();
   };
@@ -589,7 +636,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
     });
 
     it("keeps results unchanged when the stage finishes in time", async () => {
-      const result = await timed.query({
+      const result = await roomy.query({
         request: request({ count: "exact" }, { facets: [{ key: "accountId" }] }),
         summary: true,
       });
@@ -687,22 +734,15 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
           },
           { capToCurrent: true },
         );
-      expect(await read(db, 40)).toEqual({ timedOut: false, value: "40ms" });
-      const strict = new Pool({
-        connectionString,
-        max: 1,
-        options: "-c statement_timeout=10",
-      });
-      const lenient = new Pool({
-        connectionString,
-        max: 1,
-        options: "-c statement_timeout=500",
-      });
+      // The defaults are far above anything a statement here needs, so only the cap is measured.
+      expect(await read(db, 3000)).toEqual({ timedOut: false, value: "3s" });
+      const strict = new Pool({ connectionString, max: 1, options: "-c statement_timeout=1000" });
+      const lenient = new Pool({ connectionString, max: 1, options: "-c statement_timeout=60000" });
       try {
         const strictDb = drizzle({ client: strict, relations });
         const lenientDb = drizzle({ client: lenient, relations });
-        expect(await read(strictDb, 40)).toEqual({ timedOut: false, value: "10ms" });
-        expect(await read(lenientDb, 40)).toEqual({ timedOut: false, value: "40ms" });
+        expect(await read(strictDb, 3000)).toEqual({ timedOut: false, value: "1s" });
+        expect(await read(lenientDb, 3000)).toEqual({ timedOut: false, value: "3s" });
       } finally {
         await strict.end();
         await lenient.end();
@@ -718,15 +758,10 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       ];
       const waiting = await withBlockedDocs(async (release) => {
         const pending = manyFacets.query({ request: request({ count: "none" }, { facets }) });
-        await new Promise((resolve) => setTimeout(resolve, 20));
-        const [row] = await db.execute(
-          sql`select count(*)::int as waiting from pg_stat_activity
-              where wait_event_type = 'Lock' and datname = current_database()`,
-          "objects",
-        );
+        const waitingNow = await waitForLockWaiters(2, 5000);
         await release();
         await pending;
-        return Number((row as { waiting: number }).waiting);
+        return waitingNow;
       });
       // Each facet statement waits in a transaction of its own, so they still run in parallel.
       expect(waiting).toBeGreaterThanOrEqual(2);
@@ -786,7 +821,15 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       relations: planRelations,
     }).defineResource("notes", {
       relations: { owner: true },
-      query: { search: { allowed: ["body", "owner.name"], planBudget: 40 } },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 100 } },
+    });
+    const roomySearch = createQueryEngine({
+      db: planDb,
+      schema: planSchema,
+      relations: planRelations,
+    }).defineResource("notes", {
+      relations: { owner: true },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 30_000 } },
     });
     const blockedNotes = () => `"${plansNamespace.schemaName}"."notes"`;
     const afterBlocked = (run: () => Promise<unknown>) =>
@@ -798,7 +841,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       }, blockedNotes());
 
     beforeAll(async () => {
-      await db.execute(sql`create extension if not exists pg_trgm`);
+      await ensureTrigramExtension();
       await db.execute(sql`create schema ${sql.identifier(plansNamespace.schemaName)}`);
       await db.execute(sql`create table ${owners} (id integer primary key, name text not null)`);
       await db.execute(sql`create table ${notes} (
@@ -836,7 +879,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
 
     it("keeps the ordinary plan for a common term without extra statements", async () => {
       planStatements.length = 0;
-      const result = await search.queryIds({ request: searching("common", "none") });
+      const result = await roomySearch.queryIds({ request: searching("common", "none") });
       expect(result.ids).toEqual([1, 2, 3, 4, 5]);
       expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: true });
       expect(planStatements.some((query) => query.includes(" union "))).toBe(false);
