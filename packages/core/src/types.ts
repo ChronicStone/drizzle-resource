@@ -1,5 +1,6 @@
 import type { ExplainReport } from "./explain.js";
 import type { QueryObserver } from "./observe.js";
+import type { CheckIndexesOptions, IndexFinding } from "./index-check.js";
 import type { Projection, RuntimeModel, VirtualField } from "./models.js";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -105,6 +106,13 @@ export type QueryFilterInput<TField extends string = string> =
   | undefined;
 
 export type QueryFilters<TField extends string = string> = QueryFilterNode<TField>[];
+
+/** `checkIndexes()` reads the schema and returns findings; `checkIndexes({ live: true })` also asks PostgreSQL. */
+export interface CheckIndexes {
+  (options?: CheckIndexesOptions & { live?: false }): IndexFinding[];
+  (options: CheckIndexesOptions & { live: true }): Promise<IndexFinding[]>;
+  (options: CheckIndexesOptions): IndexFinding[] | Promise<IndexFinding[]>;
+}
 
 /**
  * How the filtered row count is computed.
@@ -1379,6 +1387,11 @@ export interface QueryResource<
    */
   fields: Map<string, FieldRegistryEntry>;
   /**
+   * Check this resource's sorts, scope, search and facets against the indexes of its tables.
+   * Without `live`, it reads only the Drizzle schema and returns at once.
+   */
+  checkIndexes: CheckIndexes;
+  /**
    * Runtime-normalized query configuration.
    */
   queryConfig: ResourceRuntimeQueryConfig<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>;
@@ -1705,4 +1718,10 @@ export interface QueryEngine<
    * Backwards-compatible alias of {@link defineResource}.
    */
   defineQueryResource: QueryEngine<TDb, TSchema, TRelations, TEngineContext>["defineResource"];
+
+  /**
+   * Check every resource defined on this engine against the indexes of its tables.
+   * Without `live`, it reads only the Drizzle schema and returns at once.
+   */
+  checkIndexes: CheckIndexes;
 }

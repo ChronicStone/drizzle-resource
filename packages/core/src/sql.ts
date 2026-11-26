@@ -46,6 +46,7 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { pageQueryHooks } from "./plan-hook.js";
 import {
   estimatePostgresQuery,
   estimatePostgresTableRows,
@@ -1297,13 +1298,17 @@ export function createQueryResourceUtils<
           ? buildCursorBoundary(request, request.pagination.cursor)
           : undefined;
       idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
+      const pageQuery = idsQuery
+        .orderBy(...orderBy)
+        .limit(pageSize + (needsLookahead ? 1 : 0))
+        .offset(offset);
+      // `checkIndexes({ live: true })` reads the plan of this statement instead of running it.
+      const planHook = pageQueryHooks.get(database);
+      if (planHook) return (await planHook(pageQuery)) as any[];
       return (await observer.run(
         "ids",
         request,
-        idsQuery
-          .orderBy(...orderBy)
-          .limit(pageSize + (needsLookahead ? 1 : 0))
-          .offset(offset),
+        pageQuery,
         observer.dry ? { dry: [] } : undefined,
       )) as any[];
     };

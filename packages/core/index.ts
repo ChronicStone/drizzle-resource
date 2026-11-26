@@ -20,6 +20,13 @@ export type {
 } from "./src/explain.js";
 export type { QueryEvent, QueryObserver, QueryStage, RequestShape } from "./src/observe.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
+export { formatIndexFindings } from "./src/index-check.js";
+export type {
+  CheckIndexesOptions,
+  IndexFinding,
+  IndexFindingLevel,
+  IndexFindingRule,
+} from "./src/index-check.js";
 export {
   defaultCountCap,
   defaultQueryValidation,
@@ -31,6 +38,7 @@ export type {
   GenericObject,
   FieldRegistryEntry,
   FieldRegistryRelationStep,
+  CheckIndexes,
   QueryEngine,
   QueryEngineConfig,
   QueryEngineDb,
