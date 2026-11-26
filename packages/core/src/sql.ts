@@ -57,8 +57,6 @@ import { isAboveCap, skippedFacets, timedOutFacet } from "./capped.js";
 
 /** Indexed search matches below this many rows are cheaper to fetch than to walk the sort index. */
 const searchProbeRows = 10_000;
-/** A probe slower than this means the term is common: the ordinary plan finds a page sooner. */
-const searchProbeMilliseconds = 25;
 
 function isExactCount(count: QueryPageCount) {
   return count.count === "exact" || (count.count === "capped" && count.exact);
@@ -783,14 +781,11 @@ export function createQueryResourceUtils<
     const branches = compileIndexedBranches(request, searchProbeRows + 1);
     if (!branches) return false;
     try {
-      const outcome = await withStatementTimeout(database, searchProbeMilliseconds, async (db) => {
-        const [row] = await (db as any).execute(
-          sql`select count(*) as matches from (${sql.join(branches, sql` union `)}) as probe`,
-          "objects",
-        );
-        return Number(row?.matches ?? Number.POSITIVE_INFINITY);
-      });
-      return !outcome.timedOut && outcome.value <= searchProbeRows;
+      const [row] = await (database as any).execute(
+        sql`select count(*) as matches from (${sql.join(branches, sql` union `)}) as probe`,
+        "objects",
+      );
+      return Number(row?.matches ?? Number.POSITIVE_INFINITY) <= searchProbeRows;
     } catch {
       // a probe only picks between equivalent plans, so any failure keeps the ordinary one
       return false;
