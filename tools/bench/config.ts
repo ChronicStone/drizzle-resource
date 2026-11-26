@@ -10,11 +10,15 @@ export const DEFAULT_SIZES = [200_000, 1_000_000, 10_000_000];
 
 /** One-minute load average above which a run counts as taken on a busy machine. */
 export const LOAD_THRESHOLD = Number(process.env.BENCH_LOAD_THRESHOLD ?? 8);
+/** What `--final` requires the threshold to be. `BENCH_LOAD_THRESHOLD` cannot lower it for a final run. */
+export const FINAL_LOAD_THRESHOLD = 8;
+/** Bump when the measurement changes, so runs from different harnesses are never mixed. */
+export const HARNESS_VERSION = "2";
 
 export const PAGE_SIZE = 50;
 export const TENANT = 42;
 export const ITERATIONS = Number(process.env.BENCH_ITERATIONS ?? 10);
-/** A scenario whose warm-up takes longer than this is recorded as skipped. */
+/** A call that takes longer than this, or that the pool's statement timeout cancels, is recorded as `over-limit`. */
 export const TIMEOUT_MS = Number(process.env.BENCH_TIMEOUT_MS ?? 60_000);
 
 /** `200k,1m,10m` or plain row counts, comma separated. */

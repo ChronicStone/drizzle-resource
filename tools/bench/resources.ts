@@ -20,26 +20,52 @@ export type Bench = {
   db: ReturnType<typeof drizzle>;
   /** The resource for a facet strategy: the engine's default, always one shared statement, or always one per facet. */
   resource: (strategy?: FacetStrategy) => Resource;
+  /** The engine, for `checkIndexes`. */
+  engine: { checkIndexes: (options: { live: true }) => Promise<IndexFindingLike[]> };
 };
 
-function defineOne(
-  engine: ReturnType<typeof createQueryEngine>,
-  options: { scoped: boolean; splitAbove?: number },
-): Resource {
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  return (engine as any).defineResource("orders", {
+export type IndexFindingLike = {
+  level: "error" | "warn" | "info";
+  rule: string;
+  message: string;
+  fields: string[];
+  fix?: { drizzle: string; sql: string };
+};
+
+type Shape = { scoped: boolean; denormalized: boolean; splitAbove?: number };
+
+/**
+ * The resource every setup benchmarks. It declares what the application means to expose: orders
+ * sorted by `createdAt` newest first, sorts through the customer's name (or the copied name once
+ * it exists), and every column searchable, which is the engine's default. The other sorts are
+ * switched off the way the engine's index check suggests when a sort has no use.
+ */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+function defineOne(engine: any, shape: Shape): Resource {
+  const disabledSorts = [
+    "customerId",
+    "orgId",
+    "status",
+    "paid",
+    "reference",
+    "customer.id",
+    "customer.segment",
+  ];
+  if (shape.denormalized) disabledSorts.push("customer.name");
+  return engine.defineResource("orders", {
     relations: { customer: true },
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     summary: (fields: any) => ({ total: sql<number>`sum(${fields.orgId})`.mapWith(Number) }),
     query: {
       pagination: { modes: ["offset", "cursor"] },
+      sort: { defaults: [{ key: "createdAt", dir: "desc" }], disabled: disabledSorts },
       // eslint-disable-next-line @typescript-eslint/no-explicit-any
-      ...(options.scoped
+      ...(shape.scoped
         ? { scope: (filters: any) => filters.and([filters.is("orgId", TENANT)]) }
         : {}),
       facets: {
         allowed: ["status", "paid", "customer.segment", "customer.name"],
-        ...(options.splitAbove === undefined ? {} : { splitAbove: options.splitAbove }),
+        ...(shape.splitAbove === undefined ? {} : { splitAbove: shape.splitAbove }),
       },
     },
   });
@@ -55,13 +81,36 @@ export function makeBench(
   const db = drizzle({ client: pool, relations });
   // eslint-disable-next-line @typescript-eslint/no-explicit-any
   const engine = createQueryEngine({ db, schema, relations, onQuery: observe } as any);
-  const scoped = options.scoped ?? false;
+  const base = { scoped: options.scoped ?? false, denormalized: options.denormalized ?? false };
   const resources = {
-    default: defineOne(engine, { scoped }),
-    shared: defineOne(engine, { scoped, splitAbove: Infinity }),
-    split: defineOne(engine, { scoped, splitAbove: 0 }),
+    default: defineOne(engine, base),
+    shared: defineOne(engine, { ...base, splitAbove: Infinity }),
+    split: defineOne(engine, { ...base, splitAbove: 0 }),
   };
-  return { db, resource: (strategy = "default") => resources[strategy] };
+  return {
+    db,
+    resource: (strategy = "default") => resources[strategy],
+    // eslint-disable-next-line @typescript-eslint/no-explicit-any
+    engine: engine as any,
+  };
+}
+
+/**
+ * An engine that only defines the resource, for `checkIndexes`. One resource per engine, so the
+ * findings are about that resource alone.
+ */
+export function makeCheck(
+  pool: Pool,
+  schemaName: string,
+  shape: { scoped: boolean; denormalized: boolean },
+) {
+  const { schema, relations } = makeModel(schemaName, shape.denormalized);
+  const db = drizzle({ client: pool, relations });
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  const engine = createQueryEngine({ db, schema, relations } as any);
+  defineOne(engine, shape);
+  // eslint-disable-next-line @typescript-eslint/no-explicit-any
+  return engine as any as Bench["engine"];
 }
 
 export const baseRequest = (count: "none" | "exact" | "capped"): QueryRequestInput => ({
