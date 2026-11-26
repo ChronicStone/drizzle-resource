@@ -45,6 +45,7 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { pageQueryHooks } from "./plan-hook.js";
 import {
   estimatePostgresQuery,
   isPostgresDatabase,
@@ -1104,7 +1105,7 @@ export function createQueryResourceUtils<
       .limit(pageSize + (needsLookahead ? 1 : 0))
       .offset(offset);
 
-    const queriedRows = await idsQuery;
+    const queriedRows = await (pageQueryHooks.get(database)?.(idsQuery) ?? idsQuery);
     if (inferCount) rowCount = queriedRows.length;
     const hasNextPage =
       request.pagination.count === "exact" && request.pagination.mode === "offset"

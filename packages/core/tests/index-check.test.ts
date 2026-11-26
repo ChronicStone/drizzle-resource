@@ -15,6 +15,7 @@ import {
 import { describe, expect, it } from "vite-plus/test";
 
 import { createQueryEngine, formatIndexFindings } from "../index.js";
+import { confirmDefaultSort } from "../src/index-check.js";
 import type { IndexFinding } from "../index.js";
 
 const accounts = pgTable("accounts", {
@@ -198,7 +199,7 @@ describe("checkIndexes: default sort", () => {
     }
   });
 
-  it("does not count an index that skips the first scope equality", () => {
+  it("does not count an index with an `is null` column before the sort columns", () => {
     const { resource } = setup(
       (t) => [index("a").on(t.deletedAt, t.createdAt.desc(), t.id.desc())],
       {
@@ -207,12 +208,104 @@ describe("checkIndexes: default sort", () => {
       },
     );
     expect(byRule(resource.checkIndexes(), "default-sort-unindexed")[0]?.level).toBe("error");
+  });
+
+  it("warns, naming the equality, when the index provides the order but leaves one out", () => {
     const value = setup((t) => [index("a").on(t.status, t.createdAt.desc(), t.id.desc())], {
       scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("status", "open")]),
       filters: { caseSensitive: ["status"] },
       sort: { defaults: createdDesc },
     });
-    expect(byRule(value.resource.checkIndexes(), "default-sort-unindexed")[0]?.level).toBe("error");
+    const [finding] = byRule(value.resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.level).toBe("warn");
+    expect(finding?.message).toContain("orgId is not in it: orgId filters row by row");
+    expect(finding?.message).toContain("prefer a full scan");
+  });
+
+  it("gives the same verdict for every order of the scope", () => {
+    const conditions: Array<(f: any, ctx: any) => any> = [
+      (f, ctx) => f.is("orgId", ctx.orgId),
+      (f) => f.is("tenant", "t1"),
+      (f) => f.is("deletedAt", null),
+      (f) => f.is("status", "open"),
+    ];
+    const permutations = (items: number[]): number[][] =>
+      items.length < 2
+        ? [items]
+        : items.flatMap((item, at) =>
+            permutations([...items.slice(0, at), ...items.slice(at + 1)]).map((rest) => [
+              item,
+              ...rest,
+            ]),
+          );
+    const indexes: Array<(t: any) => any[]> = [
+      () => [],
+      (t) => [index("a").on(t.orgId, t.createdAt.desc(), t.id.desc())],
+      (t) => [index("a").on(t.tenant, t.createdAt.desc(), t.id.desc())],
+      (t) => [index("a").on(t.tenant, t.orgId, t.createdAt.desc(), t.id.desc())],
+      (t) => [index("a").on(t.orgId, t.createdAt.desc())],
+      (t) => [index("a").on(t.deletedAt, t.createdAt.desc(), t.id.desc())],
+      (t) => [index("a").on(t.orgId, t.deletedAt, t.createdAt.desc(), t.id.desc())],
+      (t) => [index("a").on(t.createdAt.desc(), t.id.desc())],
+    ];
+    for (const make of indexes) {
+      const seen = new Set<string>();
+      for (const order of permutations([0, 1, 2, 3])) {
+        const { resource } = setup(make, {
+          scope: (f: any, ctx: any) =>
+            f.and(order.map((position) => conditions[position]!(f, ctx))),
+          filters: { caseSensitive: ["tenant", "status"] },
+          sort: { defaults: createdDesc },
+        });
+        seen.add(
+          JSON.stringify(
+            byRule(resource.checkIndexes(), "default-sort-unindexed").map((finding) => [
+              finding.level,
+              finding.message
+                .replace(/under scope [^ ]+( [^ ]+)* (has|is)/, "$2")
+                .replace(/\(.*\)/, ""),
+            ]),
+          ),
+        );
+      }
+      expect(seen.size).toBe(1);
+    }
+  });
+
+  it("serves an index on one equality or the other, in any scope order", () => {
+    for (const make of [
+      (t: any) => index("a").on(t.orgId, t.createdAt.desc(), t.id.desc()),
+      (t: any) => index("a").on(t.tenant, t.createdAt.desc(), t.id.desc()),
+    ]) {
+      for (const scope of [
+        (f: any) => f.and([f.is("tenant", "t1"), f.is("orgId", "x")]),
+        (f: any) => f.and([f.is("orgId", "x"), f.is("tenant", "t1")]),
+        (f: any, ctx: any) => f.and([f.is("tenant", ctx.tenant), f.is("orgId", ctx.orgId)]),
+      ]) {
+        const { resource } = setup((t) => [make(t)], {
+          scope,
+          filters: { caseSensitive: ["tenant"] },
+          sort: { defaults: createdDesc },
+        });
+        const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+        expect(finding?.level).toBe("warn");
+        expect(finding?.message).toContain("filters row by row");
+      }
+    }
+  });
+
+  it("writes one where, joined with and, for several null scope columns", () => {
+    const { resource } = setup(() => [], {
+      scope: (f: any, ctx: any) =>
+        f.and([f.is("orgId", ctx.orgId), f.is("deletedAt", null), f.is("status", null)]),
+      sort: { defaults: createdDesc },
+    });
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.fix).toEqual({
+      drizzle:
+        'index("orders_org_id_created_at_id_partial_idx").on(t.orgId, t.createdAt.desc(), t.id.desc()).where(sql`${t.deletedAt} is null and ${t.status} is null`)',
+      sql: "create index orders_org_id_created_at_id_partial_idx on orders (org_id, created_at desc, id desc) where deleted_at is null and status is null;",
+    });
   });
 
   it("says a null column before the sort columns forces a sort, and suggests a partial index", () => {
@@ -266,12 +359,14 @@ describe("checkIndexes: default sort", () => {
     ).toBe("error");
   });
 
-  it("still reports an error when the index starts with none of the scope columns", () => {
+  it("warns, and does not fail, when the index starts with none of the scope columns", () => {
     const { resource } = setup((t) => [index("a").on(t.createdAt.desc(), t.id.desc())], {
       scope: (f: any, ctx: any) => f.and([f.is("orgId", ctx.orgId), f.is("deletedAt", null)]),
       sort: { defaults: createdDesc },
     });
-    expect(byRule(resource.checkIndexes(), "default-sort-unindexed")[0]?.level).toBe("error");
+    const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
+    expect(finding?.level).toBe("warn");
+    expect(finding?.message).toContain("orgId filters row by row");
   });
 
   it("counts a partial index whose condition the scope states", () => {
@@ -391,11 +486,12 @@ describe("checkIndexes: default sort", () => {
     expect(byRule(resource.checkIndexes(), "default-sort-unindexed")).toEqual([]);
   });
 
-  it("asks for an index on the scope and id when the default sort is id", () => {
+  it("warns that the primary key filters by scope when the default sort is id", () => {
     const { resource } = setup(() => []);
     const [finding] = byRule(resource.checkIndexes(), "default-sort-unindexed");
-    expect(finding?.message).toBe("default sort id asc under scope orgId has no index");
-    expect(finding?.fix?.sql).toBe("create index orders_org_id_id_idx on orders (org_id, id);");
+    expect(finding?.level).toBe("warn");
+    expect(finding?.message).toContain("served by index orders_pkey");
+    expect(finding?.message).toContain("orgId filters row by row");
   });
 
   it("stops at a unique column: nothing after it can tie", () => {
@@ -739,7 +835,9 @@ describe("engine.checkIndexes", () => {
   });
 
   it("returns only plain data", () => {
-    const { engine } = setup(() => []);
+    const { engine } = setup(() => [], {
+      sort: { defaults: [{ key: "createdAt", dir: "desc" }] },
+    });
     const findings = engine.checkIndexes();
     expect(JSON.parse(JSON.stringify(findings))).toEqual(findings);
     expect(findings.filter((finding) => finding.level === "error")).toHaveLength(1);
@@ -852,5 +950,67 @@ describe("checkIndexes on the benchmark schema", () => {
     const [finding] = byRule(define().checkIndexes(), "relation-sort");
     expect(finding?.fields).toContain("account.name");
     expect(finding?.message).toContain("joins every row of consumption first");
+  });
+});
+
+describe("confirmDefaultSort", () => {
+  const info = {
+    label: "createdAt desc, id desc",
+    scope: " under scope orgId",
+    fields: ["createdAt", "id"],
+  };
+  const finding = (level: "error" | "warn") => ({
+    resource: "orders",
+    level,
+    rule: "default-sort-unindexed" as const,
+    message: "default sort createdAt desc, id desc under scope orgId has no index",
+    fields: info.fields,
+  });
+  const scan = (...nodes: Array<[string, number, string?]>) => ({
+    nodes: nodes.map(([type, rows, name]) => ({ type, rows, index: name })),
+  });
+
+  it("downgrades an error when PostgreSQL reads an index in order with no sort", () => {
+    const found = finding("error");
+    confirmDefaultSort(
+      "orders",
+      { ...info, finding: found },
+      [found],
+      scan(["Limit", 25], ["Index Scan", 900, "orders_pkey"]),
+    );
+    expect(found.level).toBe("warn");
+    expect(found.message).toContain("reads index orders_pkey in order and filters row by row");
+    expect(found.message).toContain("Confirmed by EXPLAIN");
+  });
+
+  it("upgrades a warning when PostgreSQL sorts every matching row", () => {
+    const found = finding("warn");
+    confirmDefaultSort(
+      "orders",
+      { ...info, finding: found },
+      [found],
+      scan(["Limit", 25], ["Sort", 900], ["Seq Scan", 900]),
+    );
+    expect(found.level).toBe("error");
+  });
+
+  it("adds an error for an index that serves the sort on paper but is not used", () => {
+    const findings: ReturnType<typeof finding>[] = [];
+    confirmDefaultSort(
+      "orders",
+      { ...info, servedBy: "orders_a_idx" },
+      findings,
+      scan(["Sort", 900], ["Seq Scan", 900]),
+    );
+    expect(findings).toHaveLength(1);
+    expect(findings[0]?.message).toContain("looks served by index orders_a_idx");
+    const none: ReturnType<typeof finding>[] = [];
+    confirmDefaultSort(
+      "orders",
+      { ...info, servedBy: "a" },
+      none,
+      scan(["Sort", 1], ["Index Scan", 1, "a"]),
+    );
+    expect(none).toEqual([]);
   });
 });

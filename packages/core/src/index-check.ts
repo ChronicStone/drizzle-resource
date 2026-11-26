@@ -1,8 +1,10 @@
 import { getColumns, is, sql } from "drizzle-orm";
+import type { SQL } from "drizzle-orm";
 import { getTableConfig, IndexedColumn, PgColumn, PgDialect, PgTable } from "drizzle-orm/pg-core";
 import type { PgAsyncDatabase } from "drizzle-orm/pg-core/async";
 
 import { createQueryFilterBuilder } from "./filters.js";
+import { pageQueryHooks } from "./plan-hook.js";
 import { isPostgresDatabase, listPostgresSearchColumns } from "./postgres.js";
 import type {
   FieldRegistryEntry,
@@ -81,6 +83,8 @@ export interface IndexCheckTarget {
   /** A custom `strategy.query` or `strategy.ids` replaces the sorts and scope this analyses. */
   customQuery: boolean;
   customFacets: boolean;
+  /** Runs the engine's default page query on the given database. */
+  queryPage?: (db: QueryEngineDb, context: unknown) => Promise<unknown>;
 }
 
 interface IndexKey {
@@ -468,15 +472,15 @@ function servedSteps(need: Need, index: IndexInfo, options: MatchOptions) {
     covered = new Set(partial.parts);
   }
   const stepKey = (step: Step) => (options.plainEquality ? step.plainId : step.id);
+  // The scope's equality columns are a set: the order the scope lists them in never matters.
   const wanted = new Map(
     need.eq
       .filter((step) => !need.nullIds.has(step.plainId))
       .filter((step) => !step.facts.some((fact) => implied && covered.has(fact)))
       .map((step) => [stepKey(step), step.field]),
   );
-  // The first equality the scope lists is its tenant: an index that does not narrow by it
-  // walks every tenant's rows, whatever else it filters.
-  const leading = wanted.keys().next().value;
+  // The index provides the order if a prefix of its columns is made of scope equalities
+  // (any of them, in any order) and the sort columns follow it.
   let position = 0;
   while (position < index.keys.length) {
     const key = index.keys[position]!;
@@ -488,7 +492,6 @@ function servedSteps(need: Need, index: IndexInfo, options: MatchOptions) {
     } else break;
     position += 1;
   }
-  if (leading !== undefined && wanted.has(leading)) return undefined;
   let forward = true;
   let backward = true;
   let served = 0;
@@ -586,8 +589,8 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
     if (need.nullIds.has(step.plainId) && !("dir" in step)) {
       const key = columnKey(need.table, step.column) ?? step.column.name;
       conditions.push({
-        drizzle: `.where(sql\`\${t.${key}} is null\`)`,
-        sql: ` where ${quoteIdentifier(dbName)} is null`,
+        drizzle: `\${t.${key}} is null`,
+        sql: `${quoteIdentifier(dbName)} is null`,
       });
       continue;
     }
@@ -610,8 +613,8 @@ function buildFix(source: IndexSource, need: Need): { drizzle: string; sql: stri
     .toLowerCase()
     .slice(0, 63);
   return {
-    drizzle: `index("${indexName}").on(${drizzle.join(", ")})${conditions.map((c) => c.drizzle).join("")}`,
-    sql: `create index ${quoteIdentifier(indexName)} on ${qualifiedTable(source.names, need.table)} (${statements.join(", ")})${conditions.map((c) => c.sql).join("")};`,
+    drizzle: `index("${indexName}").on(${drizzle.join(", ")})${conditions.length > 0 ? `.where(sql\`${conditions.map((c) => c.drizzle).join(" and ")}\`)` : ""}`,
+    sql: `create index ${quoteIdentifier(indexName)} on ${qualifiedTable(source.names, need.table)} (${statements.join(", ")})${conditions.length > 0 ? ` where ${conditions.map((c) => c.sql).join(" and ")}` : ""};`,
   };
 }
 
@@ -697,6 +700,18 @@ function readScope(target: IndexCheckTarget, options: CheckIndexesOptions): Scop
   return { equalities, fields, conditions };
 }
 
+/** The outcome of the default sort check. */
+interface DefaultSortInfo {
+  label: string;
+  scope: string;
+  fields: string[];
+  /** The index that serves it on paper, when it is served. */
+  servedBy?: string;
+  /** The finding raised, when it is not served. */
+  finding?: IndexFinding;
+  fix?: { drizzle: string; sql: string };
+}
+
 interface Analysis {
   target: IndexCheckTarget;
   source: IndexSource;
@@ -704,6 +719,8 @@ interface Analysis {
   indexes: IndexInfo[];
   eq: Step[];
   scope: ScopeRead;
+  /** What the default sort check concluded, for EXPLAIN to confirm. */
+  defaultSort?: DefaultSortInfo;
   /** Conditions the scope guarantees on every row, as a partial index would state them. */
   facts: Set<string>;
   /** Columns that can never be null, as index key ids. */
@@ -793,15 +810,17 @@ function add(
   message: string,
   fields: string[],
   fix?: { drizzle: string; sql: string },
-) {
-  analysis.findings.push({
+): IndexFinding {
+  const finding: IndexFinding = {
     resource: analysis.target.key,
     level,
     rule,
     message,
     fields,
     ...(fix ? { fix } : {}),
-  });
+  };
+  analysis.findings.push(finding);
+  return finding;
 }
 
 function sortSteps(
@@ -925,22 +944,32 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
   if (unknown) return undefined;
   const need = needFor(analysis, steps);
   const verdict = assess(need, analysis.indexes);
-  if (verdict.kind === "served") return need;
   const label = describeSort(steps);
-  const fix = buildFix(analysis.source, need);
   const fields = steps.map((step) => step.field);
+  if (verdict.kind === "served") {
+    analysis.defaultSort = {
+      label,
+      scope: scopeSuffix(analysis),
+      fields,
+      servedBy: verdict.index,
+      fix: buildFix(analysis.source, need),
+    };
+    return need;
+  }
+  const fix = buildFix(analysis.source, need);
+  let finding: IndexFinding;
   const hints = hintsFor(need, analysis.indexes);
   const hint = hints.length > 0 ? ` (${hints.join("; ")})` : "";
   if (verdict.kind === "filtered") {
-    add(
+    finding = add(
       analysis,
       "warn",
       "default-sort-unindexed",
-      `default sort ${label}${scopeSuffix(analysis)} is served by index ${verdict.index}, but the scope on ${verdict.missing.join(", ")} is not in it: ${verdict.missing.join(", ")} filters row by row. Add ${verdict.missing.length === 1 ? "it" : "them"} to the index only if that filter is selective`,
+      `default sort ${label}${scopeSuffix(analysis)} is served by index ${verdict.index}, but ${verdict.missing.join(", ")} ${verdict.missing.length === 1 ? "is" : "are"} not in it: ${verdict.missing.join(", ")} filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add ${verdict.missing.length === 1 ? "it" : "them"} to the index only if that filter is selective`,
       fields,
     );
   } else if (verdict.kind === "partial") {
-    add(
+    finding = add(
       analysis,
       "warn",
       "default-sort-unindexed",
@@ -949,7 +978,7 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
       fix,
     );
   } else if (mixes(need)) {
-    add(
+    finding = add(
       analysis,
       "warn",
       "mixed-direction-sort",
@@ -958,7 +987,7 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
       fix,
     );
   } else if (verdict.kind === "near") {
-    add(
+    finding = add(
       analysis,
       "warn",
       "default-sort-unindexed",
@@ -967,7 +996,7 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
       fix,
     );
   } else {
-    add(
+    finding = add(
       analysis,
       "error",
       "default-sort-unindexed",
@@ -976,6 +1005,7 @@ function checkDefaultSort(analysis: Analysis): Need | undefined {
       fix,
     );
   }
+  analysis.defaultSort = { label, scope: scopeSuffix(analysis), fields, finding, fix };
   return need;
 }
 
@@ -1216,6 +1246,90 @@ function checkLiveCount(analysis: Analysis) {
   );
 }
 
+/** The nodes of the plan PostgreSQL gives the engine's page query. */
+export interface PagePlan {
+  nodes: Array<{ type: string; rows: number; index?: string }>;
+}
+
+function flattenPlan(node: any): PagePlan["nodes"] {
+  return [
+    { type: String(node["Node Type"]), rows: Number(node["Plan Rows"]), index: node["Index Name"] },
+    ...((node.Plans ?? []) as any[]).flatMap((child) => flattenPlan(child)),
+  ];
+}
+
+/**
+ * Settle the default sort verdict with what PostgreSQL does. A sort over more than one row
+ * means the order is not provided by an index, whatever the matcher believes, and no sort at
+ * all means it is. An incremental sort (the index gives the leading columns) leaves a
+ * near-miss verdict as it is.
+ */
+export function confirmDefaultSort(
+  resource: string,
+  info: DefaultSortInfo,
+  findings: IndexFinding[],
+  plan: PagePlan,
+) {
+  const sorts = plan.nodes.some((node) => node.type === "Sort" && node.rows > 1);
+  const incremental = plan.nodes.some((node) => node.type === "Incremental Sort" && node.rows > 1);
+  const scanned = plan.nodes.find((node) => node.index)?.index;
+  const { finding } = info;
+  if (!finding) {
+    if (!sorts) return;
+    findings.push({
+      resource,
+      level: "error",
+      rule: "default-sort-unindexed",
+      message: `default sort ${info.label}${info.scope} looks served by index ${info.servedBy}, but PostgreSQL sorts every matching row instead of using it. Confirmed by EXPLAIN`,
+      fields: info.fields,
+      ...(info.fix ? { fix: info.fix } : {}),
+    });
+    return;
+  }
+  if (finding.rule !== "default-sort-unindexed" && finding.rule !== "mixed-direction-sort") return;
+  if (sorts) {
+    if (finding.rule === "default-sort-unindexed") finding.level = "error";
+    finding.message += ". Confirmed by EXPLAIN: PostgreSQL sorts every matching row";
+  } else if (incremental) {
+    finding.message += ". Confirmed by EXPLAIN: PostgreSQL uses an incremental sort";
+  } else if (finding.level === "error") {
+    finding.level = "warn";
+    finding.message = `default sort ${info.label}${info.scope} has no index with its columns, but PostgreSQL reads ${scanned ? `index ${scanned}` : "a scan"} in order and filters row by row, which is fine while the scope matches a good share of the table. Confirmed by EXPLAIN`;
+  } else {
+    finding.message += ". Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort";
+  }
+}
+
+async function readPagePlan(
+  target: IndexCheckTarget,
+  database: PgAsyncDatabase<any, any>,
+  options: CheckIndexesOptions,
+): Promise<PagePlan | undefined> {
+  if (target.customQuery || !target.queryPage) return undefined;
+  // A stand-in for the database: the page query goes to the hook, which explains it.
+  const probe = Object.create(database) as QueryEngineDb;
+  let plan: PagePlan | undefined;
+  pageQueryHooks.set(probe, async (query) => {
+    const rows = await database.execute<{ "QUERY PLAN": unknown }>(
+      sql`explain (format json) ${query as SQL}`,
+      "objects",
+    );
+    const raw = rows[0]?.["QUERY PLAN"];
+    const plans = (typeof raw === "string" ? JSON.parse(raw) : raw) as Array<{ Plan: unknown }>;
+    plan = { nodes: flattenPlan(plans[0]!.Plan) };
+    return [];
+  });
+  try {
+    await target.queryPage(probe, options.context ?? placeholderContext());
+  } catch {
+    // A placeholder context cannot always be sent to PostgreSQL: the matcher's verdict stands.
+    return undefined;
+  } finally {
+    pageQueryHooks.delete(probe);
+  }
+  return plan;
+}
+
 const levelOrder: Record<IndexFindingLevel, number> = { error: 0, warn: 1, info: 2 };
 
 function analyze(
@@ -1223,6 +1337,7 @@ function analyze(
   source: IndexSource,
   options: CheckIndexesOptions,
   live: boolean,
+  plan?: PagePlan,
 ): IndexFinding[] {
   const indexes = source.indexes(target.table);
   const analysis: Analysis = {
@@ -1258,6 +1373,9 @@ function analyze(
       return step ? [step] : [];
     });
     const defaultNeed = checkDefaultSort(analysis);
+    if (plan && analysis.defaultSort) {
+      confirmDefaultSort(target.key, analysis.defaultSort, analysis.findings, plan);
+    }
     checkSorts(analysis, defaultNeed);
     checkScope(analysis);
   }
@@ -1363,7 +1481,8 @@ export function runIndexChecks(
           return [table, await pending] as const;
         }),
       );
-      results.push(...analyze(target, liveSource(names, new Map(loaded)), options, true));
+      const plan = await readPagePlan(target, database, options);
+      results.push(...analyze(target, liveSource(names, new Map(loaded)), options, true, plan));
     }
     return withoutRepeats(results);
   })();

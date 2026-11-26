@@ -538,6 +538,23 @@ export function createQueryEngine<
         defaultPagination: options.query?.defaults?.pagination,
         customQuery: Boolean(options.strategy?.query || options.strategy?.ids),
         customFacets: Boolean(options.strategy?.facets),
+        queryPage: (db, context) => {
+          const defaults = options.query?.defaults?.pagination;
+          const pageSize = defaults?.pageSize ?? 25;
+          return (resource as any).queryIds({
+            request: {
+              pagination:
+                defaults?.mode === "cursor"
+                  ? { mode: "cursor", cursor: null, pageSize, count: "none" }
+                  : { mode: "offset", pageIndex: 1, pageSize, count: "none" },
+              filters: [],
+              search: { value: "", fields: [] },
+              sorting: [],
+            },
+            context,
+            db,
+          });
+        },
       };
 
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
