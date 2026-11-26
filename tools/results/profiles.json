@@ -1,0 +1,3283 @@
+{
+  "provisional": true,
+  "sizes": [200000, 1000000, 10000000],
+  "setup": {
+    "database": "PostgreSQL 18.7 (postgres:18 container drizzle-bench-tuned), aarch64 Linux VM on a Mac, --cpus 4, 4 GB memory",
+    "postgresSettings": {
+      "shared_buffers": "1GB",
+      "work_mem": "4MB",
+      "max_wal_size": "1GB",
+      "max_parallel_workers_per_gather": 2,
+      "jit": "on",
+      "other": "defaults"
+    },
+    "dataset": "orders (n rows: customerId (n%20000)+1, orgId (n%100)+1, status by n%5, paid n%2=0, createdAt evenly over 7 years to 2026-11-01, reference ORD-00000001) and customers (20,000 rows)",
+    "client": "single client, one connection per request, medians of 10 runs (5 when a scenario takes over 1 s, 3 over 20 s), warm cache",
+    "engineCommit": "d0f9953aa58448106a6bb0642d25c111f61603ed",
+    "engineNote": "snapshot of drizzle-resource packages/core at that commit, read only; the engine on main has no capped count, so capped counts are hand SQL",
+    "profileDefinitions": {
+      "out-of-the-box": "schema ord_*: primary keys, orders (createdAt, id), orders (customerId), trigram on lower(orders.reference) and lower(customers.name)",
+      "tuned": "out-of-the-box plus customers (name) and orders (createdAt desc, id asc). Landing values are the engine page statement (count none) plus a capped count (limit 10001) by hand SQL, summed",
+      "scoped": "tuned plus orders (orgId, createdAt, id), resource scoped to orgId = 42 (query.scope), 1% of rows"
+    },
+    "chosenRuns": {
+      "ootb": {
+        "200k": {
+          "label": "ootb-r2-200k",
+          "load_start": 5.16,
+          "load_end": 5.53,
+          "high_load": false
+        },
+        "1m": {
+          "label": "ootb-r2-1m",
+          "load_start": 5.53,
+          "load_end": 8.17,
+          "high_load": true
+        },
+        "10m": {
+          "label": "ootb-r2-10m",
+          "load_start": 8.17,
+          "load_end": 7.24,
+          "high_load": true
+        }
+      },
+      "ootb-hand-counts": {
+        "200k": {
+          "label": "ootb-r1-counts-200k",
+          "load": 4.6572265625
+        },
+        "1m": {
+          "label": "ootb-r1-counts-1m",
+          "load": 4.30224609375
+        },
+        "10m": {
+          "label": "ootb-r1-counts-10m",
+          "load": 6.88916015625
+        }
+      },
+      "tuned": {
+        "200k": {
+          "label": "tuned-r2-200k",
+          "load_start": 7.24,
+          "load_end": 6.63,
+          "high_load": false
+        },
+        "1m": {
+          "label": "tuned-r2-1m",
+          "load_start": 6.63,
+          "load_end": 7.95,
+          "high_load": false
+        },
+        "10m": {
+          "label": "tuned-r2-10m",
+          "load_start": 7.95,
+          "load_end": 9.53,
+          "high_load": true
+        }
+      },
+      "tuned-hand-counts": {
+        "200k": {
+          "label": "tuned-r1-counts-200k",
+          "load": 4.30224609375
+        },
+        "1m": {
+          "label": "tuned-r1-counts-1m",
+          "load": 6.8798828125
+        },
+        "10m": {
+          "label": "tuned-r1-counts-10m",
+          "load": 4.93603515625
+        }
+      },
+      "scoped": {
+        "200k": {
+          "label": "scoped-r1-200k",
+          "load_start": 4.37,
+          "load_end": 4.37,
+          "high_load": false
+        },
+        "1m": {
+          "label": "scoped-r1-1m",
+          "load_start": 4.17,
+          "load_end": 4.17,
+          "high_load": false
+        },
+        "10m": {
+          "label": "scoped-r1-10m",
+          "load_start": 5.23,
+          "load_end": 5.38,
+          "high_load": false
+        }
+      },
+      "scoped-hand-counts": {
+        "200k": {
+          "label": "scoped-r1-counts-200k",
+          "load": 5.375
+        },
+        "1m": {
+          "label": "scoped-r1-counts-1m",
+          "load": 5.375
+        },
+        "10m": {
+          "label": "scoped-r1-counts-10m",
+          "load": 5.4248046875
+        }
+      },
+      "tunedpo": {
+        "200k": {
+          "label": "tunedpo-r1-200k",
+          "load_start": 4.37,
+          "load_end": 4.37,
+          "high_load": false
+        },
+        "1m": {
+          "label": "tunedpo-r1-1m",
+          "load_start": 4.37,
+          "load_end": 4.18,
+          "high_load": false
+        },
+        "10m": {
+          "label": "tunedpo-r1-10m",
+          "load_start": 4.17,
+          "load_end": 4.59,
+          "high_load": false
+        }
+      },
+      "ootbpo": {
+        "200k": {
+          "label": "ootbpo-r1-200k",
+          "load_start": 4.37,
+          "load_end": 4.37,
+          "high_load": false
+        },
+        "1m": {
+          "label": "ootbpo-r1-1m",
+          "load_start": 4.18,
+          "load_end": 4.17,
+          "high_load": false
+        },
+        "10m": {
+          "label": "ootbpo-r1-10m",
+          "load_start": 4.59,
+          "load_end": 5.43,
+          "high_load": false
+        }
+      },
+      "denorm": {
+        "200k": {
+          "label": "denorm-r1-200k",
+          "load_start": 4.37,
+          "load_end": 4.37,
+          "high_load": false
+        },
+        "1m": {
+          "label": "denorm-r1-1m",
+          "load_start": 4.17,
+          "load_end": 4.17,
+          "high_load": false
+        },
+        "10m": {
+          "label": "denorm-r1-10m",
+          "load_start": 5.43,
+          "load_end": 5.23,
+          "high_load": false
+        }
+      },
+      "facets": {
+        "200k": {
+          "file": "facets-r2-200k.json",
+          "load_end": 9.53466796875,
+          "high_load": true
+        },
+        "1m": {
+          "file": "facets-r2-1m.json",
+          "load_end": 9.33154296875,
+          "high_load": true
+        },
+        "10m": {
+          "file": "facets-r1-10m.json",
+          "load_end": 8.33837890625,
+          "high_load": true
+        }
+      }
+    }
+  },
+  "profiles": {
+    "out-of-the-box": {
+      "countless-cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 1.444,
+          "p95Ms": 2.038,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 220.1,
+          "p95Ms": 244.857,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 192.937,
+          "p95Ms": 213.89,
+          "method": "engine"
+        }
+      },
+      "countless-cross-table-search-ord": {
+        "200000": {
+          "medianMs": 0.873,
+          "p95Ms": 1.428,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1.647,
+          "p95Ms": 2.876,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.35,
+          "p95Ms": 1.813,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ORD-00199999": {
+        "200000": {
+          "medianMs": 6.224,
+          "p95Ms": 10.087,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 19.731,
+          "p95Ms": 27.892,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 109.253,
+          "p95Ms": 122.324,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ORD-00199999-page-only": {
+        "200000": {
+          "medianMs": 3.892,
+          "p95Ms": 6.139,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 179.158,
+          "p95Ms": 208.798,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 3221.303,
+          "p95Ms": 3944.421,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer": {
+        "200000": {
+          "medianMs": 203.971,
+          "p95Ms": 234.248,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 832.338,
+          "p95Ms": 1147.872,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 10027.173,
+          "p95Ms": 13721.807,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 3.779,
+          "p95Ms": 4.567,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 3.79,
+          "p95Ms": 5.009,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 4.056,
+          "p95Ms": 4.379,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-19999-page-only": {
+        "200000": {
+          "medianMs": 1.412,
+          "p95Ms": 2.798,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 192.77,
+          "p95Ms": 206.941,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 202.515,
+          "p95Ms": 210.597,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-page-only": {
+        "200000": {
+          "medianMs": 4.966,
+          "p95Ms": 5.599,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 6.169,
+          "p95Ms": 14.182,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 5.454,
+          "p95Ms": 5.98,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ord": {
+        "200000": {
+          "medianMs": 193.79,
+          "p95Ms": 200.468,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 878.272,
+          "p95Ms": 987.15,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 6862.738,
+          "p95Ms": 8345.578,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ord-page-only": {
+        "200000": {
+          "medianMs": 0.825,
+          "p95Ms": 1.089,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1.166,
+          "p95Ms": 1.522,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.22,
+          "p95Ms": 1.365,
+          "method": "engine"
+        }
+      },
+      "deep-cursor-id-asc": {
+        "200000": {
+          "medianMs": 0.833,
+          "p95Ms": 1.066,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.408,
+          "p95Ms": 1.709,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.239,
+          "p95Ms": 3.714,
+          "method": "engine"
+        }
+      },
+      "deep-cursor-id-desc": {
+        "200000": {
+          "medianMs": 0.569,
+          "p95Ms": 1.915,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.662,
+          "p95Ms": 1.175,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.006,
+          "p95Ms": 1.736,
+          "method": "engine"
+        }
+      },
+      "filtered-exclude-self-facets": {
+        "200000": {
+          "medianMs": 56.886,
+          "p95Ms": 66.986,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 125.37,
+          "p95Ms": 152.17,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1437.776,
+          "p95Ms": 1563.441,
+          "method": "engine"
+        }
+      },
+      "four-mixed-facets": {
+        "200000": {
+          "medianMs": 81.25,
+          "p95Ms": 91.594,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 187.65,
+          "p95Ms": 211.142,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1505.091,
+          "p95Ms": 1642.447,
+          "method": "engine"
+        }
+      },
+      "id-selection-10": {
+        "200000": {
+          "medianMs": 0.436,
+          "p95Ms": 0.619,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.352,
+          "p95Ms": 0.516,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.657,
+          "p95Ms": 1.005,
+          "method": "engine"
+        }
+      },
+      "id-selection-10-page-only": {
+        "200000": {
+          "medianMs": 0.291,
+          "p95Ms": 0.325,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.285,
+          "p95Ms": 0.538,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.324,
+          "p95Ms": 0.379,
+          "method": "engine"
+        }
+      },
+      "id-selection-1000": {
+        "200000": {
+          "medianMs": 10.076,
+          "p95Ms": 12.962,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 42.925,
+          "p95Ms": 54.8,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 2.871,
+          "p95Ms": 3.5,
+          "method": "engine"
+        }
+      },
+      "id-selection-1000-page-only": {
+        "200000": {
+          "medianMs": 8.098,
+          "p95Ms": 9.113,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 37.833,
+          "p95Ms": 45.239,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.368,
+          "p95Ms": 5.606,
+          "method": "engine"
+        }
+      },
+      "landing/four-mixed-facets": {
+        "200000": {
+          "medianMs": 81.25,
+          "p95Ms": 91.594,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 187.65,
+          "p95Ms": 211.142,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1505.091,
+          "p95Ms": 1642.447,
+          "method": "engine"
+        }
+      },
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 14.239,
+          "p95Ms": 26.679,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 0.266,
+            "countMs": 3.337,
+            "totalMs": 3.603
+          }
+        },
+        "1000000": {
+          "medianMs": 17.673,
+          "p95Ms": 23.291,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 0.378,
+            "countMs": 10.346,
+            "totalMs": 10.724
+          }
+        },
+        "10000000": {
+          "medianMs": 112.045,
+          "p95Ms": 881.449,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 0.304,
+            "countMs": 137.979,
+            "totalMs": 138.283
+          }
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 19.157,
+          "p95Ms": 22.168,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "1000000": {
+          "medianMs": 28.438,
+          "p95Ms": 31.699,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "10000000": {
+          "medianMs": 182.299,
+          "p95Ms": 259.278,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        }
+      },
+      "landing/search-customer-plus-count": {
+        "200000": {
+          "medianMs": 203.971,
+          "p95Ms": 234.248,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "1000000": {
+          "medianMs": 832.338,
+          "p95Ms": 1147.872,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "10000000": {
+          "medianMs": 10027.173,
+          "p95Ms": 13721.807,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        }
+      },
+      "landing/search-ord-plus-count": {
+        "200000": {
+          "medianMs": 193.79,
+          "p95Ms": 200.468,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "1000000": {
+          "medianMs": 878.272,
+          "p95Ms": 987.15,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "10000000": {
+          "medianMs": 6862.738,
+          "p95Ms": 8345.578,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        }
+      },
+      "landing/search-rare-customer-plus-count": {
+        "200000": {
+          "medianMs": 3.779,
+          "p95Ms": 4.567,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "1000000": {
+          "medianMs": 3.79,
+          "p95Ms": 5.009,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "10000000": {
+          "medianMs": 4.056,
+          "p95Ms": 4.379,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        }
+      },
+      "landing/search-rare-reference-plus-count": {
+        "200000": {
+          "medianMs": 6.224,
+          "p95Ms": 10.087,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "1000000": {
+          "medianMs": 19.731,
+          "p95Ms": 27.892,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        },
+        "10000000": {
+          "medianMs": 109.253,
+          "p95Ms": 122.324,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement"
+        }
+      },
+      "landing/sort-customer-name-plus-count": {
+        "200000": {
+          "medianMs": 23.095,
+          "p95Ms": 28.506,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 19.456,
+            "countMs": 3.376,
+            "totalMs": 22.832
+          }
+        },
+        "1000000": {
+          "medianMs": 78.428,
+          "p95Ms": 106.87,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 58.893,
+            "countMs": 9.625,
+            "totalMs": 68.518
+          }
+        },
+        "10000000": {
+          "medianMs": 764.264,
+          "p95Ms": 808.443,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "engine run end to end: page statement + exact count statement",
+          "sumOfParts": {
+            "pageMs": 663.323,
+            "countMs": 135.282,
+            "totalMs": 798.605
+          }
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 26.011,
+          "p95Ms": 31.11,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 108.264,
+          "p95Ms": 115.567,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1306.557,
+          "p95Ms": 1820.318,
+          "method": "engine"
+        }
+      },
+      "page-and-shared-count-facets": {
+        "200000": {
+          "medianMs": 22.361,
+          "p95Ms": 24.557,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 109.136,
+          "p95Ms": 120.101,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1197.456,
+          "p95Ms": 1446.002,
+          "method": "engine"
+        }
+      },
+      "page-exact-count": {
+        "200000": {
+          "medianMs": 14.239,
+          "p95Ms": 26.679,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 17.673,
+          "p95Ms": 23.291,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 112.045,
+          "p95Ms": 881.449,
+          "method": "engine"
+        }
+      },
+      "page-exact-count:count-exact": {
+        "200000": {
+          "medianMs": 3.337,
+          "p95Ms": 4.074,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 10.346,
+          "p95Ms": 11.2,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 137.979,
+          "p95Ms": 159.388,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "page-without-count": {
+        "200000": {
+          "medianMs": 0.266,
+          "p95Ms": 0.316,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.378,
+          "p95Ms": 0.938,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.304,
+          "p95Ms": 0.476,
+          "method": "engine"
+        }
+      },
+      "related-facets-with-summary": {
+        "200000": {
+          "medianMs": 90.09,
+          "p95Ms": 104.61,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 149.808,
+          "p95Ms": 189.265,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1395.916,
+          "p95Ms": 1453.516,
+          "method": "engine"
+        }
+      },
+      "relation-search-page": {
+        "200000": {
+          "medianMs": 19.157,
+          "p95Ms": 22.168,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 28.438,
+          "p95Ms": 31.699,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 182.299,
+          "p95Ms": 259.278,
+          "method": "engine"
+        }
+      },
+      "relation-search-page-page-only": {
+        "200000": {
+          "medianMs": 0.446,
+          "p95Ms": 0.574,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.373,
+          "p95Ms": 0.634,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.402,
+          "p95Ms": 0.471,
+          "method": "engine"
+        }
+      },
+      "relation-sorted-count": {
+        "200000": {
+          "medianMs": 23.095,
+          "p95Ms": 28.506,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 78.428,
+          "p95Ms": 106.87,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 764.264,
+          "p95Ms": 808.443,
+          "method": "engine"
+        }
+      },
+      "relation-sorted-count-page-only": {
+        "200000": {
+          "medianMs": 19.456,
+          "p95Ms": 22.212,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 58.893,
+          "p95Ms": 69.061,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 663.323,
+          "p95Ms": 760.038,
+          "method": "engine"
+        }
+      },
+      "relation-sorted-count:count-exact": {
+        "200000": {
+          "medianMs": 3.376,
+          "p95Ms": 4.222,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 9.625,
+          "p95Ms": 10.598,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 135.282,
+          "p95Ms": 164.644,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "root-facets-with-missing": {
+        "200000": {
+          "medianMs": 27.962,
+          "p95Ms": 33.281,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 115.174,
+          "p95Ms": 169.379,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1168.764,
+          "p95Ms": 1279.941,
+          "method": "engine"
+        }
+      },
+      "two-root-facets": {
+        "200000": {
+          "medianMs": 26.011,
+          "p95Ms": 31.11,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 108.264,
+          "p95Ms": 115.567,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1306.557,
+          "p95Ms": 1820.318,
+          "method": "engine"
+        }
+      },
+      "wide-search-19999-exact": {
+        "200000": {
+          "medianMs": 351.28,
+          "p95Ms": 525.405,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1382.673,
+          "p95Ms": 2010.692,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 7422.158,
+          "p95Ms": 7625.205,
+          "method": "engine"
+        }
+      },
+      "wide-search-19999-facets": {
+        "200000": {
+          "medianMs": 421.051,
+          "p95Ms": 468.873,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1482.036,
+          "p95Ms": 1519.556,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 9307.655,
+          "p95Ms": 10962.776,
+          "method": "engine"
+        }
+      },
+      "wide-search-19999-none": {
+        "200000": {
+          "medianMs": 143.013,
+          "p95Ms": 159.06,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 605.933,
+          "p95Ms": 627.825,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 531.153,
+          "p95Ms": 561.373,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-exact": {
+        "200000": {
+          "medianMs": 227.54,
+          "p95Ms": 244.777,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 858.39,
+          "p95Ms": 872.721,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 8206.744,
+          "p95Ms": 11436.507,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-facets": {
+        "200000": {
+          "medianMs": 387.812,
+          "p95Ms": 473.34,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1156.063,
+          "p95Ms": 1675.797,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 12586.657,
+          "p95Ms": 17611.815,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-none": {
+        "200000": {
+          "medianMs": 8.373,
+          "p95Ms": 9.225,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 18.067,
+          "p95Ms": 28.526,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 7.594,
+          "p95Ms": 13.572,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-exact": {
+        "200000": {
+          "medianMs": 202.318,
+          "p95Ms": 284.299,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 698.773,
+          "p95Ms": 793.73,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 8341.164,
+          "p95Ms": 9549.057,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-facets": {
+        "200000": {
+          "medianMs": 323.81,
+          "p95Ms": 589.517,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 869.395,
+          "p95Ms": 1253.38,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 7499.008,
+          "p95Ms": 8870.568,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-none": {
+        "200000": {
+          "medianMs": 142.478,
+          "p95Ms": 149.309,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 725.898,
+          "p95Ms": 802.955,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 7100.383,
+          "p95Ms": 12433.485,
+          "method": "engine"
+        }
+      }
+    },
+    "tuned": {
+      "countless-cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 2.937,
+          "p95Ms": 4.107,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 210.486,
+          "p95Ms": 289.068,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 208.635,
+          "p95Ms": 240.976,
+          "method": "engine"
+        }
+      },
+      "countless-cross-table-search-ord": {
+        "200000": {
+          "medianMs": 1.581,
+          "p95Ms": 1.979,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1.37,
+          "p95Ms": 2.054,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.493,
+          "p95Ms": 3.087,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ORD-00199999": {
+        "200000": {
+          "medianMs": 6.055,
+          "p95Ms": 17.95,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 36.359,
+          "p95Ms": 41.158,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 172.613,
+          "p95Ms": 472.147,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ORD-00199999-page-only": {
+        "200000": {
+          "medianMs": 3.176,
+          "p95Ms": 3.628,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 178.163,
+          "p95Ms": 185.879,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 2021.618,
+          "p95Ms": 2950.302,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ORD-00199999:count-capped": {
+        "200000": {
+          "medianMs": 1.717,
+          "p95Ms": 2.086,
+          "method": "hand-sql",
+          "rowCount": 1
+        },
+        "1000000": {
+          "medianMs": 6.704,
+          "p95Ms": 9.839,
+          "method": "hand-sql",
+          "rowCount": 1
+        },
+        "10000000": {
+          "medianMs": 61.198,
+          "p95Ms": 76.553,
+          "method": "hand-sql",
+          "rowCount": 1
+        }
+      },
+      "cross-table-search-ORD-00199999:count-exact": {
+        "200000": {
+          "medianMs": 1.762,
+          "p95Ms": 2.068,
+          "method": "hand-sql",
+          "rowCount": 1
+        },
+        "1000000": {
+          "medianMs": 6.796,
+          "p95Ms": 7.144,
+          "method": "hand-sql",
+          "rowCount": 1
+        },
+        "10000000": {
+          "medianMs": 59.045,
+          "p95Ms": 62.6,
+          "method": "hand-sql",
+          "rowCount": 1
+        }
+      },
+      "cross-table-search-customer": {
+        "200000": {
+          "medianMs": 271.436,
+          "p95Ms": 360.731,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 615.115,
+          "p95Ms": 687.094,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 13894.616,
+          "p95Ms": 14791.719,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 3.604,
+          "p95Ms": 5.475,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 3.204,
+          "p95Ms": 4.493,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 11.12,
+          "p95Ms": 15.552,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-19999-page-only": {
+        "200000": {
+          "medianMs": 2.565,
+          "p95Ms": 3.314,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 196.585,
+          "p95Ms": 232.601,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 223.002,
+          "p95Ms": 298.914,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer-19999:count-capped": {
+        "200000": {
+          "medianMs": 0.506,
+          "p95Ms": 0.6,
+          "method": "hand-sql",
+          "rowCount": 10
+        },
+        "1000000": {
+          "medianMs": 0.599,
+          "p95Ms": 0.657,
+          "method": "hand-sql",
+          "rowCount": 50
+        },
+        "10000000": {
+          "medianMs": 1.438,
+          "p95Ms": 2.713,
+          "method": "hand-sql",
+          "rowCount": 500
+        }
+      },
+      "cross-table-search-customer-19999:count-exact": {
+        "200000": {
+          "medianMs": 0.525,
+          "p95Ms": 0.644,
+          "method": "hand-sql",
+          "rowCount": 10
+        },
+        "1000000": {
+          "medianMs": 0.654,
+          "p95Ms": 1.225,
+          "method": "hand-sql",
+          "rowCount": 50
+        },
+        "10000000": {
+          "medianMs": 1.592,
+          "p95Ms": 2.437,
+          "method": "hand-sql",
+          "rowCount": 500
+        }
+      },
+      "cross-table-search-customer-page-only": {
+        "200000": {
+          "medianMs": 5.142,
+          "p95Ms": 5.545,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 5.37,
+          "p95Ms": 12.915,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 16.587,
+          "p95Ms": 21.959,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-customer:count-capped": {
+        "200000": {
+          "medianMs": 7.096,
+          "p95Ms": 7.766,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 7.958,
+          "p95Ms": 8.692,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 12.539,
+          "p95Ms": 27.525,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "cross-table-search-customer:count-exact": {
+        "200000": {
+          "medianMs": 72.781,
+          "p95Ms": 109.348,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 233.682,
+          "p95Ms": 255.434,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 2714.711,
+          "p95Ms": 2876.172,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "cross-table-search-ord": {
+        "200000": {
+          "medianMs": 190.587,
+          "p95Ms": 335.061,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 713.652,
+          "p95Ms": 806.342,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 8807.635,
+          "p95Ms": 11939.114,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ord-page-only": {
+        "200000": {
+          "medianMs": 1.014,
+          "p95Ms": 1.17,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1.151,
+          "p95Ms": 1.29,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.509,
+          "p95Ms": 3.167,
+          "method": "engine"
+        }
+      },
+      "cross-table-search-ord:count-capped": {
+        "200000": {
+          "medianMs": 3.168,
+          "p95Ms": 4.352,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 3.118,
+          "p95Ms": 3.32,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 3.349,
+          "p95Ms": 4.108,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "cross-table-search-ord:count-exact": {
+        "200000": {
+          "medianMs": 56.754,
+          "p95Ms": 65.97,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 289.28,
+          "p95Ms": 297.092,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 3297.88,
+          "p95Ms": 5134.1,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "deep-cursor-id-asc": {
+        "200000": {
+          "medianMs": 0.425,
+          "p95Ms": 0.695,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.474,
+          "p95Ms": 3.525,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.551,
+          "p95Ms": 3.239,
+          "method": "engine"
+        }
+      },
+      "deep-cursor-id-desc": {
+        "200000": {
+          "medianMs": 0.386,
+          "p95Ms": 0.735,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.363,
+          "p95Ms": 0.784,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.663,
+          "p95Ms": 0.793,
+          "method": "engine"
+        }
+      },
+      "filtered-exclude-self-facets": {
+        "200000": {
+          "medianMs": 40.359,
+          "p95Ms": 57.663,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 126.127,
+          "p95Ms": 169.587,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1389.394,
+          "p95Ms": 1802.093,
+          "method": "engine"
+        }
+      },
+      "four-mixed-facets": {
+        "200000": {
+          "medianMs": 72.714,
+          "p95Ms": 85.996,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 197.156,
+          "p95Ms": 404.857,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1641.561,
+          "p95Ms": 1818.568,
+          "method": "engine"
+        }
+      },
+      "four-mixed-facets/grouping-sets/concurrent": {
+        "200000": {
+          "medianMs": 84.177,
+          "p95Ms": 98.04,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        },
+        "1000000": {
+          "medianMs": 259.029,
+          "p95Ms": 358.074,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        },
+        "10000000": {
+          "medianMs": 1332.738,
+          "p95Ms": 1340.431,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        }
+      },
+      "four-mixed-facets/grouping-sets/sequential": {
+        "200000": {
+          "medianMs": 105.032,
+          "p95Ms": 128.575,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        },
+        "1000000": {
+          "medianMs": 289.646,
+          "p95Ms": 397.563,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        },
+        "10000000": {
+          "medianMs": 2362.087,
+          "p95Ms": 2395.962,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        }
+      },
+      "four-mixed-facets/separate/concurrent": {
+        "200000": {
+          "medianMs": 43.457,
+          "p95Ms": 53.379,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 3
+        },
+        "1000000": {
+          "medianMs": 161.518,
+          "p95Ms": 181.707,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 3
+        },
+        "10000000": {
+          "medianMs": 1171.397,
+          "p95Ms": 1183.601,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 3
+        }
+      },
+      "four-mixed-facets/separate/sequential": {
+        "200000": {
+          "medianMs": 69.316,
+          "p95Ms": 88.508,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 1
+        },
+        "1000000": {
+          "medianMs": 210.845,
+          "p95Ms": 298.861,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 1
+        },
+        "10000000": {
+          "medianMs": 1104.96,
+          "p95Ms": 1140.747,
+          "method": "hand-sql",
+          "statements": 4,
+          "connections": 1
+        }
+      },
+      "id-selection-10": {
+        "200000": {
+          "medianMs": 0.308,
+          "p95Ms": 0.449,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.336,
+          "p95Ms": 0.429,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.676,
+          "p95Ms": 0.862,
+          "method": "engine"
+        }
+      },
+      "id-selection-10-page-only": {
+        "200000": {
+          "medianMs": 0.309,
+          "p95Ms": 0.485,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.303,
+          "p95Ms": 0.386,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.332,
+          "p95Ms": 0.719,
+          "method": "engine"
+        }
+      },
+      "id-selection-1000": {
+        "200000": {
+          "medianMs": 9.768,
+          "p95Ms": 10.068,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 41.391,
+          "p95Ms": 49.755,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 3.415,
+          "p95Ms": 25.158,
+          "method": "engine"
+        }
+      },
+      "id-selection-1000-page-only": {
+        "200000": {
+          "medianMs": 8.445,
+          "p95Ms": 8.983,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 35.651,
+          "p95Ms": 40.947,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.456,
+          "p95Ms": 4.997,
+          "method": "engine"
+        }
+      },
+      "id-selection-1000:count-capped": {
+        "200000": {
+          "medianMs": 0.419,
+          "p95Ms": 0.527,
+          "method": "hand-sql",
+          "rowCount": 1000
+        },
+        "1000000": {
+          "medianMs": 0.846,
+          "p95Ms": 1.437,
+          "method": "hand-sql",
+          "rowCount": 1000
+        },
+        "10000000": {
+          "medianMs": 0.427,
+          "p95Ms": 0.518,
+          "method": "hand-sql",
+          "rowCount": 1000
+        }
+      },
+      "id-selection-1000:count-exact": {
+        "200000": {
+          "medianMs": 0.419,
+          "p95Ms": 0.837,
+          "method": "hand-sql",
+          "rowCount": 1000
+        },
+        "1000000": {
+          "medianMs": 0.994,
+          "p95Ms": 1.58,
+          "method": "hand-sql",
+          "rowCount": 1000
+        },
+        "10000000": {
+          "medianMs": 0.409,
+          "p95Ms": 0.509,
+          "method": "hand-sql",
+          "rowCount": 1000
+        }
+      },
+      "landing/four-mixed-facets": {
+        "200000": {
+          "medianMs": 43.457,
+          "p95Ms": 53.379,
+          "method": "hand-sql",
+          "uses": "separate/concurrent",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 105.032,
+            "grouping-sets/concurrent": 84.177,
+            "separate/sequential": 69.316,
+            "separate/concurrent": 43.457
+          },
+          "onTodaysEngine": 84.177,
+          "verdict": "improved",
+          "ratio": 1.87,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "unchanged",
+            "ratio": 0.97,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        },
+        "1000000": {
+          "medianMs": 161.518,
+          "p95Ms": 181.707,
+          "method": "hand-sql",
+          "uses": "separate/concurrent",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 289.646,
+            "grouping-sets/concurrent": 259.029,
+            "separate/sequential": 210.845,
+            "separate/concurrent": 161.518
+          },
+          "onTodaysEngine": 259.029,
+          "verdict": "improved",
+          "ratio": 1.16,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "worse",
+            "ratio": 0.72,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        },
+        "10000000": {
+          "medianMs": 1104.96,
+          "p95Ms": 1140.747,
+          "method": "hand-sql",
+          "uses": "separate/sequential",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 2362.087,
+            "grouping-sets/concurrent": 1332.738,
+            "separate/sequential": 1104.96,
+            "separate/concurrent": 1171.397
+          },
+          "onTodaysEngine": 1332.738,
+          "verdict": "improved",
+          "ratio": 1.36,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "improved",
+            "ratio": 1.13,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        }
+      },
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 0.542,
+          "p95Ms": 0.76,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.276,
+            "pageMethod": "engine, count none",
+            "countMs": 0.266,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 26.27,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 0.878,
+          "p95Ms": 1.272,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.305,
+            "pageMethod": "engine, count none",
+            "countMs": 0.573,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 20.13,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 1.025,
+          "p95Ms": 1.343,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.677,
+            "pageMethod": "engine, count none",
+            "countMs": 0.348,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 109.31,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 1.423,
+          "p95Ms": 2.105,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.409,
+            "pageMethod": "engine, count none",
+            "countMs": 1.014,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 13.46,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 1.193,
+          "p95Ms": 2.623,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.419,
+            "pageMethod": "engine, count none",
+            "countMs": 0.774,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 23.84,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 0.868,
+          "p95Ms": 1.039,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.415,
+            "pageMethod": "engine, count none",
+            "countMs": 0.453,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 210.02,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/search-customer-plus-count": {
+        "200000": {
+          "medianMs": 12.238,
+          "p95Ms": 13.311,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 5.142,
+            "pageMethod": "engine, count none",
+            "countMs": 7.096,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 16.67,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 13.328,
+          "p95Ms": 21.607,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 5.37,
+            "pageMethod": "engine, count none",
+            "countMs": 7.958,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 62.45,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 29.126,
+          "p95Ms": 49.484,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 16.587,
+            "pageMethod": "engine, count none",
+            "countMs": 12.539,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 344.27,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/search-ord-plus-count": {
+        "200000": {
+          "medianMs": 4.182,
+          "p95Ms": 5.522,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.014,
+            "pageMethod": "engine, count none",
+            "countMs": 3.168,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 46.34,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 4.269,
+          "p95Ms": 4.61,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.151,
+            "pageMethod": "engine, count none",
+            "countMs": 3.118,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 205.73,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 4.858,
+          "p95Ms": 7.275,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.509,
+            "pageMethod": "engine, count none",
+            "countMs": 3.349,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1412.67,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/search-rare-customer-plus-count": {
+        "200000": {
+          "medianMs": 3.071,
+          "p95Ms": 3.914,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 2.565,
+            "pageMethod": "engine, count none",
+            "countMs": 0.506,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1.23,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 197.184,
+          "p95Ms": 233.258,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 196.585,
+            "pageMethod": "engine, count none",
+            "countMs": 0.599,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "worse",
+          "ratio": 0.02,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 224.44,
+          "p95Ms": 301.627,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 223.002,
+            "pageMethod": "engine, count none",
+            "countMs": 1.438,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "worse",
+          "ratio": 0.02,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/search-rare-reference-plus-count": {
+        "200000": {
+          "medianMs": 4.893,
+          "p95Ms": 5.714,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 3.176,
+            "pageMethod": "engine, count none",
+            "countMs": 1.717,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1.27,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 184.867,
+          "p95Ms": 195.718,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 178.163,
+            "pageMethod": "engine, count none",
+            "countMs": 6.704,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "worse",
+          "ratio": 0.11,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 2082.816,
+          "p95Ms": 3026.855,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 2021.618,
+            "pageMethod": "engine, count none",
+            "countMs": 61.198,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "worse",
+          "ratio": 0.05,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/sort-customer-name-denormalized-plus-count": {
+        "200000": {
+          "medianMs": 0.769,
+          "p95Ms": null,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "variant": "denormalized orders.customerName, index (customerName, id)",
+          "parts": {
+            "pageMs": 0.398,
+            "pageMethod": "engine, count none",
+            "countMs": 0.371,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 30.03,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 0.866,
+          "p95Ms": null,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "variant": "denormalized orders.customerName, index (customerName, id)",
+          "parts": {
+            "pageMs": 0.44,
+            "pageMethod": "engine, count none",
+            "countMs": 0.426,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 90.56,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 0.938,
+          "p95Ms": null,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "variant": "denormalized orders.customerName, index (customerName, id)",
+          "parts": {
+            "pageMs": 0.575,
+            "pageMethod": "engine, count none",
+            "countMs": 0.363,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 814.78,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/sort-customer-name-plus-count": {
+        "200000": {
+          "medianMs": 18.762,
+          "p95Ms": 19.48,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 18.503,
+            "pageMethod": "engine, count none",
+            "countMs": 0.259,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1.23,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "variant": "customers(name) index only"
+        },
+        "1000000": {
+          "medianMs": 54.468,
+          "p95Ms": 60.917,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 54.02,
+            "pageMethod": "engine, count none",
+            "countMs": 0.448,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1.44,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "variant": "customers(name) index only"
+        },
+        "10000000": {
+          "medianMs": 619.618,
+          "p95Ms": 751.461,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 619.204,
+            "pageMethod": "engine, count none",
+            "countMs": 0.414,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 1.23,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "variant": "customers(name) index only"
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 15.072,
+          "p95Ms": 16.679,
+          "method": "hand-sql",
+          "uses": "separate/concurrent",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 24.413,
+            "grouping-sets/concurrent": 25.829,
+            "separate/sequential": 25.519,
+            "separate/concurrent": 15.072
+          },
+          "onTodaysEngine": 25.829,
+          "verdict": "improved",
+          "ratio": 1.73,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "unchanged",
+            "ratio": 1.01,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        },
+        "1000000": {
+          "medianMs": 66.562,
+          "p95Ms": 119.507,
+          "method": "hand-sql",
+          "uses": "separate/concurrent",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 118.253,
+            "grouping-sets/concurrent": 122.392,
+            "separate/sequential": 99.335,
+            "separate/concurrent": 66.562
+          },
+          "onTodaysEngine": 122.392,
+          "verdict": "improved",
+          "ratio": 1.63,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "worse",
+            "ratio": 0.88,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        },
+        "10000000": {
+          "medianMs": 431.997,
+          "p95Ms": 442.137,
+          "method": "hand-sql",
+          "uses": "separate/sequential",
+          "requiresEngineChange": true,
+          "all": {
+            "grouping-sets/sequential": 1059.511,
+            "grouping-sets/concurrent": 1053.221,
+            "separate/sequential": 431.997,
+            "separate/concurrent": 461.38
+          },
+          "onTodaysEngine": 1053.221,
+          "verdict": "improved",
+          "ratio": 3.02,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster",
+          "verdictOnTodaysEngine": {
+            "verdict": "improved",
+            "ratio": 1.24,
+            "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+          }
+        }
+      },
+      "page-and-shared-count-facets": {
+        "200000": {
+          "medianMs": 26.518,
+          "p95Ms": 34.359,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 104.788,
+          "p95Ms": 141.701,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 2258.284,
+          "p95Ms": 3303.243,
+          "method": "engine"
+        }
+      },
+      "page-exact-count": {
+        "200000": {
+          "medianMs": 11.622,
+          "p95Ms": 12.318,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 17.169,
+          "p95Ms": 18.263,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 115.011,
+          "p95Ms": 126.934,
+          "method": "engine"
+        }
+      },
+      "page-exact-count:count-capped": {
+        "200000": {
+          "medianMs": 0.266,
+          "p95Ms": 0.359,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 0.573,
+          "p95Ms": 0.851,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 0.348,
+          "p95Ms": 0.427,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "page-exact-count:count-exact": {
+        "200000": {
+          "medianMs": 3.22,
+          "p95Ms": 3.42,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 16.445,
+          "p95Ms": 23.811,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 98.895,
+          "p95Ms": 102.272,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "page-without-count": {
+        "200000": {
+          "medianMs": 0.276,
+          "p95Ms": 0.401,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.305,
+          "p95Ms": 0.421,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.677,
+          "p95Ms": 0.916,
+          "method": "engine"
+        }
+      },
+      "related-facets-with-summary": {
+        "200000": {
+          "medianMs": 72.624,
+          "p95Ms": 76.909,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 133.207,
+          "p95Ms": 151.908,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1400.437,
+          "p95Ms": 1791.254,
+          "method": "engine"
+        }
+      },
+      "relation-search-page": {
+        "200000": {
+          "medianMs": 15.962,
+          "p95Ms": 18.227,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 27.044,
+          "p95Ms": 29.297,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 186.771,
+          "p95Ms": 202.64,
+          "method": "engine"
+        }
+      },
+      "relation-search-page-page-only": {
+        "200000": {
+          "medianMs": 0.409,
+          "p95Ms": 0.839,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.419,
+          "p95Ms": 1.544,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.415,
+          "p95Ms": 0.543,
+          "method": "engine"
+        }
+      },
+      "relation-search-page:count-capped": {
+        "200000": {
+          "medianMs": 1.014,
+          "p95Ms": 1.266,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 0.774,
+          "p95Ms": 1.079,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 0.453,
+          "p95Ms": 0.496,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "relation-search-page:count-exact": {
+        "200000": {
+          "medianMs": 8.201,
+          "p95Ms": 9.191,
+          "method": "hand-sql",
+          "rowCount": 111110
+        },
+        "1000000": {
+          "medianMs": 34.199,
+          "p95Ms": 48.272,
+          "method": "hand-sql",
+          "rowCount": 555550
+        },
+        "10000000": {
+          "medianMs": 161.79,
+          "p95Ms": 182.708,
+          "method": "hand-sql",
+          "rowCount": 5555500
+        }
+      },
+      "relation-sorted-count": {
+        "200000": {
+          "medianMs": 31.987,
+          "p95Ms": 65.207,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 73.676,
+          "p95Ms": 81.869,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1613.65,
+          "p95Ms": 2285.619,
+          "method": "engine"
+        }
+      },
+      "relation-sorted-count-page-only": {
+        "200000": {
+          "medianMs": 18.503,
+          "p95Ms": 19.19,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 54.02,
+          "p95Ms": 60.302,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 619.204,
+          "p95Ms": 750.758,
+          "method": "engine"
+        }
+      },
+      "relation-sorted-count:count-capped": {
+        "200000": {
+          "medianMs": 0.259,
+          "p95Ms": 0.29,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 0.448,
+          "p95Ms": 0.615,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 0.414,
+          "p95Ms": 0.703,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "relation-sorted-count:count-exact": {
+        "200000": {
+          "medianMs": 3.368,
+          "p95Ms": 3.774,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 14.322,
+          "p95Ms": 18.595,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 136.011,
+          "p95Ms": 156.031,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "root-facets-with-missing": {
+        "200000": {
+          "medianMs": 22.926,
+          "p95Ms": 24.144,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 113.787,
+          "p95Ms": 151.089,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 2478.777,
+          "p95Ms": 2720.445,
+          "method": "engine"
+        }
+      },
+      "sort-customer-name-denormalized": {
+        "200000": {
+          "medianMs": 4.758,
+          "p95Ms": 5.729,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 11.296,
+          "p95Ms": 12.075,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 101.947,
+          "p95Ms": 153.2,
+          "method": "engine"
+        }
+      },
+      "sort-customer-name-denormalized-page-only": {
+        "200000": {
+          "medianMs": 0.398,
+          "p95Ms": 0.61,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.44,
+          "p95Ms": 0.631,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.575,
+          "p95Ms": 0.724,
+          "method": "engine"
+        }
+      },
+      "sort-customer-name-denormalized:count-capped": {
+        "200000": {
+          "medianMs": 0.371,
+          "p95Ms": 0.412,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 0.426,
+          "p95Ms": 0.472,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 0.363,
+          "p95Ms": 0.491,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "sort-customer-name-denormalized:count-exact": {
+        "200000": {
+          "medianMs": 5.072,
+          "p95Ms": 5.966,
+          "method": "hand-sql"
+        },
+        "1000000": {
+          "medianMs": 12.951,
+          "p95Ms": 16.123,
+          "method": "hand-sql"
+        },
+        "10000000": {
+          "medianMs": 107.407,
+          "p95Ms": 143.783,
+          "method": "hand-sql"
+        }
+      },
+      "two-root-facets": {
+        "200000": {
+          "medianMs": 22.063,
+          "p95Ms": 24.227,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 105.952,
+          "p95Ms": 122.633,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1088.134,
+          "p95Ms": 1144.136,
+          "method": "engine"
+        }
+      },
+      "two-root-facets/grouping-sets/concurrent": {
+        "200000": {
+          "medianMs": 25.829,
+          "p95Ms": 31.646,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        },
+        "1000000": {
+          "medianMs": 122.392,
+          "p95Ms": 189.064,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        },
+        "10000000": {
+          "medianMs": 1053.221,
+          "p95Ms": 1060.014,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        }
+      },
+      "two-root-facets/grouping-sets/sequential": {
+        "200000": {
+          "medianMs": 24.413,
+          "p95Ms": 35.841,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        },
+        "1000000": {
+          "medianMs": 118.253,
+          "p95Ms": 145.244,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        },
+        "10000000": {
+          "medianMs": 1059.511,
+          "p95Ms": 1065.06,
+          "method": "hand-sql",
+          "statements": 1,
+          "connections": 1
+        }
+      },
+      "two-root-facets/separate/concurrent": {
+        "200000": {
+          "medianMs": 15.072,
+          "p95Ms": 16.679,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        },
+        "1000000": {
+          "medianMs": 66.562,
+          "p95Ms": 119.507,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        },
+        "10000000": {
+          "medianMs": 461.38,
+          "p95Ms": 488.74,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 2
+        }
+      },
+      "two-root-facets/separate/sequential": {
+        "200000": {
+          "medianMs": 25.519,
+          "p95Ms": 31.662,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        },
+        "1000000": {
+          "medianMs": 99.335,
+          "p95Ms": 195.672,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        },
+        "10000000": {
+          "medianMs": 431.997,
+          "p95Ms": 442.137,
+          "method": "hand-sql",
+          "statements": 2,
+          "connections": 1
+        }
+      },
+      "wide-search-19999-exact": {
+        "200000": {
+          "medianMs": 347.208,
+          "p95Ms": 364.908,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1656.567,
+          "p95Ms": 2215.604,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 8163.036,
+          "p95Ms": 11037.717,
+          "method": "engine"
+        }
+      },
+      "wide-search-19999-exact:count-capped": {
+        "200000": {
+          "medianMs": 140.461,
+          "p95Ms": 160.048,
+          "method": "hand-sql",
+          "rowCount": 21
+        },
+        "1000000": {
+          "medianMs": 782.396,
+          "p95Ms": 846.268,
+          "method": "hand-sql",
+          "rowCount": 69
+        },
+        "10000000": {
+          "medianMs": 6780.489,
+          "p95Ms": 6874.694,
+          "method": "hand-sql",
+          "rowCount": 789
+        }
+      },
+      "wide-search-19999-exact:count-exact": {
+        "200000": {
+          "medianMs": 190.549,
+          "p95Ms": 251.232,
+          "method": "hand-sql",
+          "rowCount": 21
+        },
+        "1000000": {
+          "medianMs": 748.332,
+          "p95Ms": 866.084,
+          "method": "hand-sql",
+          "rowCount": 69
+        },
+        "10000000": {
+          "medianMs": 7540.908,
+          "p95Ms": 9328.743,
+          "method": "hand-sql",
+          "rowCount": 789
+        }
+      },
+      "wide-search-19999-facets": {
+        "200000": {
+          "medianMs": 401.858,
+          "p95Ms": 505.235,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1368.634,
+          "p95Ms": 1681.153,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 9404.283,
+          "p95Ms": 10276.256,
+          "method": "engine"
+        }
+      },
+      "wide-search-19999-none": {
+        "200000": {
+          "medianMs": 159.362,
+          "p95Ms": 226.649,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 533.347,
+          "p95Ms": 611.169,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 552.59,
+          "p95Ms": 592.889,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-exact": {
+        "200000": {
+          "medianMs": 199.742,
+          "p95Ms": 218.37,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 761.183,
+          "p95Ms": 1067.915,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 7221.879,
+          "p95Ms": 9398.567,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-exact:count-capped": {
+        "200000": {
+          "medianMs": 19.923,
+          "p95Ms": 49.792,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "1000000": {
+          "medianMs": 46.92,
+          "p95Ms": 75.645,
+          "method": "hand-sql",
+          "rowCount": 10001
+        },
+        "10000000": {
+          "medianMs": 17.677,
+          "p95Ms": 19.158,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "wide-search-customer-exact:count-exact": {
+        "200000": {
+          "medianMs": 195.383,
+          "p95Ms": 210.76,
+          "method": "hand-sql",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 978.258,
+          "p95Ms": 1039.07,
+          "method": "hand-sql",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 6660.678,
+          "p95Ms": 7315.957,
+          "method": "hand-sql",
+          "rowCount": 10000000
+        }
+      },
+      "wide-search-customer-facets": {
+        "200000": {
+          "medianMs": 354.951,
+          "p95Ms": 401.017,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1274.881,
+          "p95Ms": 1831.15,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 15240.71,
+          "p95Ms": 17491.171,
+          "method": "engine"
+        }
+      },
+      "wide-search-customer-none": {
+        "200000": {
+          "medianMs": 6.965,
+          "p95Ms": 7.375,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 7.971,
+          "p95Ms": 8.6,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 9.578,
+          "p95Ms": 11.735,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-exact": {
+        "200000": {
+          "medianMs": 180.914,
+          "p95Ms": 214.15,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 701.478,
+          "p95Ms": 830.291,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 8956.469,
+          "p95Ms": 9813.759,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-exact:count-capped": {
+        "200000": {
+          "medianMs": 135.772,
+          "p95Ms": 143.663,
+          "method": "hand-sql",
+          "rowCount": 0
+        },
+        "1000000": {
+          "medianMs": 789.701,
+          "p95Ms": 834.082,
+          "method": "hand-sql",
+          "rowCount": 0
+        },
+        "10000000": {
+          "medianMs": 7238.067,
+          "p95Ms": 8222.392,
+          "method": "hand-sql",
+          "rowCount": 0
+        }
+      },
+      "wide-search-not-here-exact:count-exact": {
+        "200000": {
+          "medianMs": 167.313,
+          "p95Ms": 181.154,
+          "method": "hand-sql",
+          "rowCount": 0
+        },
+        "1000000": {
+          "medianMs": 799.241,
+          "p95Ms": 842.315,
+          "method": "hand-sql",
+          "rowCount": 0
+        },
+        "10000000": {
+          "medianMs": 6405.989,
+          "p95Ms": 7736.202,
+          "method": "hand-sql",
+          "rowCount": 0
+        }
+      },
+      "wide-search-not-here-facets": {
+        "200000": {
+          "medianMs": 252.523,
+          "p95Ms": 284.611,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 772.062,
+          "p95Ms": 1112.627,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 9089.205,
+          "p95Ms": 9859.11,
+          "method": "engine"
+        }
+      },
+      "wide-search-not-here-none": {
+        "200000": {
+          "medianMs": 131.126,
+          "p95Ms": 139.312,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 644.725,
+          "p95Ms": 897.655,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 9995.654,
+          "p95Ms": 17397.883,
+          "method": "engine"
+        }
+      }
+    },
+    "scoped": {
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 0.847,
+          "p95Ms": 1.543,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.39,
+            "pageMethod": "engine, count none",
+            "countMs": 0.457,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 16.81,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 1.036,
+          "p95Ms": 1.45,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.577,
+            "pageMethod": "engine, count none",
+            "countMs": 0.459,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 17.06,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 1.45,
+          "p95Ms": 3.828,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.959,
+            "pageMethod": "engine, count none",
+            "countMs": 0.491,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 77.27,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/page-plus-count-exact": {
+        "200000": {
+          "medianMs": 0.787,
+          "p95Ms": 0.865,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "tenant orgId 42 slice, engine run end to end",
+          "verdict": "improved",
+          "ratio": 18.09,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 1.109,
+          "p95Ms": 1.392,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "tenant orgId 42 slice, engine run end to end",
+          "verdict": "improved",
+          "ratio": 15.94,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 5.455,
+          "p95Ms": 10.334,
+          "method": "engine",
+          "countMode": "exact",
+          "note": "tenant orgId 42 slice, engine run end to end",
+          "verdict": "improved",
+          "ratio": 20.54,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 6.544,
+          "p95Ms": 8.608,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.426,
+            "pageMethod": "engine, count none",
+            "countMs": 6.118,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 2.93,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 10.874,
+          "p95Ms": 15.55,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.46,
+            "pageMethod": "engine, count none",
+            "countMs": 10.414,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 2.62,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 46.878,
+          "p95Ms": 53.385,
+          "method": "engine+hand-sql",
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.549,
+            "pageMethod": "engine, count none",
+            "countMs": 45.329,
+            "countMethod": "hand-sql, limit 10001"
+          },
+          "verdict": "improved",
+          "ratio": 3.89,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 1.282,
+          "p95Ms": 1.744,
+          "method": "engine",
+          "note": "tenant orgId 42 slice, engine on main (GROUPING SETS)",
+          "verdict": "improved",
+          "ratio": 20.29,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "1000000": {
+          "medianMs": 7.858,
+          "p95Ms": 9.629,
+          "method": "engine",
+          "note": "tenant orgId 42 slice, engine on main (GROUPING SETS)",
+          "verdict": "improved",
+          "ratio": 13.78,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        },
+        "10000000": {
+          "medianMs": 109.226,
+          "p95Ms": 314.772,
+          "method": "engine",
+          "note": "tenant orgId 42 slice, engine on main (GROUPING SETS)",
+          "verdict": "improved",
+          "ratio": 11.96,
+          "ratioMeaning": "out-of-the-box median / this median; above 1 is faster"
+        }
+      },
+      "page-exact-count": {
+        "200000": {
+          "medianMs": 0.787,
+          "p95Ms": 0.865,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 1.109,
+          "p95Ms": 1.392,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 5.455,
+          "p95Ms": 10.334,
+          "method": "engine"
+        }
+      },
+      "page-exact-count:count-capped": {
+        "200000": {
+          "medianMs": 0.457,
+          "p95Ms": 0.96,
+          "method": "hand-sql",
+          "rowCount": 2000
+        },
+        "1000000": {
+          "medianMs": 0.459,
+          "p95Ms": 0.645,
+          "method": "hand-sql",
+          "rowCount": 10000
+        },
+        "10000000": {
+          "medianMs": 0.491,
+          "p95Ms": 0.651,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "page-exact-count:count-exact": {
+        "200000": {
+          "medianMs": 0.159,
+          "p95Ms": 0.193,
+          "method": "hand-sql",
+          "rowCount": 2000
+        },
+        "1000000": {
+          "medianMs": 0.381,
+          "p95Ms": 0.408,
+          "method": "hand-sql",
+          "rowCount": 10000
+        },
+        "10000000": {
+          "medianMs": 6.072,
+          "p95Ms": 11.02,
+          "method": "hand-sql",
+          "rowCount": 100000
+        }
+      },
+      "page-without-count": {
+        "200000": {
+          "medianMs": 0.39,
+          "p95Ms": 0.583,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.577,
+          "p95Ms": 0.805,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 0.959,
+          "p95Ms": 3.177,
+          "method": "engine"
+        }
+      },
+      "relation-search-page": {
+        "200000": {
+          "medianMs": 4.909,
+          "p95Ms": 5.488,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 10.85,
+          "p95Ms": 14.505,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 121.954,
+          "p95Ms": 152.112,
+          "method": "engine"
+        }
+      },
+      "relation-search-page-page-only": {
+        "200000": {
+          "medianMs": 0.426,
+          "p95Ms": 0.64,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 0.46,
+          "p95Ms": 0.587,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 1.549,
+          "p95Ms": 2.881,
+          "method": "engine"
+        }
+      },
+      "relation-search-page:count-capped": {
+        "200000": {
+          "medianMs": 6.118,
+          "p95Ms": 7.968,
+          "method": "hand-sql",
+          "rowCount": 1110
+        },
+        "1000000": {
+          "medianMs": 10.414,
+          "p95Ms": 14.963,
+          "method": "hand-sql",
+          "rowCount": 5550
+        },
+        "10000000": {
+          "medianMs": 45.329,
+          "p95Ms": 50.504,
+          "method": "hand-sql",
+          "rowCount": 10001
+        }
+      },
+      "relation-search-page:count-exact": {
+        "200000": {
+          "medianMs": 5.079,
+          "p95Ms": 6.48,
+          "method": "hand-sql",
+          "rowCount": 1110
+        },
+        "1000000": {
+          "medianMs": 11.013,
+          "p95Ms": 12.62,
+          "method": "hand-sql",
+          "rowCount": 5550
+        },
+        "10000000": {
+          "medianMs": 123.101,
+          "p95Ms": 152.581,
+          "method": "hand-sql",
+          "rowCount": 55500
+        }
+      },
+      "two-root-facets": {
+        "200000": {
+          "medianMs": 1.282,
+          "p95Ms": 1.744,
+          "method": "engine"
+        },
+        "1000000": {
+          "medianMs": 7.858,
+          "p95Ms": 9.629,
+          "method": "engine"
+        },
+        "10000000": {
+          "medianMs": 109.226,
+          "p95Ms": 314.772,
+          "method": "engine"
+        }
+      }
+    }
+  },
+  "notes": [
+    "PROVISIONAL: this machine was never quiet. Every run was taken at one-minute load average 4 to 10 for the runs kept here (my own benchmark adds about 4 to 5 of that; other threads add the rest). Each chosen run's load is in setup.chosenRuns; high_load is true above 8. A final quiet run is planned and will replace these numbers.",
+    "Landing rule for tuned: every count-bearing request = the engine's page statement (tuned indexes, count: none) + a capped count (select count(*) from (select 1 ... limit 10001) t) by hand SQL, summed. The engine on main has no capped count. Raw tuned engine runs with an exact count (names without the landing/ prefix) are kept for reference only and must not be used as tuned values.",
+    "Out of the box landing values are the engine run end to end with its exact count.",
+    "verdict: ratio = out-of-the-box median / tuned median. improved above 1.1, worse below 0.9, unchanged between, or when the difference is under 0.3 ms.",
+    "worse: search-rare-reference-plus-count and search-rare-customer-plus-count at 1M and 10M. With count none the engine plans a rare search as an index walk on the sort index (RFC: 515 ms class of problem), so its page part is slower than the whole out-of-the-box request, whose exact-count path is fast. Do not show them as improvements.",
+    "Sort by customer name: landing/sort-customer-name-plus-count is the customers(name) index only variant; landing/sort-customer-name-denormalized-plus-count copies the name onto orders (orders.customerName, index (customerName, id)) and sorts by the root column. The index alone improves 1.3x at 10M; the copy improves by hundreds of times.",
+    "Facets: landing/two-root-facets and landing/four-mixed-facets in tuned use the fastest measured of GROUPING SETS (what the engine does) and one statement per facet, each sequential on one connection and concurrent on 3 connections. Field 'all' has the four numbers, 'uses' the winner, requiresEngineChange true when the winner is separate statements, onTodaysEngine the GROUPING SETS concurrent number (the engine runs its facet statement groups with Promise.all, so on main GROUPING SETS on 2 connections is what it does; a group with one facet is already a plain single-column statement), verdictOnTodaysEngine its verdict. The engine's own end to end number is the out-of-the-box value; the hand GROUPING SETS pair is a mirror of it and can differ by tens of percent. Facets are hand SQL through node-pg, not the engine.",
+    "Scenario names changed with the dataset: three-root-facets became two-root-facets (status, paid), five-mixed-facets became four-mixed-facets (status, paid, customer.segment, customer.name). The old consumption-table runs are superseded and kept in results/superseded-consumption/.",
+    "Data artifacts of the specified formulas: createdAt grows with id, so createdAt order equals id order and a mixed-direction cursor (createdAt desc, id asc) is cheap even without the tuned index (deep-cursor-id-asc about 0.5 ms at 10M out of the box). orgId, status and paid are all functions of n, so inside tenant 42 every order has status 'paid' and paid = false: scoped facets have one value each.",
+    "Scoped profile = tuned schema plus index (orgId, createdAt, id), engine scope orgId = 42 (100k rows at 10M). Exact count inside the tenant is cheap (landing/page-plus-count-exact); the capped variant is landing/page-plus-count.",
+    "Methods: engine = through the drizzle-resource engine with pg Pool over TCP; hand-sql = psql \\timing inside the container (counts) or node-pg (facets); engine+hand-sql = sum of both medians (p95 is also a sum, so only a rough bound).",
+    "Hand counts and the page-only twins were measured at lower load than the full engine runs; compare them with that in mind."
+  ]
+}

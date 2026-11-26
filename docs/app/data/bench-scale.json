@@ -1,0 +1,715 @@
+{
+  "$comment": "Numbers for the docs' Scale pages. Regenerate with `bun tools/scale-bench-data.ts` from tools/results; do not edit by hand. Times are milliseconds, one per table size.",
+  "provisional": true,
+  "measuredOn": "2026-11-26",
+  "engine": "d0f9953",
+  "source": "tools/results/profiles.json",
+  "setup": {
+    "database": "PostgreSQL 18.7 (postgres:18 container drizzle-bench-tuned), aarch64 Linux VM on a Mac, --cpus 4, 4 GB memory",
+    "postgresSettings": {
+      "shared_buffers": "1GB",
+      "work_mem": "4MB",
+      "max_wal_size": "1GB",
+      "max_parallel_workers_per_gather": 2,
+      "jit": "on",
+      "other": "defaults"
+    },
+    "dataset": "orders (n rows: customerId (n%20000)+1, orgId (n%100)+1, status by n%5, paid n%2=0, createdAt evenly over 7 years to 2026-11-01, reference ORD-00000001) and customers (20,000 rows)",
+    "client": "single client, one connection per request, medians of 10 runs (5 when a scenario takes over 1 s, 3 over 20 s), warm cache",
+    "profiles": {
+      "out-of-the-box": "schema ord_*: primary keys, orders (createdAt, id), orders (customerId), trigram on lower(orders.reference) and lower(customers.name)",
+      "tuned": "out-of-the-box plus customers (name) and orders (createdAt desc, id asc). Landing values are the engine page statement (count none) plus a capped count (limit 10001) by hand SQL, summed",
+      "scoped": "tuned plus orders (orgId, createdAt, id), resource scoped to orgId = 42 (query.scope), 1% of rows"
+    },
+    "engineNote": "snapshot of drizzle-resource packages/core at that commit, read only; the engine on main has no capped count, so capped counts are hand SQL"
+  },
+  "sizes": [200000, 1000000, 10000000],
+  "requests": {
+    "page": {
+      "label": "Page of 50",
+      "shape": "sort createdAt desc · count none",
+      "outOfTheBox": {
+        "scenario": "page-without-count",
+        "ms": [0.266, 0.378, 0.304],
+        "p95": [0.316, 0.938, 0.476],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "cursor": {
+      "label": "Cursor page, 90% deep",
+      "shape": "cursor · sort createdAt desc",
+      "outOfTheBox": {
+        "scenario": "deep-cursor-id-desc",
+        "ms": [0.569, 0.662, 1.006],
+        "p95": [1.915, 1.175, 1.736],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "ids": {
+      "label": "Filter on 10 ids",
+      "shape": "filter id:isAnyOf · count none",
+      "outOfTheBox": {
+        "scenario": "id-selection-10-page-only",
+        "ms": [0.291, 0.285, 0.324],
+        "p95": [0.325, 0.538, 0.379],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "count": {
+      "label": "Page + count",
+      "shape": "sort createdAt desc · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [14.239, 17.673, 112.045],
+        "p95": [26.679, 23.291, 881.449],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/page-plus-count",
+        "ms": [0.542, 0.878, 1.025],
+        "p95": [0.76, 1.272, 1.343],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [26.27, 20.13, 109.31],
+        "engineChange": false
+      }
+    },
+    "relationSort": {
+      "label": "Sort by customer.name + count",
+      "shape": "sort customer.name asc · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/sort-customer-name-plus-count",
+        "ms": [23.095, 78.428, 764.264],
+        "p95": [28.506, 106.87, 808.443],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "name copied onto orders, capped count",
+        "scenario": "landing/sort-customer-name-denormalized-plus-count",
+        "ms": [0.769, 0.866, 0.938],
+        "p95": [null, null, null],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [30.03, 90.56, 814.78],
+        "engineChange": false
+      }
+    },
+    "relationSortIndexOnly": {
+      "label": "Sort by customer.name + count",
+      "shape": "sort customer.name asc · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/sort-customer-name-plus-count",
+        "ms": [23.095, 78.428, 764.264],
+        "p95": [28.506, 106.87, 808.443],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "index on customers (name), capped count",
+        "scenario": "landing/sort-customer-name-plus-count",
+        "ms": [18.762, 54.468, 619.618],
+        "p95": [19.48, 60.917, 751.461],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [1.23, 1.44, 1.23],
+        "engineChange": false
+      }
+    },
+    "twoFacets": {
+      "label": "2 facets",
+      "shape": "facets status,paid",
+      "outOfTheBox": {
+        "scenario": "landing/two-root-facets",
+        "ms": [26.011, 108.264, 1306.557],
+        "p95": [31.11, 115.567, 1820.318],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "fastest of shared and separate statements",
+        "scenario": "landing/two-root-facets",
+        "ms": [15.072, 66.562, 431.997],
+        "p95": [16.679, 119.507, 442.137],
+        "method": "hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [1.73, 1.63, 3.02],
+        "engineChange": true
+      }
+    },
+    "fourFacets": {
+      "label": "4 facets, 2 through customer",
+      "shape": "facets status,paid,customer.segment,customer.name",
+      "outOfTheBox": {
+        "scenario": "landing/four-mixed-facets",
+        "ms": [81.25, 187.65, 1505.091],
+        "p95": [91.594, 211.142, 1642.447],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "fastest of shared and separate statements",
+        "scenario": "landing/four-mixed-facets",
+        "ms": [43.457, 161.518, 1104.96],
+        "p95": [53.379, 181.707, 1140.747],
+        "method": "hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [1.87, 1.16, 1.36],
+        "engineChange": true
+      }
+    },
+    "searchCommon": {
+      "label": "Search \"ord\" + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-ord-plus-count",
+        "ms": [193.79, 878.272, 6862.738],
+        "p95": [200.468, 987.15, 8345.578],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-ord-plus-count",
+        "ms": [4.182, 4.269, 4.858],
+        "p95": [5.522, 4.61, 7.275],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [46.34, 205.73, 1412.67],
+        "engineChange": false
+      }
+    },
+    "searchCustomer": {
+      "label": "Search \"customer\" + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-customer-plus-count",
+        "ms": [203.971, 832.338, 10027.173],
+        "p95": [234.248, 1147.872, 13721.807],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-customer-plus-count",
+        "ms": [12.238, 13.328, 29.126],
+        "p95": [13.311, 21.607, 49.484],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [16.67, 62.45, 344.27],
+        "engineChange": false
+      }
+    },
+    "relationSearch": {
+      "label": "Search customer.name \"customer 1\" + count",
+      "shape": "search customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [19.157, 28.438, 182.299],
+        "p95": [22.168, 31.699, 259.278],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [1.423, 1.193, 0.868],
+        "p95": [2.105, 2.623, 1.039],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [13.46, 23.84, 210.02],
+        "engineChange": false
+      }
+    },
+    "searchRareReference": {
+      "label": "Search one reference + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-rare-reference-plus-count",
+        "ms": [6.224, 19.731, 109.253],
+        "p95": [10.087, 27.892, 122.324],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-rare-reference-plus-count",
+        "ms": [4.893, 184.867, 2082.816],
+        "p95": [5.714, 195.718, 3026.855],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "worse", "worse"],
+        "ratio": [1.27, 0.11, 0.05],
+        "engineChange": false
+      }
+    },
+    "searchRareCustomer": {
+      "label": "Search one customer + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-rare-customer-plus-count",
+        "ms": [3.779, 3.79, 4.056],
+        "p95": [4.567, 5.009, 4.379],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-rare-customer-plus-count",
+        "ms": [3.071, 197.184, 224.44],
+        "p95": [3.914, 233.258, 301.627],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "worse", "worse"],
+        "ratio": [1.23, 0.02, 0.02],
+        "engineChange": false
+      }
+    },
+    "wideCommon": {
+      "label": "Search every column for \"customer\"",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-customer-none",
+        "ms": [8.373, 18.067, 7.594],
+        "p95": [9.225, 28.526, 13.572],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideCommonCount": {
+      "label": "Search every column for \"customer\" + count",
+      "shape": "search 9 fields · count exact",
+      "outOfTheBox": {
+        "scenario": "wide-search-customer-exact",
+        "ms": [227.54, 858.39, 8206.744],
+        "p95": [244.777, 872.721, 11436.507],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideRare": {
+      "label": "Search every column for \"19999\"",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-19999-none",
+        "ms": [143.013, 605.933, 531.153],
+        "p95": [159.06, 627.825, 561.373],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideNoMatch": {
+      "label": "Search every column, no match",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-not-here-none",
+        "ms": [142.478, 725.898, 7100.383],
+        "p95": [149.309, 802.955, 12433.485],
+        "method": "engine"
+      },
+      "tuned": null
+    }
+  },
+  "scoped": {
+    "countExact": {
+      "label": "Page + exact count",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [14.239, 17.673, 112.045],
+        "p95": [26.679, 23.291, 881.449],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/page-plus-count-exact",
+        "ms": [0.787, 1.109, 5.455],
+        "p95": [0.865, 1.392, 10.334],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [18.09, 15.94, 20.54],
+        "engineChange": false
+      }
+    },
+    "countCapped": {
+      "label": "Page + capped count",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [14.239, 17.673, 112.045],
+        "p95": [26.679, 23.291, 881.449],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/page-plus-count",
+        "ms": [0.847, 1.036, 1.45],
+        "p95": [1.543, 1.45, 3.828],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [16.81, 17.06, 77.27],
+        "engineChange": false
+      }
+    },
+    "relationSearch": {
+      "label": "Search customer.name \"customer 1\" + count",
+      "outOfTheBox": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [19.157, 28.438, 182.299],
+        "p95": [22.168, 31.699, 259.278],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [6.544, 10.874, 46.878],
+        "p95": [8.608, 15.55, 53.385],
+        "method": "engine+hand-sql",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [2.93, 2.62, 3.89],
+        "engineChange": false
+      }
+    },
+    "twoFacets": {
+      "label": "2 facets",
+      "outOfTheBox": {
+        "scenario": "landing/two-root-facets",
+        "ms": [26.011, 108.264, 1306.557],
+        "p95": [31.11, 115.567, 1820.318],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/two-root-facets",
+        "ms": [1.282, 7.858, 109.226],
+        "p95": [1.744, 9.629, 314.772],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [20.29, 13.78, 11.96],
+        "engineChange": false
+      }
+    }
+  },
+  "counts": {
+    "all": {
+      "label": "Every row",
+      "exact": {
+        "scenario": "page-exact-count:count-exact",
+        "ms": [3.22, 16.445, 98.895],
+        "p95": [3.42, 23.811, 102.272],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "page-exact-count:count-capped",
+        "ms": [0.266, 0.573, 0.348],
+        "p95": [0.359, 0.851, 0.427],
+        "method": "hand-sql"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "searchCommon": {
+      "label": "Search \"ord\" (every row)",
+      "exact": {
+        "scenario": "cross-table-search-ord:count-exact",
+        "ms": [56.754, 289.28, 3297.88],
+        "p95": [65.97, 297.092, 5134.1],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "cross-table-search-ord:count-capped",
+        "ms": [3.168, 3.118, 3.349],
+        "p95": [4.352, 3.32, 4.108],
+        "method": "hand-sql"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "searchCustomer": {
+      "label": "Search \"customer\" (every row)",
+      "exact": {
+        "scenario": "cross-table-search-customer:count-exact",
+        "ms": [72.781, 233.682, 2714.711],
+        "p95": [109.348, 255.434, 2876.172],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "cross-table-search-customer:count-capped",
+        "ms": [7.096, 7.958, 12.539],
+        "p95": [7.766, 8.692, 27.525],
+        "method": "hand-sql"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "relationSearch": {
+      "label": "customer.name \"customer 1\"",
+      "exact": {
+        "scenario": "relation-search-page:count-exact",
+        "ms": [8.201, 34.199, 161.79],
+        "p95": [9.191, 48.272, 182.708],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "relation-search-page:count-capped",
+        "ms": [1.014, 0.774, 0.453],
+        "p95": [1.266, 1.079, 0.496],
+        "method": "hand-sql"
+      },
+      "matches": [111110, 555550, 5555500]
+    },
+    "rareCustomer": {
+      "label": "One customer's orders",
+      "exact": {
+        "scenario": "cross-table-search-customer-19999:count-exact",
+        "ms": [0.525, 0.654, 1.592],
+        "p95": [0.644, 1.225, 2.437],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "cross-table-search-customer-19999:count-capped",
+        "ms": [0.506, 0.599, 1.438],
+        "p95": [0.6, 0.657, 2.713],
+        "method": "hand-sql"
+      },
+      "matches": [10, 50, 500]
+    },
+    "rareReference": {
+      "label": "One reference",
+      "exact": {
+        "scenario": "cross-table-search-ORD-00199999:count-exact",
+        "ms": [1.762, 6.796, 59.045],
+        "p95": [2.068, 7.144, 62.6],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "cross-table-search-ORD-00199999:count-capped",
+        "ms": [1.717, 6.704, 61.198],
+        "p95": [2.086, 9.839, 76.553],
+        "method": "hand-sql"
+      },
+      "matches": [1, 1, 1]
+    },
+    "ids": {
+      "label": "1,000 ids",
+      "exact": {
+        "scenario": "id-selection-1000:count-exact",
+        "ms": [0.419, 0.994, 0.409],
+        "p95": [0.837, 1.58, 0.509],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "id-selection-1000:count-capped",
+        "ms": [0.419, 0.846, 0.427],
+        "p95": [0.527, 1.437, 0.518],
+        "method": "hand-sql"
+      },
+      "matches": [1000, 1000, 1000]
+    },
+    "noMatch": {
+      "label": "No match, every column searched",
+      "exact": {
+        "scenario": "wide-search-not-here-exact:count-exact",
+        "ms": [167.313, 799.241, 6405.989],
+        "p95": [181.154, 842.315, 7736.202],
+        "method": "hand-sql"
+      },
+      "capped": {
+        "scenario": "wide-search-not-here-exact:count-capped",
+        "ms": [135.772, 789.701, 7238.067],
+        "p95": [143.663, 834.082, 8222.392],
+        "method": "hand-sql"
+      },
+      "matches": [0, 0, 0]
+    }
+  },
+  "facetVariants": {
+    "twoFacets": {
+      "grouping-sets/sequential": {
+        "scenario": "two-root-facets/grouping-sets/sequential",
+        "ms": [24.413, 118.253, 1059.511],
+        "p95": [35.841, 145.244, 1065.06],
+        "method": "hand-sql"
+      },
+      "grouping-sets/concurrent": {
+        "scenario": "two-root-facets/grouping-sets/concurrent",
+        "ms": [25.829, 122.392, 1053.221],
+        "p95": [31.646, 189.064, 1060.014],
+        "method": "hand-sql"
+      },
+      "separate/sequential": {
+        "scenario": "two-root-facets/separate/sequential",
+        "ms": [25.519, 99.335, 431.997],
+        "p95": [31.662, 195.672, 442.137],
+        "method": "hand-sql"
+      },
+      "separate/concurrent": {
+        "scenario": "two-root-facets/separate/concurrent",
+        "ms": [15.072, 66.562, 461.38],
+        "p95": [16.679, 119.507, 488.74],
+        "method": "hand-sql"
+      }
+    },
+    "fourFacets": {
+      "grouping-sets/sequential": {
+        "scenario": "four-mixed-facets/grouping-sets/sequential",
+        "ms": [105.032, 289.646, 2362.087],
+        "p95": [128.575, 397.563, 2395.962],
+        "method": "hand-sql"
+      },
+      "grouping-sets/concurrent": {
+        "scenario": "four-mixed-facets/grouping-sets/concurrent",
+        "ms": [84.177, 259.029, 1332.738],
+        "p95": [98.04, 358.074, 1340.431],
+        "method": "hand-sql"
+      },
+      "separate/sequential": {
+        "scenario": "four-mixed-facets/separate/sequential",
+        "ms": [69.316, 210.845, 1104.96],
+        "p95": [88.508, 298.861, 1140.747],
+        "method": "hand-sql"
+      },
+      "separate/concurrent": {
+        "scenario": "four-mixed-facets/separate/concurrent",
+        "ms": [43.457, 161.518, 1171.397],
+        "p95": [53.379, 181.707, 1183.601],
+        "method": "hand-sql"
+      }
+    }
+  },
+  "load": {
+    "file": "postgres-concurrency-32-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 20,
+    "concurrency": 32,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "note": "32 concurrent callers, 10 pooled connections, PostgreSQL container limited to 4 CPUs; one scenario per process, 20 rounds",
+    "requests": [
+      {
+        "key": "page",
+        "label": "Page",
+        "note": null,
+        "rps": 11563,
+        "p95": 3.484,
+        "ms": 1.707
+      },
+      {
+        "key": "cursor",
+        "label": "Cursor page",
+        "note": "180,000 rows in",
+        "rps": 5746,
+        "p95": 8.254,
+        "ms": 3.489
+      },
+      {
+        "key": "ids",
+        "label": "1,000 ids filter",
+        "note": null,
+        "rps": 1741,
+        "p95": 23.151,
+        "ms": 14.656
+      },
+      {
+        "key": "count",
+        "label": "Page + exact count",
+        "note": null,
+        "rps": 729,
+        "p95": 66.888,
+        "ms": 26.741
+      },
+      {
+        "key": "relationSearch",
+        "label": "Search a relation + count",
+        "note": null,
+        "rps": 124,
+        "p95": 286.558,
+        "ms": 224.455
+      },
+      {
+        "key": "threeFacets",
+        "label": "3 facets",
+        "note": "one statement",
+        "rps": 74,
+        "p95": 476.008,
+        "ms": 269.778
+      },
+      {
+        "key": "filteredFacets",
+        "label": "Filtered facets",
+        "note": "each ignores its own filter",
+        "rps": 32,
+        "p95": 1043.939,
+        "ms": 590.633
+      },
+      {
+        "key": "fiveFacets",
+        "label": "5 facets",
+        "note": "two statements",
+        "rps": 19,
+        "p95": 2094.918,
+        "ms": 963.338
+      }
+    ]
+  },
+  "history": {
+    "file": "postgres-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 10,
+    "concurrency": 1,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "baseline": "2.4.1",
+    "requests": [
+      {
+        "key": "page",
+        "label": "Page",
+        "before": 39.946,
+        "after": 0.506
+      },
+      {
+        "key": "cursor",
+        "label": "Cursor page, 180,000 rows in",
+        "before": 20.114,
+        "after": 1.087
+      },
+      {
+        "key": "count",
+        "label": "Page + exact count",
+        "before": 62.46,
+        "after": 4.166
+      },
+      {
+        "key": "relationSearch",
+        "label": "Search a relation + count",
+        "before": 79.464,
+        "after": 16.798
+      },
+      {
+        "key": "threeFacets",
+        "label": "3 facets, one statement",
+        "before": 90.03,
+        "after": 24.758
+      },
+      {
+        "key": "fiveFacets",
+        "label": "5 facets, two statements",
+        "before": 195.045,
+        "after": 57.381
+      },
+      {
+        "key": "filteredFacets",
+        "label": "Filtered facets, each ignores its own filter",
+        "before": 138.224,
+        "after": 35.844
+      }
+    ]
+  },
+  "scans": {
+    "file": "postgres-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 10,
+    "concurrency": 1,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "requests": [
+      {
+        "label": "Sorted by date",
+        "pages": 1019.848,
+        "scan": 928.387
+      },
+      {
+        "label": "Sorted by customer",
+        "pages": 5176.817,
+        "scan": 853.256
+      }
+    ]
+  }
+}
