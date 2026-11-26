@@ -19,7 +19,9 @@ const MS_PER_ROW = 5;
 const HEIGHT = 260;
 
 const canvas = ref<HTMLCanvasElement | null>(null);
-const shown = reactive(ROWS.map((r) => ({ ms: r.before, ratio: 1 })));
+/* The server renders today's times, so readers without JavaScript (and crawlers) see current numbers.
+   The browser rewinds to 2.4.1 on mount, then counts down once the chart is in view. */
+const shown = reactive(ROWS.map((r) => ({ ms: r.after, ratio: r.before / r.after })));
 /* today's time leads; the pixel font's dot reads as a plus, so the point is drawn apart */
 const split = (ms: number) => (ms < 10 ? ms.toFixed(2) : ms.toFixed(1)).split(".");
 let ctx: CanvasRenderingContext2D | null = null;
@@ -55,6 +57,8 @@ onMounted(() => {
   if (prefersReducedMotion()) {
     running = true;
     start = -1e9;
+  } else {
+    ROWS.forEach((r, i) => Object.assign(shown[i]!, { ms: r.before, ratio: 1 }));
   }
 });
 onBeforeUnmount(() => window.removeEventListener("resize", resize));
