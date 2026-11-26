@@ -2,9 +2,9 @@ import type { Pool } from "pg";
 import { encodeCursor } from "../../packages/core/src/cursor.ts";
 import type { QueryRequestInput } from "../../packages/core/index.ts";
 import { baseRequest, type Bench, type FacetStrategy } from "./resources.ts";
+import type { Run } from "./measure.ts";
 
 export type CountMode = "none" | "exact" | "capped";
-type Run = () => Promise<unknown>;
 
 const rootFacets = (["status", "paid"] as const).map((key) => ({ key, limit: 50 }));
 const allFacets = [

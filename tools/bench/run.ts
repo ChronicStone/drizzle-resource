@@ -1,16 +1,13 @@
-import { mkdirSync, writeFileSync } from "node:fs";
+import { execFileSync } from "node:child_process";
+import { createHash } from "node:crypto";
+import { mkdirSync, readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { Client, Pool } from "pg";
-import { LOAD_THRESHOLD, TIMEOUT_MS, runsDir, sizeLabel } from "./config.ts";
-import {
-  addScopeIndex,
-  addTunedIndexes,
-  createBase,
-  createDenormalized,
-  dropSchema,
-} from "./dataset.ts";
-import { LoadMeter, measure, type Cell } from "./measure.ts";
-import { makeBench, type Bench } from "./resources.ts";
+import { HARNESS_VERSION, LOAD_THRESHOLD, TIMEOUT_MS, root, runsDir, sizeLabel } from "./config.ts";
+import { createBase, dropSchema } from "./dataset.ts";
+import { LoadMeter, measure, measurePaired, type Cell, type Run } from "./measure.ts";
+import { makeBench } from "./resources.ts";
+import { tune, type Tuning } from "./tuning.ts";
 import {
   COUNTED,
   DENORMALIZED,
@@ -19,34 +16,89 @@ import {
   LANDING,
   facetRun,
   rawScenarios,
-  type CountMode,
-  type Landing,
 } from "./scenarios.ts";
 
-export type ProfileName = "out-of-the-box" | "tuned" | "scoped" | "tuned-denormalized";
-export type RunRecord = {
-  profile: ProfileName;
-  rows: number;
-  startedAt: string;
-  load: { start: number; end: number; max: number };
-  highLoad: boolean;
-  environment?: { version: string; settings: Record<string, string> };
-  cells: Record<string, Cell>;
+export type ProfileName = "out-of-the-box" | "tuned" | "scoped";
+
+/** What a run was made with. `assemble` refuses to publish runs whose fingerprints differ. */
+export type Fingerprint = {
+  engineCommit: string;
+  /** True when packages/core had uncommitted changes. A final run refuses that. */
+  engineDirty: boolean;
+  harnessVersion: string;
+  /** Hash of the harness sources, so an edit without a version bump still shows. */
+  harnessHash: string;
+  postgres: string;
+  settings: Record<string, string>;
+  runtime: string;
 };
 
-export type RunOptions = { profiles: ProfileName[]; keep: boolean; log: (line: string) => void };
+/** One size, all setups, measured in the same minutes. */
+export type RunRecord = {
+  rows: number;
+  startedAt: string;
+  finishedAt: string;
+  load: { start: number; end: number; max: number };
+  fingerprint: Fingerprint;
+  /** What `checkIndexes` found and fixed for each tuned schema. */
+  tuning: Tuning[];
+  cells: Record<ProfileName, Record<string, Cell>>;
+};
 
-/** A landing cell: the whole engine call, plus what its page and count statements took. */
-function landingCell(cell: Cell, count: CountMode): Cell {
-  const out: Cell = { ...cell, countMode: count };
-  if (cell.stages)
-    out.parts = {
-      pageMs: cell.stages.ids ?? null,
-      countMs: cell.stages.count ?? null,
-      planMs: cell.stages.plan ?? null,
-    };
-  return out;
+export function harnessHash(): string {
+  const hash = createHash("sha256");
+  const dir = import.meta.dirname;
+  for (const file of readdirSync(dir)
+    .filter((f) => f.endsWith(".ts"))
+    .sort())
+    hash.update(file).update(readFileSync(join(dir, file)));
+  return hash.digest("hex").slice(0, 12);
 }
+
+const git = (...args: string[]) =>
+  execFileSync("git", args, { cwd: root, encoding: "utf8" }).trim();
+
+async function fingerprint(client: Client): Promise<Fingerprint> {
+  const settings = Object.fromEntries(
+    (
+      await client.query(
+        `select name, setting || coalesce(unit, '') as value from pg_settings
+         where name in ('shared_buffers','work_mem','max_wal_size','max_parallel_workers_per_gather','jit','effective_cache_size')`,
+      )
+    ).rows.map((row) => [row.name, row.value]),
+  ) as Record<string, string>;
+  return {
+    engineCommit: git("rev-parse", "HEAD"),
+    engineDirty: git("status", "--porcelain", "--", "packages/core").length > 0,
+    harnessVersion: HARNESS_VERSION,
+    harnessHash: harnessHash(),
+    postgres: ((await client.query("select version()")).rows[0].version as string).split(
+      " on ",
+    )[0]!,
+    settings,
+    runtime: `bun ${process.versions.bun}`,
+  };
+}
+
+export type RunOptions = { keep: boolean; log: (line: string) => void };
+
+const same = (a: Cell | undefined, extra: Record<string, unknown>): Cell => ({
+  ...(a ?? { method: "engine" }),
+  ...extra,
+});
+const withParts = (cell: Cell, countMode: string): Cell => ({
+  ...cell,
+  countMode,
+  ...(cell.stages
+    ? {
+        parts: {
+          pageMs: cell.stages.ids ?? null,
+          countMs: cell.stages.count ?? null,
+          planMs: cell.stages.plan ?? null,
+        },
+      }
+    : {}),
+});
 
 /** The count statement alone, as the engine reported it for a request with that count mode. */
 function countCell(cell: Cell): Cell {
@@ -55,7 +107,7 @@ function countCell(cell: Cell): Cell {
   if (ms === undefined) return { method: "engine", skipped: "the engine ran no count statement" };
   return {
     medianMs: ms,
-    p95Ms: cell.p95Ms,
+    maxMs: cell.maxMs,
     method: "engine (onQuery count stage)",
     n: cell.n,
     rowCount: cell.rowCount,
@@ -63,202 +115,191 @@ function countCell(cell: Cell): Cell {
   };
 }
 
-async function landing(
-  meter: LoadMeter,
-  bench: Bench,
-  spec: Landing,
-  count: CountMode,
-  cells: Record<string, Cell>,
-  key = spec.name,
-) {
-  meter.sample();
-  cells[`landing/${key}`] = landingCell(await measure(spec.run(bench, count)), count);
-}
-
-async function ootbCells(meter: LoadMeter, bench: Bench, pool: Pool, schema: string, rows: number) {
-  const cells: Record<string, Cell> = {};
-  for (const spec of await rawScenarios(pool, schema, rows)) {
-    meter.sample();
-    cells[spec.name] = await measure(spec.run(bench));
-  }
-  for (const spec of LANDING) await landing(meter, bench, spec, "exact", cells);
-  for (const facet of FACETS) {
-    meter.sample();
-    const cell = await measure(facetRun(bench, facet.facets, "default", false));
-    cells[facet.name] = cell;
-    cells[`landing/${facet.name}`] = {
-      ...cell,
-      note: "the engine's default: facets.splitAbove 100,000",
-    };
-  }
-  return cells;
-}
-
-async function tunedCells(
-  meter: LoadMeter,
-  bench: Bench,
-  pool: Pool,
-  schema: string,
-  rows: number,
-) {
-  const cells: Record<string, Cell> = {};
-  for (const spec of LANDING) await landing(meter, bench, spec, "capped", cells);
-  for (const spec of COUNTED) {
-    for (const mode of ["exact", "capped"] as const) {
-      meter.sample();
-      cells[`${spec.name}:count-${mode}`] = countCell(await measure(spec.run(bench, mode)));
-    }
-  }
-  const keep = new Set([
-    "page-without-count",
-    "deep-cursor-id-asc",
-    "deep-cursor-id-desc",
-    "id-selection-10",
-    "id-selection-10-page-only",
-    "id-selection-1000",
-    "id-selection-1000-page-only",
-  ]);
-  for (const spec of await rawScenarios(pool, schema, rows)) {
-    if (!keep.has(spec.name)) continue;
-    meter.sample();
-    cells[spec.name] = await measure(spec.run(bench));
-  }
-  for (const facet of FACETS) {
-    const variants: Record<string, Cell> = {};
-    for (const variant of FACET_VARIANTS) {
-      meter.sample();
-      variants[variant.key] = await measure(
-        facetRun(bench, facet.facets, variant.strategy, variant.sequential),
-      );
-      cells[`${facet.name}/${variant.key}`] = variants[variant.key]!;
-    }
-  }
-  return cells;
-}
-
-async function scopedCells(
-  meter: LoadMeter,
-  bench: Bench,
-  pool: Pool,
-  schema: string,
-  rows: number,
-) {
-  const cells: Record<string, Cell> = {};
-  const byName = Object.fromEntries(LANDING.map((l) => [l.name, l]));
-  await landing(meter, bench, byName["page-plus-count"]!, "capped", cells);
-  await landing(meter, bench, byName["page-plus-count"]!, "exact", cells, "page-plus-count-exact");
-  await landing(meter, bench, byName["relation-search-plus-count"]!, "capped", cells);
-  for (const facet of FACETS.filter((f) => f.name === "two-root-facets")) {
-    meter.sample();
-    cells[`landing/${facet.name}`] = await measure(facetRun(bench, facet.facets, "default", false));
-  }
-  const keep = new Set(["page-without-count", "page-exact-count", "relation-search-page"]);
-  for (const spec of await rawScenarios(pool, schema, rows)) {
-    if (!keep.has(spec.name)) continue;
-    meter.sample();
-    cells[spec.name] = await measure(spec.run(bench));
-  }
-  return cells;
-}
-
-async function denormalizedCells(meter: LoadMeter, bench: Bench) {
-  const cells: Record<string, Cell> = {};
-  await landing(meter, bench, DENORMALIZED, "capped", cells);
-  for (const mode of ["exact", "capped"] as const) {
-    meter.sample();
-    cells[`sort-customer-name-denormalized:count-${mode}`] = countCell(
-      await measure(DENORMALIZED.run(bench, mode)),
-    );
-  }
-  return cells;
-}
-
-/** Builds one size, runs the selected profiles on it, saves one run file per profile, drops the schemas. */
-export async function runSize(
-  url: string,
-  rows: number,
-  options: RunOptions,
-): Promise<RunRecord[]> {
+/**
+ * Builds one size as four schemas that live side by side (out of the box, tuned, tuned with the
+ * copied name, scoped), tunes three of them with `checkIndexes`, and measures every request
+ * against all setups in turn, so every ratio comes from the same minutes. Four copies of the data
+ * cost disk (see the README) and share the container's memory, so each call finds the others'
+ * pages evicted; that holds for both arms of every pair.
+ */
+export async function runSize(url: string, rows: number, options: RunOptions): Promise<RunRecord> {
   const label = sizeLabel(rows);
-  const schema = `scale_${label}`;
-  const denormSchema = `${schema}_d`;
+  const names = {
+    ootb: `scale_${label}`,
+    tuned: `scale_${label}_t`,
+    denorm: `scale_${label}_d`,
+    scoped: `scale_${label}_s`,
+  };
   const client = new Client({ connectionString: url });
   await client.connect();
+  // No statement timeout while building: index builds at 10 million rows take minutes.
+  const setupPool = new Pool({ connectionString: url, max: 2 });
   const pool = new Pool({ connectionString: url, max: 10, statement_timeout: TIMEOUT_MS + 1_000 });
-  const want = (name: ProfileName) => options.profiles.includes(name);
-  const records: RunRecord[] = [];
-  const environment = {
-    version: (await client.query("select version()")).rows[0].version as string,
-    settings: Object.fromEntries(
-      (
-        await client.query(
-          `select name, setting || coalesce(unit, '') as value from pg_settings
-         where name in ('shared_buffers','work_mem','max_wal_size','max_parallel_workers_per_gather','jit','effective_cache_size')`,
-        )
-      ).rows.map((row) => [row.name, row.value]),
-    ) as Record<string, string>,
-  };
-  const record = async (
-    profile: ProfileName,
-    build: (meter: LoadMeter) => Promise<Record<string, Cell>>,
-  ) => {
+  const startedAt = new Date().toISOString();
+  try {
+    for (const [key, schema] of Object.entries(names)) {
+      options.log(`${label}: creating ${schema} (${rows.toLocaleString("en-US")} orders)`);
+      await createBase(client, schema, rows, key === "denorm");
+    }
+    options.log(`${label}: checkIndexes on the tuned schemas`);
+    const tuning: Tuning[] = [
+      await tune(setupPool, names.tuned, { scoped: false, denormalized: false }, "orders"),
+      await tune(
+        setupPool,
+        names.denorm,
+        { scoped: false, denormalized: true },
+        "orders, name copied onto the order",
+      ),
+      await tune(setupPool, names.scoped, { scoped: false, denormalized: false }, "orders"),
+      // The check says the default sort has no index that starts with the scope's column, in words
+      // only; the index it describes is (orgId, createdAt, id).
+      await tune(
+        setupPool,
+        names.scoped,
+        { scoped: true, denormalized: false },
+        "orders scoped to orgId 42",
+        [
+          {
+            rule: "default-sort-unindexed",
+            sql: `create index on "${names.scoped}".orders ("orgId", "createdAt", id)`,
+          },
+        ],
+      ),
+    ];
+    for (const t of tuning)
+      options.log(
+        `  ${t.schema} (${t.resource}): ${t.applied.length} statements applied, ${t.byHand.length} by hand, no error left: ${t.noErrorRemains}`,
+      );
+
+    const benches = {
+      ootb: makeBench(pool, names.ootb),
+      tuned: makeBench(pool, names.tuned),
+      denorm: makeBench(pool, names.denorm, { denormalized: true }),
+      scoped: makeBench(pool, names.scoped, { scoped: true }),
+    };
+    const cells: RunRecord["cells"] = { "out-of-the-box": {}, tuned: {}, scoped: {} };
     const meter = new LoadMeter();
-    const startedAt = new Date().toISOString();
     meter.sample();
-    options.log(`  ${profile} at ${label} rows, load ${meter.start.toFixed(1)}`);
-    const cells = await build(meter);
+    options.log(`${label}: measuring, load ${meter.start.toFixed(1)}`);
+
+    // Out of the box, every request the harness knows: no pair, nothing to compare it with.
+    for (const spec of await rawScenarios(pool, names.ootb, rows)) {
+      meter.sample();
+      cells["out-of-the-box"][spec.name] = await measure(spec.run(benches.ootb));
+    }
+
+    // The landing requests, each against every setup that applies, in turn.
+    const paired = async (
+      key: string,
+      arms: Array<{ profile: ProfileName; key?: string; run: Run; countMode?: string }>,
+    ) => {
+      meter.sample();
+      const result = await measurePaired(arms.map((a, i) => ({ name: String(i), run: a.run })));
+      arms.forEach((arm, i) => {
+        const cell = result[String(i)]!;
+        cells[arm.profile][arm.key ?? `landing/${key}`] = arm.countMode
+          ? withParts(cell, arm.countMode)
+          : cell;
+      });
+    };
+    for (const spec of LANDING) {
+      const arms: Parameters<typeof paired>[1] = [
+        { profile: "out-of-the-box", run: spec.run(benches.ootb, "exact"), countMode: "exact" },
+        spec.name === "sort-customer-name-plus-count"
+          ? {
+              profile: "tuned",
+              key: `landing/${DENORMALIZED.name}`,
+              run: DENORMALIZED.run(benches.denorm, "capped"),
+              countMode: "capped",
+            }
+          : { profile: "tuned", run: spec.run(benches.tuned, "capped"), countMode: "capped" },
+      ];
+      if (spec.name === "page-plus-count") {
+        arms.push({
+          profile: "scoped",
+          run: spec.run(benches.scoped, "capped"),
+          countMode: "capped",
+        });
+        arms.push({
+          profile: "scoped",
+          key: "landing/page-plus-count-exact",
+          run: spec.run(benches.scoped, "exact"),
+          countMode: "exact",
+        });
+      }
+      if (spec.name === "relation-search-plus-count")
+        arms.push({
+          profile: "scoped",
+          run: spec.run(benches.scoped, "capped"),
+          countMode: "capped",
+        });
+      await paired(spec.name, arms);
+    }
+    for (const facet of FACETS) {
+      const arms: Parameters<typeof paired>[1] = [
+        { profile: "out-of-the-box", run: facetRun(benches.ootb, facet.facets, "default", false) },
+        // The tuned setting is chosen before measuring: one statement per facet, on the pool.
+        { profile: "tuned", run: facetRun(benches.tuned, facet.facets, "split", false) },
+      ];
+      if (facet.name === "two-root-facets")
+        arms.push({
+          profile: "scoped",
+          run: facetRun(benches.scoped, facet.facets, "default", false),
+        });
+      await paired(facet.name, arms);
+      cells.tuned[`landing/${facet.name}`] = {
+        ...cells.tuned[`landing/${facet.name}`]!,
+        setting: "facets.splitAbove: 0",
+        uses: "separate/concurrent",
+      };
+      cells["out-of-the-box"][`landing/${facet.name}`] = {
+        ...cells["out-of-the-box"][`landing/${facet.name}`]!,
+        note: "the engine's default: facets.splitAbove 100,000",
+      };
+    }
+
+    // Informational, on the tuned schema, no verdict: the count statement alone, and the four ways to run facets.
+    for (const spec of COUNTED)
+      for (const mode of ["exact", "capped"] as const) {
+        meter.sample();
+        cells.tuned[`${spec.name}:count-${mode}`] = countCell(
+          await measure(spec.run(benches.tuned, mode)),
+        );
+      }
+    for (const facet of FACETS)
+      for (const variant of FACET_VARIANTS) {
+        meter.sample();
+        cells.tuned[`${facet.name}/${variant.key}`] = same(
+          await measure(
+            facetRun(benches.tuned, facet.facets, variant.strategy, variant.sequential),
+          ),
+          { informational: true },
+        );
+      }
     meter.sample();
-    const run: RunRecord = {
-      profile,
+
+    const record: RunRecord = {
       rows,
       startedAt,
+      finishedAt: new Date().toISOString(),
       load: { start: meter.start, end: meter.end, max: meter.max },
-      highLoad: meter.max > LOAD_THRESHOLD,
-      environment,
+      fingerprint: await fingerprint(client),
+      tuning,
       cells,
     };
     mkdirSync(runsDir, { recursive: true });
     writeFileSync(
-      join(runsDir, `${profile}-${label}-${startedAt.replaceAll(":", "")}.json`),
-      JSON.stringify(run, null, 1),
+      join(runsDir, `run-${label}-${startedAt.replaceAll(":", "")}.json`),
+      JSON.stringify(record, null, 1),
     );
     options.log(
-      `  ${profile} done, load max ${meter.max.toFixed(1)}${run.highLoad ? " (HIGH)" : ""}`,
+      `${label}: done, load max ${meter.max.toFixed(1)}${meter.max > LOAD_THRESHOLD ? ` (above ${LOAD_THRESHOLD})` : ""}`,
     );
-    records.push(run);
-  };
-  try {
-    options.log(`${label}: creating ${rows.toLocaleString("en-US")} orders`);
-    await createBase(client, schema, rows);
-    if (want("out-of-the-box"))
-      await record("out-of-the-box", (meter) =>
-        ootbCells(meter, makeBench(pool, schema), pool, schema, rows),
-      );
-    if (want("tuned") || want("scoped") || want("tuned-denormalized"))
-      await addTunedIndexes(client, schema);
-    if (want("tuned"))
-      await record("tuned", (meter) =>
-        tunedCells(meter, makeBench(pool, schema), pool, schema, rows),
-      );
-    if (want("scoped")) {
-      await addScopeIndex(client, schema);
-      await record("scoped", (meter) =>
-        scopedCells(meter, makeBench(pool, schema, { scoped: true }), pool, schema, rows),
-      );
-    }
-    if (want("tuned-denormalized")) {
-      await createDenormalized(client, schema, denormSchema);
-      await record("tuned-denormalized", (meter) =>
-        denormalizedCells(meter, makeBench(pool, denormSchema, { denormalized: true })),
-      );
-    }
+    return record;
   } finally {
     await pool.end();
-    if (!options.keep) {
-      await dropSchema(client, schema);
-      await dropSchema(client, denormSchema);
-    }
+    await setupPool.end();
+    if (!options.keep) for (const schema of Object.values(names)) await dropSchema(client, schema);
     await client.end();
   }
-  return records;
 }
