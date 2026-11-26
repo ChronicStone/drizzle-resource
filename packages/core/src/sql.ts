@@ -56,6 +56,9 @@ import {
 } from "./postgres.js";
 import { isAboveCap, skippedFacets, timedOutFacet } from "./capped.js";
 
+/** The indexed search plan gets this many times `search.planBudget` before the ordinary plan returns. */
+const indexedBudgetFactor = 4;
+
 function isExactCount(count: QueryPageCount) {
   return count.count === "exact" || (count.count === "capped" && count.exact);
 }
@@ -780,8 +783,13 @@ export function createQueryResourceUtils<
   /**
    * Run the first statement of a search that has no exact count. The ordinary plan gets
    * `search.planBudget` milliseconds: a common term finishes within it and costs what it always
-   * cost, while a rare term makes PostgreSQL walk the whole sort index, runs out of budget and is
-   * retried with the indexed plan, which then holds for every later statement of the request.
+   * cost. A rare term makes PostgreSQL walk the whole sort index, runs out of budget and is retried
+   * with the indexed plan, which then holds for every later statement of the request.
+   *
+   * A busy server can also make a common term miss the budget, and the indexed plan is the wrong
+   * plan for a common term. So the indexed attempt is budgeted too, a few times larger. If it
+   * misses as well, the request goes back to the ordinary plan with no budget, which bounds the
+   * worst case to both budgets plus the ordinary time.
    */
   async function plannedSearch<TResult>(
     request: QueryRequest,
@@ -789,11 +797,15 @@ export function createQueryResourceUtils<
     run: (db: QueryEngineDb) => Promise<TResult>,
   ): Promise<TResult> {
     if (!undecidedSearches.delete(request)) return run(db);
-    const outcome = await withStatementTimeout(db, resource.queryConfig.search.planBudget, run, {
+    const budget = resource.queryConfig.search.planBudget;
+    const ordinary = await withStatementTimeout(db, budget, run, { capToCurrent: true });
+    if (!ordinary.timedOut) return ordinary.value;
+    indexedSearchRequests.add(request);
+    const indexed = await withStatementTimeout(db, budget * indexedBudgetFactor, run, {
       capToCurrent: true,
     });
-    if (!outcome.timedOut) return outcome.value;
-    indexedSearchRequests.add(request);
+    if (!indexed.timedOut) return indexed.value;
+    indexedSearchRequests.delete(request);
     return run(db);
   }
 

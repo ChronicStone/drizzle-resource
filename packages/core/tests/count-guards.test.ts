@@ -166,6 +166,7 @@ async function ensureTrigramExtension() {
 async function withBlockedDocs<T>(
   run: (release: () => Promise<void>) => Promise<T>,
   table = `"${namespace.schemaName}"."docs"`,
+  holdMs = 600,
 ) {
   const locker = await client.connect();
   await locker.query("begin");
@@ -177,7 +178,7 @@ async function withBlockedDocs<T>(
     // Let a statement reach the lock, then keep holding it well past every timeout in these
     // tests, so a slow machine cannot release the table before a timeout fires.
     await waitForLockWaiters(1, 5000);
-    await new Promise((resolve) => setTimeout(resolve, 600));
+    await new Promise((resolve) => setTimeout(resolve, holdMs));
     await locker.query("rollback");
     locker.release();
   };
@@ -821,7 +822,7 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       relations: planRelations,
     }).defineResource("notes", {
       relations: { owner: true },
-      query: { search: { allowed: ["body", "owner.name"], planBudget: 100 } },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 300 } },
     });
     const roomySearch = createQueryEngine({
       db: planDb,
@@ -832,13 +833,26 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       query: { search: { allowed: ["body", "owner.name"], planBudget: 30_000 } },
     });
     const blockedNotes = () => `"${plansNamespace.schemaName}"."notes"`;
-    const afterBlocked = (run: () => Promise<unknown>) =>
-      withBlockedDocs(async (release) => {
-        const pending = run();
-        await new Promise((resolve) => setTimeout(resolve, 400));
-        await release();
-        return pending;
-      }, blockedNotes());
+    const afterBlocked = (run: () => Promise<unknown>, holdMs = 600, settleMs = 400) =>
+      withBlockedDocs(
+        async (release) => {
+          const pending = run();
+          await new Promise((resolve) => setTimeout(resolve, settleMs));
+          await release();
+          return pending;
+        },
+        blockedNotes(),
+        holdMs,
+      );
+    // A budget of 100 ms gives the indexed attempt 400 ms.
+    const tightSearch = createQueryEngine({
+      db: planDb,
+      schema: planSchema,
+      relations: planRelations,
+    }).defineResource("notes", {
+      relations: { owner: true },
+      query: { search: { allowed: ["body", "owner.name"], planBudget: 100 } },
+    });
 
     beforeAll(async () => {
       await ensureTrigramExtension();
@@ -897,6 +911,38 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
       expect(pages).toHaveLength(2);
       expect(pages[0]).not.toContain(" union ");
+      expect(pages[1]).toContain(" union ");
+    });
+
+    it("goes back to the ordinary plan when the indexed attempt misses its budget too", async () => {
+      // A busy server: every statement waits for the table past both budgets (100 ms, then 400 ms).
+      planStatements.length = 0;
+      const started = performance.now();
+      const result = (await afterBlocked(
+        () => tightSearch.queryIds({ request: searching("common", "none") }),
+        1500,
+      )) as Awaited<ReturnType<typeof tightSearch.queryIds>>;
+      expect(result.ids).toEqual([1, 2, 3, 4, 5]);
+      expect(result.pageInfo).toMatchObject({ count: "none", hasNextPage: true });
+      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
+      expect(pages).toHaveLength(3);
+      expect(pages[0]).not.toContain(" union ");
+      expect(pages[1]).toContain(" union ");
+      expect(pages[2]).not.toContain(" union ");
+      // Bounded: the two budgets plus the wait for the table, not an unbounded indexed plan.
+      expect(performance.now() - started).toBeLessThan(10_000);
+    });
+
+    it("keeps the indexed plan when the indexed attempt fits its larger budget", async () => {
+      planStatements.length = 0;
+      const result = (await afterBlocked(
+        () => tightSearch.queryIds({ request: searching("zebra", "none") }),
+        250,
+        0,
+      )) as Awaited<ReturnType<typeof tightSearch.queryIds>>;
+      expect(result.ids).toEqual([5, 600, 12000]);
+      const pages = planStatements.filter((query) => query.includes('"notes"."id"'));
+      expect(pages).toHaveLength(2);
       expect(pages[1]).toContain(" union ");
     });
 
