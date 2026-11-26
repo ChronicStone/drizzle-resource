@@ -785,11 +785,15 @@ export function createQueryResourceUtils<
    * statement makes its own choice, because what one statement learns says nothing about the
    * next: a capped count stops at its cap, and the page behind it still has to sort every match.
    *
-   * 1. The ordinary plan gets `search.planBudget` milliseconds. A common term finishes within it
-   *    and costs what it always cost. A rare term makes PostgreSQL walk the whole sort index.
+   * 1. The ordinary plan runs with `search.planBudget`. A common term finishes within it and costs
+   *    what it always cost. A rare term makes PostgreSQL walk the whole sort index.
    * 2. On a miss, the indexed plan gets `indexedBudgetFactor` times the budget. A busy server can
    *    make a common term miss the first budget, and the indexed plan is the wrong plan for it.
    * 3. If that misses too, the ordinary plan runs with no budget.
+   *
+   * The page starts at step 2 (`first: "indexed"`) when the capped count before it came back under
+   * its cap: the count is then exact and small, so the indexed plan reads at most that many
+   * matches. A count that hit the cap says the matches are common, and the page starts at step 1.
    *
    * The worst case for one statement is both budgets plus the ordinary time. The indexed attempt
    * runs on a copy of the request, so no other statement of the request sees its plan.
@@ -798,13 +802,16 @@ export function createQueryResourceUtils<
     request: QueryRequest,
     db: QueryEngineDb,
     run: (db: QueryEngineDb, planned: QueryRequest) => Promise<TResult>,
+    first: "ordinary" | "indexed" = "ordinary",
   ): Promise<TResult> {
     if (!budgetedSearches.has(request)) return run(db, request);
     const budget = resource.queryConfig.search.planBudget;
-    const ordinary = await withStatementTimeout(db, budget, (d) => run(d, request), {
-      capToCurrent: true,
-    });
-    if (!ordinary.timedOut) return ordinary.value;
+    if (first === "ordinary") {
+      const ordinary = await withStatementTimeout(db, budget, (d) => run(d, request), {
+        capToCurrent: true,
+      });
+      if (!ordinary.timedOut) return ordinary.value;
+    }
     const indexedRequest = { ...request };
     indexedSearchRequests.add(indexedRequest);
     const indexed = await withStatementTimeout(
@@ -1234,7 +1241,10 @@ export function createQueryResourceUtils<
         .limit(pageSize + (needsLookahead ? 1 : 0))
         .offset(offset)) as any[];
     };
-    const queriedRows = await plannedSearch(request, database, fetchPage);
+    // A capped count that fits under its cap is exact and small, so the indexed plan reads at most
+    // that many matches. A count that hit the cap says the matches are common: walk the sort index.
+    const pageFirst = count.count === "capped" && count.exact ? "indexed" : "ordinary";
+    const queriedRows = await plannedSearch(request, database, fetchPage, pageFirst);
     if (inferCount) count = { count: "exact", rowCount: queriedRows.length };
     const hasNextPage =
       request.pagination.mode === "offset" && isExactCount(count)

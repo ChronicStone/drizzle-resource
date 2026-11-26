@@ -1021,6 +1021,46 @@ describe.skipIf(!connectionString)("count modes and guards", () => {
       expect(events).toEqual(["t300", "C:O", "t1200", "C:U", "t300", "P:O", "t1200", "P:U", "P:O"]);
     });
 
+    it("starts the page on the indexed plan when the capped count fits under its cap", async () => {
+      events.length = 0;
+      const result = (await afterBlocked(() =>
+        midSearch.query({ request: searching("zebra", "capped") }),
+      )) as Awaited<ReturnType<typeof midSearch.query>>;
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 3, exact: true });
+      expect(result.rows.map((row) => row.id)).toEqual([5, 600, 12000]);
+      // The count pays the ordinary attempt once; the page skips it and runs the indexed plan.
+      expect(events).toEqual(["t300", "C:O", "t1200", "C:U", "t1200", "P:U"]);
+    });
+
+    it("starts the page on the ordinary plan when the capped count hit its cap", async () => {
+      events.length = 0;
+      const result = await roomySearch.query({ request: searching("common", "capped") });
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 10_000, exact: false });
+      expect(events).toEqual(["t30000", "C:O", "t30000", "P:O"]);
+    });
+
+    it("bounds the indexed page too: past 4x the budget it returns to the ordinary plan", async () => {
+      events.length = 0;
+      const first = await lockNotes();
+      const pending = midSearch.query({ request: searching("zebra", "capped") });
+      await waitForLockWaiters(1, 5000);
+      await wait(600); // the count's ordinary attempt (300 ms) has missed; its indexed one waits
+      const second = await client.connect();
+      await second.query("begin");
+      const acquiring = second.query(`lock table ${blockedNotes()} in access exclusive mode`);
+      await waitForLockWaiters(2, 5000);
+      await first.query("rollback");
+      first.release();
+      await acquiring;
+      await wait(2200); // past the page's indexed budget (1,200 ms)
+      await second.query("rollback");
+      second.release();
+      const result = await pending;
+      expect(result.pageInfo).toMatchObject({ count: "capped", rowCount: 3, exact: true });
+      expect(result.rows.map((row) => row.id)).toEqual([5, 600, 12000]);
+      expect(events).toEqual(["t300", "C:O", "t1200", "C:U", "t1200", "P:U", "P:O"]);
+    });
+
     it("does not let a smaller count timeout leak the indexed plan into the page", async () => {
       events.length = 0;
       const result = (await afterBlocked(
