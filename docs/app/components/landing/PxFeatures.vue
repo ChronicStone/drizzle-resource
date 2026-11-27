@@ -41,7 +41,7 @@ const TILES = [
     id: "summary",
     title: "Totals",
     text: "Your own aggregates over every matching row, typed from the expression.",
-    to: "/resource/summaries",
+    to: "/query/summaries",
   },
   {
     id: "scope",
@@ -71,13 +71,13 @@ const TILES = [
     id: "types",
     title: "Typed paths",
     text: "Field paths, operators and rows are typed from your Drizzle schema.",
-    to: "/serve/typed-clients",
+    to: "/validation/typed-clients",
   },
   {
     id: "validation",
     title: "Validation",
     text: "A Zod schema for the request body, generated from the resource.",
-    to: "/serve/validation",
+    to: "/validation/schemas",
   },
 ] as const;
 
