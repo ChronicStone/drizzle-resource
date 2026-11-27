@@ -109,6 +109,9 @@ async function fingerprint(client: Client, database: DatabaseIdentity): Promise<
   };
 }
 
+/** Every session of this run says so, so an interrupt can find them. */
+export const APPLICATION = `drizzle-resource-bench-${process.pid}`;
+
 export type RunOptions = { keep: boolean; database: DatabaseIdentity; log: (line: string) => void };
 
 /** Schemas this process created, so an interrupt can drop them from a database it does not own. */
@@ -118,6 +121,11 @@ export async function dropCreated(url: string) {
   const client = new Client({ connectionString: url });
   await client.connect();
   try {
+    // Stop what this run still has in flight, or the drops wait for it.
+    await client.query(
+      "select pg_cancel_backend(pid) from pg_stat_activity where application_name = $1 and pid <> pg_backend_pid()",
+      [APPLICATION],
+    );
     for (const schema of createdSchemas) await dropSchema(client, schema);
     createdSchemas.clear();
   } finally {
@@ -171,11 +179,16 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
     denorm: `scale_${label}_d`,
     scoped: `scale_${label}_s`,
   };
-  const client = new Client({ connectionString: url });
+  const client = new Client({ connectionString: url, application_name: APPLICATION });
   await client.connect();
   // No statement timeout while building: index builds at 10 million rows take minutes.
-  const setupPool = new Pool({ connectionString: url, max: 2 });
-  const pool = new Pool({ connectionString: url, max: 10, statement_timeout: TIMEOUT_MS + 1_000 });
+  const setupPool = new Pool({ connectionString: url, max: 2, application_name: APPLICATION });
+  const pool = new Pool({
+    connectionString: url,
+    max: 10,
+    statement_timeout: TIMEOUT_MS + 1_000,
+    application_name: APPLICATION,
+  });
   const startedAt = new Date().toISOString();
   const tuning: Tuning[] = [];
   const cells: RunRecord["cells"] = { "out-of-the-box": {}, tuned: {}, scoped: {} };

@@ -23,6 +23,12 @@
     },
     "engineNote": "snapshot of drizzle-resource packages/core at that commit, read only; the engine on main has no capped count, so capped counts are hand SQL",
     "tuning": null,
+    "databaseHost": null,
+    "method": [
+      "Each request runs through the engine (`engine`), or as the SQL statement the engine would send, timed with `psql` inside the database container (`hand-sql`). The footnote under each table says which. Hand SQL leaves out the network and JavaScript, so compare numbers measured the same way.",
+      "Tuned values for requests with a count add two medians: the engine's page statement without a count, and the capped count statement run as SQL. The engine measured predates capped counts, so the count could not run through it. The facet comparison is SQL too: the engine of this run shares one `GROUPING SETS` statement between root facets.",
+      "Numbers are warm-cache medians after one warm-up call; a cold first request is slower."
+    ],
     "nullPairs": []
   },
   "sizes": [200000, 1000000, 10000000],
@@ -33,6 +39,7 @@
       "outOfTheBox": {
         "scenario": "page-without-count",
         "ms": [0.266, 0.378, 0.304],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -44,6 +51,7 @@
       "outOfTheBox": {
         "scenario": "deep-cursor-id-desc",
         "ms": [0.569, 0.662, 1.006],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -55,6 +63,7 @@
       "outOfTheBox": {
         "scenario": "id-selection-10-page-only",
         "ms": [0.291, 0.285, 0.324],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -66,6 +75,7 @@
       "outOfTheBox": {
         "scenario": "landing/page-plus-count",
         "ms": [14.239, 17.673, 112.045],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -73,6 +83,7 @@
         "how": "capped count",
         "scenario": "landing/page-plus-count",
         "ms": [0.542, 0.878, 1.025],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -85,6 +96,7 @@
       "outOfTheBox": {
         "scenario": "landing/sort-customer-name-plus-count",
         "ms": [23.095, 78.428, 764.264],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -92,6 +104,7 @@
         "how": "name copied onto orders, capped count",
         "scenario": "landing/sort-customer-name-denormalized-plus-count",
         "ms": [0.769, 0.866, 0.938],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -104,13 +117,15 @@
       "outOfTheBox": {
         "scenario": "landing/two-root-facets",
         "ms": [26.011, 108.264, 1306.557],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "tuned": {
-        "how": "one statement per facet (facets.splitAbove: 0)",
+        "how": "fastest of shared and separate statements",
         "scenario": "landing/two-root-facets",
         "ms": [15.072, 66.562, 431.997],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -123,13 +138,15 @@
       "outOfTheBox": {
         "scenario": "landing/four-mixed-facets",
         "ms": [81.25, 187.65, 1505.091],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "tuned": {
-        "how": "one statement per facet (facets.splitAbove: 0)",
+        "how": "fastest of shared and separate statements",
         "scenario": "landing/four-mixed-facets",
         "ms": [43.457, 161.518, 1104.96],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -142,6 +159,7 @@
       "outOfTheBox": {
         "scenario": "landing/search-ord-plus-count",
         "ms": [193.79, 878.272, 6862.738],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -149,6 +167,7 @@
         "how": "capped count",
         "scenario": "landing/search-ord-plus-count",
         "ms": [4.182, 4.269, 4.858],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -161,6 +180,7 @@
       "outOfTheBox": {
         "scenario": "landing/search-customer-plus-count",
         "ms": [203.971, 832.338, 10027.173],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -168,6 +188,7 @@
         "how": "capped count",
         "scenario": "landing/search-customer-plus-count",
         "ms": [12.238, 13.328, 29.126],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -180,6 +201,7 @@
       "outOfTheBox": {
         "scenario": "landing/relation-search-plus-count",
         "ms": [19.157, 28.438, 182.299],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -187,6 +209,7 @@
         "how": "capped count",
         "scenario": "landing/relation-search-plus-count",
         "ms": [1.423, 1.193, 0.868],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -199,6 +222,7 @@
       "outOfTheBox": {
         "scenario": "landing/search-rare-reference-plus-count",
         "ms": [6.224, 19.731, 109.253],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -206,6 +230,7 @@
         "how": "capped count",
         "scenario": "landing/search-rare-reference-plus-count",
         "ms": [4.893, 184.867, 2082.816],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "worse", "worse"],
@@ -218,6 +243,7 @@
       "outOfTheBox": {
         "scenario": "landing/search-rare-customer-plus-count",
         "ms": [3.779, 3.79, 4.056],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -225,6 +251,7 @@
         "how": "capped count",
         "scenario": "landing/search-rare-customer-plus-count",
         "ms": [3.071, 197.184, 224.44],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "worse", "worse"],
@@ -237,6 +264,7 @@
       "outOfTheBox": {
         "scenario": "wide-search-customer-none",
         "ms": [8.373, 18.067, 7.594],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -248,6 +276,7 @@
       "outOfTheBox": {
         "scenario": "wide-search-customer-exact",
         "ms": [227.54, 858.39, 8206.744],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -259,6 +288,7 @@
       "outOfTheBox": {
         "scenario": "wide-search-19999-none",
         "ms": [143.013, 605.933, 531.153],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -270,6 +300,7 @@
       "outOfTheBox": {
         "scenario": "wide-search-not-here-none",
         "ms": [142.478, 725.898, 7100.383],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
@@ -282,12 +313,14 @@
       "outOfTheBox": {
         "scenario": "landing/page-plus-count",
         "ms": [14.239, 17.673, 112.045],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "scoped": {
         "scenario": "landing/page-plus-count-exact",
         "ms": [0.787, 1.109, 5.455],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine",
         "verdict": ["improved", "improved", "improved"],
@@ -299,12 +332,14 @@
       "outOfTheBox": {
         "scenario": "landing/page-plus-count",
         "ms": [14.239, 17.673, 112.045],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "scoped": {
         "scenario": "landing/page-plus-count",
         "ms": [0.847, 1.036, 1.45],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -316,12 +351,14 @@
       "outOfTheBox": {
         "scenario": "landing/relation-search-plus-count",
         "ms": [19.157, 28.438, 182.299],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "scoped": {
         "scenario": "landing/relation-search-plus-count",
         "ms": [6.544, 10.874, 46.878],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine+hand-sql",
         "verdict": ["improved", "improved", "improved"],
@@ -333,12 +370,14 @@
       "outOfTheBox": {
         "scenario": "landing/two-root-facets",
         "ms": [26.011, 108.264, 1306.557],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine"
       },
       "scoped": {
         "scenario": "landing/two-root-facets",
         "ms": [1.282, 7.858, 109.226],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "engine",
         "verdict": ["improved", "improved", "improved"],
@@ -352,12 +391,14 @@
       "exact": {
         "scenario": "page-exact-count:count-exact",
         "ms": [3.22, 16.445, 98.895],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "page-exact-count:count-capped",
         "ms": [0.266, 0.573, 0.348],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -368,12 +409,14 @@
       "exact": {
         "scenario": "cross-table-search-ord:count-exact",
         "ms": [56.754, 289.28, 3297.88],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "cross-table-search-ord:count-capped",
         "ms": [3.168, 3.118, 3.349],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -384,12 +427,14 @@
       "exact": {
         "scenario": "cross-table-search-customer:count-exact",
         "ms": [72.781, 233.682, 2714.711],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "cross-table-search-customer:count-capped",
         "ms": [7.096, 7.958, 12.539],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -400,12 +445,14 @@
       "exact": {
         "scenario": "relation-search-page:count-exact",
         "ms": [8.201, 34.199, 161.79],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "relation-search-page:count-capped",
         "ms": [1.014, 0.774, 0.453],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -416,12 +463,14 @@
       "exact": {
         "scenario": "cross-table-search-customer-19999:count-exact",
         "ms": [0.525, 0.654, 1.592],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "cross-table-search-customer-19999:count-capped",
         "ms": [0.506, 0.599, 1.438],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -432,12 +481,14 @@
       "exact": {
         "scenario": "cross-table-search-ORD-00199999:count-exact",
         "ms": [1.762, 6.796, 59.045],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "cross-table-search-ORD-00199999:count-capped",
         "ms": [1.717, 6.704, 61.198],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -448,12 +499,14 @@
       "exact": {
         "scenario": "id-selection-1000:count-exact",
         "ms": [0.419, 0.994, 0.409],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "id-selection-1000:count-capped",
         "ms": [0.419, 0.846, 0.427],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -464,12 +517,14 @@
       "exact": {
         "scenario": "wide-search-not-here-exact:count-exact",
         "ms": [167.313, 799.241, 6405.989],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "capped": {
         "scenario": "wide-search-not-here-exact:count-capped",
         "ms": [135.772, 789.701, 7238.067],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
@@ -481,24 +536,28 @@
       "grouping-sets/sequential": {
         "scenario": "two-root-facets/grouping-sets/sequential",
         "ms": [24.413, 118.253, 1059.511],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "grouping-sets/concurrent": {
         "scenario": "two-root-facets/grouping-sets/concurrent",
         "ms": [25.829, 122.392, 1053.221],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "separate/sequential": {
         "scenario": "two-root-facets/separate/sequential",
         "ms": [25.519, 99.335, 431.997],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "separate/concurrent": {
         "scenario": "two-root-facets/separate/concurrent",
         "ms": [15.072, 66.562, 461.38],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       }
@@ -507,24 +566,28 @@
       "grouping-sets/sequential": {
         "scenario": "four-mixed-facets/grouping-sets/sequential",
         "ms": [105.032, 289.646, 2362.087],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "grouping-sets/concurrent": {
         "scenario": "four-mixed-facets/grouping-sets/concurrent",
         "ms": [84.177, 259.029, 1332.738],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "separate/sequential": {
         "scenario": "four-mixed-facets/separate/sequential",
         "ms": [69.316, 210.845, 1104.96],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       },
       "separate/concurrent": {
         "scenario": "four-mixed-facets/separate/concurrent",
         "ms": [43.457, 161.518, 1171.397],
+        "over": [null, null, null],
         "max": [null, null, null],
         "method": "hand-sql"
       }

@@ -6,13 +6,16 @@ import bench from "~/data/bench-scale.json";
 export type Verdict = "improved" | "unchanged" | "worse";
 export interface Series {
   scenario: string;
-  ms: number[];
+  /** The median at each table size; null where the request ran past the limit. */
+  ms: (number | null)[];
+  /** The limit in seconds where the request ran past it, else null. */
+  over: (number | null)[];
   /** The slowest sample at each table size. */
   max: (number | null)[];
   method: string;
 }
 export interface Judged extends Series {
-  verdict: Verdict[];
+  verdict: (Verdict | null)[];
   ratio: (number | null)[];
 }
 export interface BenchRequest {
@@ -34,6 +37,10 @@ export const benchScale = bench as unknown as {
     client: string;
     profiles: Record<string, string>;
     engineNote: string;
+    /** The database the numbers were taken on, when the file says. */
+    databaseHost: { via: string; cpus: string; memory: string } | null;
+    /** "How it was measured", written by the data script from what the results file says. */
+    method: string[];
     /** Every change "tuned" makes, with the check that asked for it. */
     tuning: {
       changes: Array<{
@@ -116,6 +123,11 @@ export function formatMs(ms: number) {
   return `${ms.toFixed(ms < 1 ? 2 : 1)} ms`;
 }
 
+/** A time, or "over the limit (60 s)" where the request ran past the limit. */
+export function formatCell(ms: number | null, over: number | null) {
+  return ms === null ? `over the limit (${over ?? "?"} s)` : formatMs(ms);
+}
+
 export function formatCount(n: number) {
   return n.toLocaleString("en-US");
 }
@@ -138,6 +150,9 @@ export function benchValue(path: string): unknown {
 /** How a series was measured, in words, keyed by the `method` the results file gives. */
 export const METHOD_TEXT: Record<string, string> = {
   engine: "Through the engine, end to end, from Node over TCP.",
+  "hand-sql": "Measured as SQL with psql inside the database container: no network, no JavaScript.",
+  "engine+hand-sql":
+    "Tuned counts add the engine's page statement to the capped count statement run as SQL: the engine of this run predates capped counts.",
   "engine (onQuery count stage)":
     "The count statement alone, as the engine's onQuery hook timed it, including the driver round trip.",
 };

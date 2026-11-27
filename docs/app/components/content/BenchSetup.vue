@@ -18,6 +18,14 @@ const rows = [
   ["Measured on", `${d.measuredOn}, engine commit ${d.engine}`],
   ["Status", d.provisional ? "provisional: taken while the machine ran other work" : "final"],
   ["Database", d.setup.database],
+  ...(d.setup.databaseHost
+    ? [
+        [
+          "Host",
+          `${d.setup.databaseHost.cpus} CPUs, ${d.setup.databaseHost.memory} of memory (${d.setup.databaseHost.via === "docker" ? "a container the benchmark started" : "a server the caller described"})`,
+        ],
+      ]
+    : []),
   ["Settings", settings],
   ["Data", d.setup.dataset],
   ["Sizes", d.sizes.map((n) => `${formatCount(n)} orders`).join(", ")],

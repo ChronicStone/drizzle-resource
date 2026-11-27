@@ -31,10 +31,18 @@ const props = withDefaults(
 
 interface Pair {
   a: number;
+  /** The limit in seconds where the out-of-the-box time ran past it: \`a\` is then the limit. */
+  aOver?: number;
   b?: number;
+  bOver?: number;
   verdict?: Verdict;
   ratio?: number | null;
 }
+/** One side of a pair from a series: its time, or the limit it ran past. */
+const side = (s: { ms: (number | null)[]; over: (number | null)[] }, i: number) => ({
+  v: s.ms[i] ?? (s.over[i] ?? 0) * 1000,
+  over: s.over[i] ?? undefined,
+});
 interface Row {
   label: string;
   sub?: string;
@@ -58,16 +66,19 @@ const built = computed(() => {
       return {
         label: r.label,
         sub: r.tuned?.how,
-        pairs: sizes.map((i) =>
-          r.tuned
-            ? {
-                a: r.outOfTheBox.ms[i]!,
-                b: r.tuned.ms[i]!,
-                verdict: r.tuned.verdict[i],
-                ratio: r.tuned.ratio[i],
-              }
-            : { a: r.outOfTheBox.ms[i]! },
-        ),
+        pairs: sizes.map((i) => {
+          const a = side(r.outOfTheBox, i);
+          if (!r.tuned) return { a: a.v, aOver: a.over };
+          const b = side(r.tuned, i);
+          return {
+            a: a.v,
+            aOver: a.over,
+            b: b.v,
+            bOver: b.over,
+            verdict: r.tuned.verdict[i] ?? undefined,
+            ratio: r.tuned.ratio[i],
+          };
+        }),
       };
     });
   } else if (props.source === "scoped") {
@@ -77,12 +88,18 @@ const built = computed(() => {
       methods.push(r.outOfTheBox.method, r.scoped.method);
       return {
         label: r.label,
-        pairs: sizes.map((i) => ({
-          a: r.outOfTheBox.ms[i]!,
-          b: r.scoped.ms[i]!,
-          verdict: r.scoped.verdict[i],
-          ratio: r.scoped.ratio[i],
-        })),
+        pairs: sizes.map((i) => {
+          const a = side(r.outOfTheBox, i);
+          const b = side(r.scoped, i);
+          return {
+            a: a.v,
+            aOver: a.over,
+            b: b.v,
+            bOver: b.over,
+            verdict: r.scoped.verdict[i] ?? undefined,
+            ratio: r.scoped.ratio[i],
+          };
+        }),
       };
     });
   } else if (props.source === "counts") {
@@ -96,7 +113,11 @@ const built = computed(() => {
           r.matches.at(-1) === null || r.matches.at(-1) === undefined
             ? undefined
             : `${formatCount(r.matches.at(-1)!)} ${r.matches.at(-1) === 1 ? "match" : "matches"} at 10M`,
-        pairs: sizes.map((i) => ({ a: r.exact.ms[i]!, b: r.capped.ms[i]! })),
+        pairs: sizes.map((i) => {
+          const a = side(r.exact, i);
+          const b = side(r.capped, i);
+          return { a: a.v, aOver: a.over, b: b.v, bOver: b.over };
+        }),
       };
     });
   } else {
@@ -148,14 +169,19 @@ function x(ms: number) {
   return Math.round(((Math.log10(ms) - lo) / (hi - lo)) * 10_000) / 100;
 }
 
-type Kind = "improved" | "worse" | "unchanged" | "untuned" | "neutral";
+type Kind = "improved" | "worse" | "unchanged" | "untuned" | "neutral" | "over";
+const overText = (seconds: number) => `over the limit (${seconds} s)`;
 function kind(p: Pair): Kind {
+  if (p.aOver !== undefined || p.bOver !== undefined) return "over";
   if (p.b === undefined) return "untuned";
   if (!judged.value) return "neutral";
   return p.verdict ?? "neutral";
 }
+/** A time, or "over the limit (60 s)": the time the request was cut off at is not its time. */
+const shown = (ms: number, over?: number) => (over === undefined ? formatMs(ms) : overText(over));
 function endLabel(p: Pair) {
   const k = kind(p);
+  if (k === "over") return "over the limit";
   if (k === "untuned") return "not tuned";
   if (k === "neutral") return `${formatMs(p.a)} → ${formatMs(p.b!)}`;
   if (k === "improved" && typeof p.ratio === "number")
@@ -167,10 +193,15 @@ function shaft(p: Pair) {
   const to = x(p.b!);
   return { left: `${Math.min(from, to)}%`, width: `${Math.abs(from - to)}%` };
 }
+/** Where a time that ran past the limit goes on: from the limit to the edge, open-ended. */
+const openFrom = (p: Pair) => {
+  const at = p.bOver !== undefined ? p.b! : p.a;
+  return { left: `${x(at)}%` };
+};
 function describe(p: Pair) {
   return p.b === undefined
-    ? formatMs(p.a)
-    : `${formatMs(p.a)} → ${formatMs(p.b)}${kind(p) === "neutral" ? "" : `, ${endLabel(p)}`}`;
+    ? shown(p.a, p.aOver)
+    : `${shown(p.a, p.aOver)} → ${shown(p.b, p.bOver)}${kind(p) === "neutral" || kind(p) === "over" ? "" : `, ${endLabel(p)}`}`;
 }
 
 const footnote = computed(() =>
@@ -240,8 +271,23 @@ const footnote = computed(() =>
           <span class="ba-track" :title="describe(r.pairs[s]!)">
             <span v-for="t in ticks" :key="t.label" class="ba-grid" :style="{ left: `${t.at}%` }" />
             <!-- stacked shaft, dot, head: a small change keeps its arrowhead visible on the dot -->
-            <span class="ba-dot" :style="{ left: `${x(r.pairs[s]!.a)}%` }" />
-            <template v-if="kind(r.pairs[s]!) !== 'untuned' && kind(r.pairs[s]!) !== 'unchanged'">
+            <span
+              class="ba-dot"
+              :class="{ open: r.pairs[s]!.aOver !== undefined }"
+              :style="{ left: `${x(r.pairs[s]!.a)}%` }"
+            />
+            <span
+              v-if="kind(r.pairs[s]!) === 'over'"
+              class="ba-open"
+              :style="openFrom(r.pairs[s]!)"
+            />
+            <template
+              v-if="
+                kind(r.pairs[s]!) !== 'untuned' &&
+                kind(r.pairs[s]!) !== 'unchanged' &&
+                !(kind(r.pairs[s]!) === 'over' && r.pairs[s]!.b === undefined)
+              "
+            >
               <span class="ba-shaft" :class="kind(r.pairs[s]!)" :style="shaft(r.pairs[s]!)" />
               <span
                 class="ba-head-tip"
@@ -272,11 +318,15 @@ const footnote = computed(() =>
         <tr v-for="r in rows" :key="r.label + (r.sub ?? '')">
           <th scope="row">{{ r.label }}<span v-if="r.sub" class="ba-sub"> · {{ r.sub }}</span></th>
           <td v-for="(p, i) in r.pairs" :key="i">
-            <span class="nw">{{ formatMs(p.a) }}</span>
-            <span v-if="p.b !== undefined" class="nw"> → {{ formatMs(p.b) }}</span>
-            <em v-if="kind(p) !== 'neutral' && kind(p) !== 'untuned'" :class="kind(p)">{{
-              endLabel(p)
-            }}</em>
+            <span :class="p.aOver === undefined ? 'nw' : 'ov'">{{ shown(p.a, p.aOver) }}</span>
+            <span v-if="p.b !== undefined" :class="p.bOver === undefined ? 'nw' : 'ov'">
+              → {{ shown(p.b, p.bOver) }}</span
+            >
+            <em
+              v-if="kind(p) !== 'neutral' && kind(p) !== 'untuned' && kind(p) !== 'over'"
+              :class="kind(p)"
+              >{{ endLabel(p) }}</em
+            >
           </td>
         </tr>
       </tbody>
@@ -436,6 +486,39 @@ const footnote = computed(() =>
   box-shadow: 0 0 0 2px var(--panel2);
   transform: translate(-50%, -50%);
 }
+/* a time that ran past the limit: a hollow dot at the limit and a dashed line that runs on */
+.ba-dot.open {
+  background: var(--panel2);
+  box-shadow: none;
+  border: 2px solid var(--ui-warning);
+}
+.ba-open {
+  position: absolute;
+  z-index: 1;
+  top: 50%;
+  right: 0;
+  height: 0;
+  border-top: 2.5px dashed var(--ui-warning);
+  transform: translateY(-50%);
+}
+.ba-open::after {
+  content: "";
+  position: absolute;
+  right: -1px;
+  top: -6.5px;
+  border-left: 9px solid var(--ui-warning);
+  border-top: 5.5px solid transparent;
+  border-bottom: 5.5px solid transparent;
+}
+.ba-shaft.over {
+  background: var(--ui-warning);
+}
+.ba-head-tip.over.left {
+  border-right-color: var(--ui-warning);
+}
+.ba-head-tip.over.right {
+  border-left-color: var(--ui-warning);
+}
 .ba-shaft {
   position: absolute;
   z-index: 1;
@@ -492,6 +575,9 @@ const footnote = computed(() =>
 .ba-end.worse {
   color: var(--ui-error);
 }
+.ba-end.over {
+  color: var(--ui-warning);
+}
 .ba-end.unchanged,
 .ba-end.untuned {
   font-weight: 400;
@@ -544,6 +630,10 @@ const footnote = computed(() =>
 }
 .ba-table .nw {
   white-space: nowrap;
+}
+/* "over the limit (60 s)" may wrap in a narrow column */
+.ba-table .ov {
+  color: var(--ui-warning);
 }
 .ba-table em {
   display: block;
@@ -621,7 +711,8 @@ const footnote = computed(() =>
     border-top: 1px solid var(--line);
   }
   /* before on one line, "→ after" on the next */
-  .ba-table .nw {
+  .ba-table .nw,
+  .ba-table .ov {
     display: block;
   }
 }

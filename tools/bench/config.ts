@@ -42,6 +42,18 @@ export function sizeLabel(rows: number): string {
   return String(rows);
 }
 
+/** What the pages describe. `--final` refuses a run made with anything else. */
+export const DOCUMENTED = {
+  iterations: 10,
+  timeoutMs: 60_000,
+  cpus: "4",
+  memory: "4g",
+  settings: { shared_buffers: "1GB", work_mem: "4MB", max_wal_size: "1GB" } as Record<
+    string,
+    string
+  >,
+};
+
 /** The database the numbers describe. `BENCH_DB_*` override the container, or say what a `--url` server has. */
 export const DOCKER = {
   image: "postgres:18",

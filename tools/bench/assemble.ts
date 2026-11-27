@@ -2,6 +2,7 @@ import { readFileSync, readdirSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import {
   DEFAULT_SIZES,
+  DOCUMENTED,
   FINAL_LOAD_THRESHOLD,
   LOAD_THRESHOLD,
   MIN_ROUNDS,
@@ -15,7 +16,13 @@ import type { ProfileName, RunRecord } from "./run.ts";
 import type { Tuning } from "./tuning.ts";
 
 type Verdict = "improved" | "unchanged" | "worse";
-type OutCell = Cell & { verdict?: Verdict; ratio?: number; ratioMeaning?: string };
+type OutCell = Cell & {
+  verdict?: Verdict;
+  ratio?: number;
+  ratioMeaning?: string;
+  withinNoise?: boolean;
+  verdictBeforeNoise?: Verdict;
+};
 type Scenarios = Record<string, Record<string, OutCell>>;
 
 /**
@@ -152,10 +159,13 @@ export function assemble(
     min: r.nullPair?.ratios?.length ? Math.min(...r.nullPair.ratios) : NaN,
     max: r.nullPair?.ratios?.length ? Math.max(...r.nullPair.ratios) : NaN,
   }));
-  const nullBad = nulls.filter((n) => n.pairs === 0 || n.verdict !== "unchanged");
+  // At least 10 pairs, a median within 5% of 1, and a verdict of unchanged.
+  const nullBad = nulls.filter(
+    (n) => n.pairs < MIN_ROUNDS || !(Math.abs(n.ratio - 1) <= 0.05) || n.verdict !== "unchanged",
+  );
   if (nullBad.length)
     reasons.push(
-      `the null pair (the same request against itself) read "${nullBad.map((n) => `${n.verdict} ${n.ratio} at ${sizeLabel(n.rows)}`).join(", ")}": this run's verdicts are not trustworthy`,
+      `the null pair (the same request against itself) was not a clean "unchanged" (${nullBad.map((n) => `${n.verdict}, median ${n.ratio}, ${n.pairs} pairs at ${sizeLabel(n.rows)}`).join("; ")}): this run's verdicts are not trustworthy`,
     );
 
   // The load is judged here, from the numbers, not from a flag stored when the run was made.
@@ -182,7 +192,25 @@ export function assemble(
     );
     if (untuned.length)
       finalReasons.push(`checkIndexes still reports an error for ${untuned.join(", ")}`);
-    if (nullBad.length) finalReasons.push("the null pair was not unchanged");
+    if (nullBad.length)
+      finalReasons.push(
+        "the null pair was not unchanged, with at least 10 pairs and a median within 5% of 1",
+      );
+    const odd = chosen.filter((r) => {
+      const f = r.fingerprint;
+      return (
+        f.iterations !== DOCUMENTED.iterations ||
+        f.timeoutMs !== DOCUMENTED.timeoutMs ||
+        f.minRounds !== MIN_ROUNDS ||
+        f.database.cpus !== DOCUMENTED.cpus ||
+        f.database.memory !== DOCUMENTED.memory ||
+        Object.entries(DOCUMENTED.settings).some(([k, v]) => f.settings[k] !== v)
+      );
+    });
+    if (odd.length)
+      finalReasons.push(
+        `${odd.map((r) => sizeLabel(r.rows)).join(", ")} was made with a configuration the pages do not describe (they describe ${DOCUMENTED.cpus} CPUs, ${DOCUMENTED.memory}, shared_buffers ${DOCUMENTED.settings.shared_buffers}, work_mem ${DOCUMENTED.settings.work_mem}, ${DOCUMENTED.iterations} iterations, a ${DOCUMENTED.timeoutMs / 1000} s limit)`,
+      );
     if (failed.length) finalReasons.push("some cells failed");
     if (!complete) finalReasons.push("not every default size has a run");
     const unknownDb = chosen.filter(
@@ -344,6 +372,8 @@ function build(
 ) {
   const profiles: Record<ProfileName, Scenarios> = { "out-of-the-box": {}, tuned: {}, scoped: {} };
   const regressions: string[] = [];
+  const withinNoise: string[] = [];
+  const nullRange = new Map(options.nulls.map((n) => [n.rows, n]));
   for (const run of chosen)
     for (const profile of PROFILES)
       for (const [scenario, cell] of Object.entries(run.cells[profile] ?? {})) {
@@ -352,6 +382,21 @@ function build(
         delete out.pairedRatios;
         if (cell.pairedRatios?.length) {
           Object.assign(out, judge(cell.pairedRatios));
+          // A verdict the null pair could have produced by chance is not one: the same request
+          // against itself reached a ratio at least as far from 1 in that run.
+          const noise = nullRange.get(run.rows);
+          if (noise && noise.pairs > 0 && out.verdict !== "unchanged") {
+            const inside =
+              out.verdict === "improved" ? out.ratio! <= noise.max : out.ratio! >= noise.min;
+            if (inside) {
+              out.verdictBeforeNoise = out.verdict;
+              out.withinNoise = true;
+              withinNoise.push(
+                `${profile} ${scenario.replace("landing/", "")} at ${run.rows.toLocaleString("en-US")} rows (${out.ratio}x, ${out.verdict})`,
+              );
+              out.verdict = "unchanged";
+            }
+          }
           if (out.verdict === "worse")
             regressions.push(
               `${profile} ${scenario.replace("landing/", "")} at ${run.rows.toLocaleString("en-US")} rows (${out.ratio}x)`,
@@ -369,7 +414,7 @@ function build(
       : `Final: every run was taken at or below load ${options.threshold}, nothing failed, the null pair read unchanged, and checkIndexes reports no error for any tuned schema.`,
     'Every number is one engine call end to end: pages and counts through resource.queryIds, capped counts with count: "capped", facets through resource.queryFacets. `parts` and `stages` are the engine\'s own per-statement times from onQuery; `statementsMs` is their sum (statements can overlap, so it can exceed the call time). `maxMs` is the slowest sample; with ten samples a p95 would be the same number.',
     "Landing requests are measured in pairs: out of the box and the setup it is compared with are called one after the other, at least 10 rounds, in a carryover-balanced (Williams) order, so a verdict compares calls made seconds apart. Only the out-of-the-box schema and the one being compared are resident at a time. verdict: improved when the ratio (out of the box / this) stays above 1 in at least 80% of the pairs and its median is at least 1.15; worse when it stays below 1 in at least 80% and the median is at most 1/1.15; otherwise unchanged. `ratio` is the median; `pairsFaster` counts the pairs above 1. Each ratio is against the out-of-the-box calls of its own pair.",
-    "setup.nullPairs: the same request against itself, timed as two arms, with the range of its ratios. It must read unchanged; the ratios show how far a pair can drift by chance on that run.",
+    "setup.nullPairs: the same request against itself, timed as two arms, with the range of its ratios. It must read unchanged with at least 10 pairs and a median within 5% of 1; a verdict whose ratio is inside that range is reported as unchanged (withinNoise).",
     "Tuned is what setup.tuning.changes lists: what engine.checkIndexes({ live: true }) asked for, the engine options that go with its findings, and nothing else. The check's only index for the unchanged schema (a trigram index on status) is used by no timed request; the gains come from the capped count, the copied name and the facets setting. `<scenario>:count-exact` and `:count-capped` are the count statement alone, from onQuery's count stage on the tuned schema. Facet cells named `<facets>/<variant>` (GROUPING SETS or one statement per facet, in a transaction or on the pool) are informational and carry no verdict.",
     "Out of the box facets use the engine's default, facets.splitAbove 100,000, which already splits the facets of a table of this size; a tuned facets request can therefore come out unchanged.",
     "Data: createdAt grows with id, so a cursor with createdAt desc, id asc is cheap without a tuned index. orgId, status and paid are functions of n: inside tenant 42 every order has status 'paid' and paid = false.",
