@@ -305,10 +305,18 @@ function misestimateFix(
   filter: string | undefined,
   indexed: string | undefined,
   relation: string | undefined,
+  existing: readonly string[] | undefined,
 ) {
   const inFilter = lowerExpressions(filter);
   const inIndex = lowerExpressions(indexed);
-  const covered = new Set([...inIndex.equal, ...inIndex.like]);
+  // An expression with an index has statistics of its own, whether or not the plan reads the index.
+  const covered = new Set([
+    ...inIndex.equal,
+    ...inIndex.like,
+    ...[...inFilter.equal, ...inFilter.like].filter(
+      (column) => existing !== undefined && hasExpressionIndex(existing, column),
+    ),
+  ]);
   const unindexed = [...new Set([...inFilter.equal, ...inFilter.like])].filter(
     (column) => !covered.has(column),
   );
@@ -316,8 +324,8 @@ function misestimateFix(
     const expressions = unindexed.map((column) => `lower(${column})`).join(", ");
     return `PostgreSQL keeps no statistics on ${expressions}, so ANALYZE cannot fix this estimate: create an expression index on it (that also gathers statistics) or extended statistics on the expression (CREATE STATISTICS ... ON (${unindexed.map((column) => `lower(${column})`).join("), (")}) FROM ${relation ?? "the table"})`;
   }
-  if (inIndex.like.length > 0) {
-    // The plan already reads a trigram index. A substring match is estimated from a fixed guess.
+  if (inIndex.like.length > 0 || inFilter.like.length > 0) {
+    // A substring match is estimated from a fixed guess, whichever plan reads it.
     return `PostgreSQL estimates a substring match (LIKE '%...%') from a fixed guess, not from statistics, so ANALYZE does not tighten it. The index is used; judge the plan by its time, or narrow the searched fields`;
   }
   return `run ANALYZE${relation ? ` ${relation}` : ""}; if the estimate stays off, create extended statistics (CREATE STATISTICS) on the filtered columns, or put the filtered column on the root table`;
@@ -543,7 +551,14 @@ export function analyzePlan(input: AnalysisInput): Analysis {
         message: found.implied
           ? `PostgreSQL expected ${formatNumber(found.planned)} matching rows in ${found.label}, but the rows it walked imply about ${formatNumber(found.actual)} (${formatNumber(factor)}x ${direction}), so it can pick a plan that is slow at this size`
           : `PostgreSQL expected ${formatNumber(found.planned)} rows from ${found.label} but got ${formatNumber(found.actual)} (${formatNumber(factor)}x ${direction}), so it can pick a plan that is slow at this size`,
-        fix: misestimateFix(found.filter, found.indexed, found.relation),
+        fix: misestimateFix(
+          found.filter,
+          found.indexed,
+          found.relation,
+          found.relation
+            ? [...(input.indexes ?? [])].find(([key]) => key.endsWith(`.${found.relation}`))?.[1]
+            : undefined,
+        ),
         basis,
       });
     }
@@ -988,7 +1003,7 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       const budget = firstAttempt.budget!;
       if (timeout > 0 && timeout < budget - Math.min(5, budget * 0.1)) {
         notes.push(
-          `search: the connection's statement_timeout (${formatNumber(timeout)} ms) is below the ${budget} ms plan budget: a first statement that takes longer than ${formatNumber(timeout)} ms is cancelled by the connection, and query throws the cancel error instead of moving to the indexed plan`,
+          `search: the connection's statement_timeout (${formatNumber(timeout)} ms) is below the ${budget} ms plan budget: the budgeted attempts are capped to it, and the ordinary plan then runs again with no budget, so a statement that needs longer than ${formatNumber(timeout)} ms fails with the cancel error`,
         );
       }
     } catch {

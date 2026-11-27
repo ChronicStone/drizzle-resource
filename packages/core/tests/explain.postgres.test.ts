@@ -317,7 +317,7 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
         "indexed search plan, runs when the ordinary one ran over, with a 100 ms budget",
       );
       expect(report.notes.join("\n")).toMatch(
-        /^search: the engine runs the first statement on the ordinary plan with a 25 ms budget; if that runs over it tries the indexed plan with 100 ms; if that runs over too it runs the ordinary plan again with no budget\./,
+        /^search, the page: the engine runs the ordinary plan with a 25 ms budget; if that runs over it tries the indexed plan with 100 ms; if that runs over too it runs the ordinary plan again with no budget\./,
       );
       expect(report.notes.join("\n")).toMatch(
         /PostgreSQL costs the ordinary plan at [\d,]+ and the indexed plan at [\d,]+/,
@@ -399,14 +399,67 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
             ran,
           );
           const attempts = report.stages.map((stage) => stage.attempt).filter(Boolean);
-          // Exact counts decide the plan up front; an ordinary plan that fits keeps the whole request.
+          // Exact counts decide the plan up front; the others run budgeted attempts.
           expect(attempts.length > 0).toBe(count !== "exact");
-          expect(attempts.every((attempt) => attempt === "ordinary")).toBe(
-            count === "exact" || budget === 60_000,
-          );
         });
       }
     }
+
+    describe("a capped count steers the page", () => {
+      const kinds = (sqls: string[]) =>
+        sqls.map((statement) => (statement.includes(" union ") ? "indexed" : "ordinary"));
+      for (const [term, outcome, pageFirst] of [
+        ["ref-29999", "comes back under its cap", "indexed"],
+        ["ref", "hits its cap", "ordinary"],
+      ] as const) {
+        it(`${term}: the count ${outcome}, the page starts on the ${pageFirst} plan`, async () => {
+          const resource = fixture.engine.defineResource("orders", {
+            relations: { customer: true },
+            query: {
+              pagination: { modes: ["offset"], countCap: 1_000 },
+              // roomy, so no attempt runs over and both runs take the same attempts
+              search: { allowed: ["reference", "customer.name"], planBudget: 60_000 },
+            },
+          });
+          const request = pageRequest({
+            pagination: { mode: "offset", pageIndex: 1, pageSize: 25, count: "capped" },
+            search: { value: term, fields: ["reference", "customer.name"] },
+          });
+          fixture.events.length = 0;
+          const result = await resource.query({ request });
+          const ran = fixture.events.filter(
+            (event) => event.stage === "count" || event.stage === "ids",
+          );
+          const report = await resource.explain({ request, analyze: true });
+          const listed = report.stages.filter(
+            (stage) => stage.stage === "count" || stage.stage === "ids",
+          );
+          // the same statements, in the same order, on the same plans
+          expect(listed.map((stage) => `${stage.stage}: ${stage.sql}`)).toEqual(
+            ran.map((event) => `${event.stage}: ${event.sql}`),
+          );
+          expect(listed.map((stage) => `${stage.stage} ${kinds([stage.sql])[0]}`)).toEqual(
+            ran.map((event) => `${event.stage} ${kinds([event.sql])[0]}`),
+          );
+          // and the page began where the count says it should
+          const page = ran.filter((event) => event.stage === "ids");
+          expect(kinds(page.map((event) => event.sql))[0]).toBe(pageFirst);
+          expect((result.pageInfo as { exact?: boolean }).exact).toBe(pageFirst === "indexed");
+          expect(report.notes.join("\n")).toContain(
+            pageFirst === "indexed"
+              ? "the count came back under its cap"
+              : "the count hit its cap, so the page starts on the ordinary plan",
+          );
+          const firstPage = listed.find((stage) => stage.stage === "ids")!;
+          expect(firstPage.attempt).toBe(pageFirst);
+          expect(firstPage.label).toContain(
+            pageFirst === "indexed"
+              ? "first because the count came back under its cap"
+              : "first because the count hit its cap",
+          );
+        });
+      }
+    });
 
     it("lists both paths without analyze, in the order the request runs them", async () => {
       const report = await resourceWith(25).explain({ request: searchRequest("capped") });
@@ -419,17 +472,39 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       const printed = formatExplain(report);
       expect(printed).toContain("ordinary search plan, runs first with a 25 ms budget");
       expect(printed).toContain(
-        "indexed search plan, used when the indexed attempt fits its budget",
+        "indexed search plan, runs when the ordinary one ran over, with a 100 ms budget",
+      );
+      expect(printed).toContain(
+        "indexed search plan, first when the count comes back under its cap",
+      );
+      expect(printed).toContain(
+        "ordinary search plan, first when the count hits its cap (25 ms budget)",
       );
     });
 
     it("runs facets once, on the ordinary plan, whichever attempt the count takes", async () => {
+      // The default budget: a rare term's count sits near it, so the two runs can take different
+      // attempts. Facets never depend on that, and the matrix above pins the attempts themselves.
       const request = searchRequest("capped", { facets: [{ key: "status" }] });
-      const ran = await ranBy(ordersResource, request);
+      fixture.events.length = 0;
+      await ordersResource.query({ request });
+      const ran = fixture.events.filter((event) =>
+        ["count", "ids", "facets"].includes(event.stage),
+      );
       fixture.statements.length = 0;
       const report = await ordersResource.explain({ request, analyze: true });
-      expect(report.stages.map((stage) => `${stage.stage}: ${stage.sql}`).toSorted()).toEqual(ran);
+      const kinds = (items: Array<{ stage: string; sql: string }>) =>
+        items
+          .filter((item) => item.stage !== "facets")
+          .map((item) => `${item.stage} ${item.sql.includes(" union ") ? "indexed" : "ordinary"}`);
+      const samePath = kinds(ran).join() === kinds(report.stages).join();
+      const listing = (items: Array<{ stage: string; sql: string }>) =>
+        items.map((item) => `${item.stage}: ${item.sql}`).toSorted();
+      expect(listing(samePath ? report.stages : ran)).toEqual(listing(ran));
       const facets = report.stages.filter((stage) => stage.stage === "facets");
+      expect(facets.map((stage) => stage.sql)).toEqual(
+        ran.filter((event) => event.stage === "facets").map((event) => event.sql),
+      );
       expect(facets).toHaveLength(1);
       expect(facets[0]!.attempt).toBeUndefined();
       expect(facets[0]!.budget).toBeUndefined();
@@ -446,9 +521,9 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       }
     });
 
-    it("says a statement would fail when the connection's timeout cancels it before the budget", async () => {
-      // One connection, warmed up, then given a 10 ms timeout: the 60,000 ms budget is never the
-      // limit, and the cancel always comes from the connection.
+    it("caps the attempts to the connection's timeout and fails on the rerun, as query does", async () => {
+      // One connection, warmed up, then given a 10 ms timeout: both budgeted attempts are capped
+      // to it, and the ordinary plan run again with no budget is cancelled by the connection.
       const limited = new Pool({ connectionString: fixture.connectionString, max: 1 });
       try {
         const engine = createQueryEngine({
@@ -463,26 +538,30 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
             search: { allowed: ["reference", "customer.name"], planBudget: 60_000 },
           },
         });
-        const request = searchRequest("none");
-        await resource.query({ request });
+        // A common term sorted through a relation is slow on both plans, by far more than 10 ms.
+        const request = searchRequest("none", {
+          search: { value: "ref", fields: ["reference", "customer.name"] },
+          sorting: [{ key: "customer.name", dir: "asc" }],
+        });
+        await resource
+          .query({
+            request: { ...request, pagination: { ...request.pagination!, count: "none" } },
+            // a warm-up that the timeout below does not reach
+          })
+          .catch(() => undefined);
         await limited.query("set statement_timeout = 10");
         const plain = await resource.explain({ request });
         expect(plain.notes.join("\n")).toContain(
           "the connection's statement_timeout (10 ms) is below the 60000 ms plan budget",
         );
-        const report = await resource.explain({ request, analyze: true });
-        const first = report.stages.find((stage) => stage.attempt === "ordinary")!;
-        expect(first.failure).toBe(
-          "would fail: the connection's statement_timeout (10 ms) cancels it before its 60000 ms budget, so query throws the cancel error",
-        );
-        expect(first.budget).toEqual({ ms: 10, exceeded: false });
-        // the request ends there: no indexed attempt is run
-        expect(report.stages.filter((stage) => stage.attempt === "indexed")).toEqual([]);
-        expect(report.notes.join("\n")).toContain("the request fails there");
-        // and query does fail the same way
-        await expect(resource.query({ request })).rejects.toMatchObject({
-          cause: { code: "57014" },
-        });
+        // Both attempts are capped to the connection's 10 ms and run over; the ordinary plan then
+        // runs again with no budget and the connection cancels it. explain ends where query ends.
+        for (const run of [
+          () => resource.explain({ request, analyze: true }),
+          () => resource.query({ request }),
+        ]) {
+          await expect(run()).rejects.toMatchObject({ cause: { code: "57014" } });
+        }
       } finally {
         await limited.end();
       }
