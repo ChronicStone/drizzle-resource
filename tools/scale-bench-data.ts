@@ -61,6 +61,7 @@ type Profiles = {
     engineNote?: string;
     nullPairs?: NullPair[];
     tuning?: { changes: TunedChange[]; runs: unknown[] };
+    runs?: Array<{ rows: number; startedAt: string }>;
   };
   profiles: Record<ProfileName, Record<string, Record<string, Cell>>>;
 };
@@ -512,7 +513,16 @@ const out = {
   $comment:
     "Numbers for the docs' Scale pages. Regenerate with `bun tools/scale-bench-data.ts` from tools/results; do not edit by hand. Times are milliseconds, one per table size.",
   provisional: data.provisional,
-  measuredOn: flag("--measured-on") ?? previous.measuredOn ?? new Date().toISOString().slice(0, 10),
+  // the day of the latest run; a file from before setup.runs keeps the date already published
+  measuredOn:
+    flag("--measured-on") ??
+    (data.setup.runs ?? [])
+      .map((r) => r.startedAt)
+      .sort()
+      .at(-1)
+      ?.slice(0, 10) ??
+    previous.measuredOn ??
+    new Date().toISOString().slice(0, 10),
   engine: commit.trim().slice(0, 7),
   source: `tools/results/${PROFILES_FILE}`,
   setup: {

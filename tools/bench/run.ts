@@ -55,7 +55,7 @@ export type RunRecord = {
   rows: number;
   startedAt: string;
   finishedAt: string;
-  load: { start: number; end: number; max: number };
+  load: { start: number; end: number; max: number; waitedS?: number };
   fingerprint: Fingerprint;
   /** What `checkIndexes` found and fixed for each tuned schema. */
   tuning: Tuning[];
@@ -210,13 +210,21 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
     );
   };
   const paired = async (key: string, arms: Arm[]) => {
-    meter.sample();
+    await meter.settle();
     const result = await measurePaired(arms.map((a, i) => ({ name: String(i), run: a.run })));
     arms.forEach((arm, i) => {
       const cell = result[String(i)]!;
       const target = cells[arm.profile];
       const name = arm.key ?? `landing/${key}`;
-      const shaped = arm.countMode ? withParts(cell, arm.countMode) : cell;
+      // The engine can run a count other than the one asked for; such a cell is not that request.
+      const shaped = !arm.countMode
+        ? cell
+        : cell.countUsed !== undefined && cell.countUsed !== arm.countMode
+          ? {
+              method: cell.method,
+              skipped: `error: asked for a ${arm.countMode} count, the engine ran ${cell.countUsed}`,
+            }
+          : withParts(cell, arm.countMode);
       // Each pair has its own out-of-the-box calls; the first pair's are the ones published.
       if (arm.profile === "out-of-the-box" && target[name]) return;
       target[name] = shaped;
@@ -225,18 +233,18 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
   try {
     await build("ootb");
     const ootb = makeBench(pool, names.ootb);
-    meter.sample();
+    await meter.settle();
     options.log(`${label}: measuring, load ${meter.start.toFixed(1)}`);
 
     // Out of the box, every request the harness knows: no pair, nothing to compare it with.
     for (const spec of await rawScenarios(pool, names.ootb, rows)) {
-      meter.sample();
+      await meter.settle();
       cells["out-of-the-box"][spec.name] = await measure(spec.run(ootb));
     }
 
     // The null pair: one request on one schema, called as two arms. Its verdict must be "unchanged".
     const nullRequest = LANDING.find((l) => l.name === "page-plus-count")!;
-    meter.sample();
+    await meter.settle();
     const nulls = await measurePaired([
       { name: "a", run: nullRequest.run(ootb, "exact") },
       { name: "b", run: nullRequest.run(ootb, "exact") },
@@ -279,12 +287,12 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
     // Informational, on the tuned schema, no verdict: the count statement alone, and the four ways to run facets.
     for (const spec of COUNTED)
       for (const mode of ["exact", "capped"] as const) {
-        meter.sample();
+        await meter.settle();
         cells.tuned[`${spec.name}:count-${mode}`] = countCell(await measure(spec.run(tuned, mode)));
       }
     for (const facet of FACETS)
       for (const variant of FACET_VARIANTS) {
-        meter.sample();
+        await meter.settle();
         cells.tuned[`${facet.name}/${variant.key}`] = {
           ...(await measure(facetRun(tuned, facet.facets, variant.strategy, variant.sequential))),
           informational: true,
@@ -314,7 +322,7 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
       },
     ]);
     for (const mode of ["exact", "capped"] as const) {
-      meter.sample();
+      await meter.settle();
       cells.tuned[`sort-customer-name-denormalized:count-${mode}`] = countCell(
         await measure(DENORMALIZED.run(denorm, mode)),
       );
@@ -360,16 +368,18 @@ export async function runSize(url: string, rows: number, options: RunOptions): P
     const facet = FACETS.find((f) => f.name === "two-root-facets")!;
     await paired(facet.name, [
       { profile: "out-of-the-box", run: facetRun(ootb, facet.facets, "default", false) },
-      { profile: "scoped", run: facetRun(scoped, facet.facets, "default", false) },
+      // Scoped is tuned plus the scope index, so it runs facets the tuned way. Tenant 42 is about
+      // 100,000 rows at 10M, right at the default splitAbove, where the planner's estimate would pick.
+      { profile: "scoped", run: facetRun(scoped, facet.facets, "split", false) },
     ]);
     await drop("scoped");
-    meter.sample();
+    await meter.settle();
 
     const result: RunRecord = {
       rows,
       startedAt,
       finishedAt: new Date().toISOString(),
-      load: { start: meter.start, end: meter.end, max: meter.max },
+      load: { start: meter.start, end: meter.end, max: meter.max, waitedS: meter.waitedS },
       fingerprint: await fingerprint(client, options.database),
       tuning,
       nullPair,

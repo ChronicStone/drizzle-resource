@@ -36,8 +36,11 @@ and still works. The two do not share results.
   about 2.2 GB, plus up to 1 GB of write-ahead log. Each schema is dropped as soon as its comparison
   is done. Docker's own disk image may not shrink afterwards.
 
-Close other work before a run you mean to publish. The command records the one-minute load average
-before every scenario.
+Close other work before a run you mean to publish. Before every scenario the command waits, up to
+two minutes, for the one-minute load average to fall to 8, then records it. Its own schema builds
+and concurrent facets keep the average up for a minute after they end, so the wait makes the
+record show the rest of the machine. When a wait runs out, the run is busy: it stops waiting and
+its records show the load. `load.waitedS` in a run says how long it waited in all.
 
 ## What it measures
 
@@ -62,8 +65,10 @@ with `sort.disabled`, the way the check suggests, so it only asks for indexes th
 finding it answers, the SQL, and whether any timed request touches it:
 
 - **A trigram index on `lower(status)`.** The one index `checkIndexes` asks for on the unchanged
-  schema, because search is open to every column. No landing request searches `status`, so it
-  changes no timed request. It is listed so nobody credits the tool with a gain it did not make.
+  schema, because search is open to every column. No landing request searches `status`. The count
+  statements of a search over every column can use it, and they are measured on the tuned schema
+  only (exact against capped), so no out-of-the-box comparison credits it. It is listed so nobody
+  credits the tool with a gain it did not make.
 - **The copied name** (`orders."customerName"`, with `(customerName, id)` and a trigram index on
   the new column). `checkIndexes` warns that a sort through `customer.name` joins every order
   first and says to copy the name onto `orders`; it gives no SQL for that, so the harness makes the
@@ -92,8 +97,12 @@ page + count, sort by `customer.name` + count, searches (`ord`, `customer`, one 
 customer, `customer 1` on the relation) + count, two facets and four facets. Each is one engine
 call, timed end to end. Out of the box asks for an exact count, tuned and scoped for a capped one.
 `parts` holds what its page and count statements took, `stages` every statement kind, as the
-engine's `onQuery` hook reported them. Every other request the harness knows is measured out of
-the box only.
+engine's `onQuery` hook reported them. `statements` counts the statements of each kind in one
+call (the most any sample ran), and `cancelled` the ones the engine cancelled. A search without
+an exact count makes bounded attempts under `search.planBudget` (25 ms by default; see the search
+page): a cancelled attempt is in `cancelled`, and its time is in `stages` and `parts`, because the
+request waited for it. A cell whose engine ran a different count than the one asked for is marked
+failed. Every other request the harness knows is measured out of the box only.
 
 ## Pairs and verdicts
 
@@ -156,8 +165,9 @@ fingerprint: the engine commit, whether `packages/core` was modified, the harnes
 hash of its sources), the database (version, `current_setting` of the settings that matter,
 CPUs and memory), `BENCH_ITERATIONS`, `BENCH_TIMEOUT_MS` and the minimum rounds. `assemble` uses
 runs of one fingerprint only: it takes the newest, says how many others it left out, and publishes
-for each size the run taken under the lowest load. The load is judged again at that moment from the
-stored numbers.
+for each size a sound run (a clean null pair, no failed cell, no `checkIndexes` error left) if there
+is one, and among those the one taken under the lowest load. The load is judged again at that
+moment from the stored numbers.
 
 `tools/results/profiles.json` is written only when every default size (200k, 1m, 10m) has a run
 and no cell failed (over-limit is not a failure). With `--final` the run must also be sound:

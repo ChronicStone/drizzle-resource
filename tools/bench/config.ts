@@ -13,7 +13,7 @@ export const LOAD_THRESHOLD = Number(process.env.BENCH_LOAD_THRESHOLD ?? 8);
 /** What `--final` requires the threshold to be. `BENCH_LOAD_THRESHOLD` cannot lower it for a final run. */
 export const FINAL_LOAD_THRESHOLD = 8;
 /** Bump when the measurement changes, so runs from different harnesses are never mixed. */
-export const HARNESS_VERSION = "3";
+export const HARNESS_VERSION = "4";
 
 export const PAGE_SIZE = 50;
 export const TENANT = 42;

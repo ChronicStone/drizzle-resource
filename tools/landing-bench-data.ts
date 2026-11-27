@@ -16,12 +16,18 @@ type Cell = {
   medianMs?: number;
   verdict?: Verdict;
   ratio?: number;
-  requiresEngineChange?: boolean;
 };
 type Profiles = {
   provisional?: boolean;
   sizes: number[];
-  setup?: { engineCommit?: string };
+  setup?: {
+    engineCommit?: string;
+    /** `select version()` up to " on ", e.g. "PostgreSQL 18.1" */
+    database?: string;
+    databaseHost?: { cpus?: string } | null;
+    harness?: { iterations?: number } | null;
+    runs?: Array<{ rows: number; startedAt: string }>;
+  };
   profiles: Record<"out-of-the-box" | "tuned", Record<string, Record<string, Cell>>>;
 };
 
@@ -78,10 +84,7 @@ const requests = Object.fromEntries(
     const outOfTheBox = medians("out-of-the-box", s.outOfTheBox);
     if (!s.tuned)
       // not tuned: the chart keeps these columns as they are and labels them "no change"
-      return [
-        key,
-        { outOfTheBox, tuned: outOfTheBox, verdict: "unchanged", ratio: null, engineChange: false },
-      ];
+      return [key, { outOfTheBox, tuned: outOfTheBox, verdict: "unchanged", ratio: null }];
     const last = cellAt("tuned", s.tuned, LAST);
     if (!last.verdict || !VERDICTS.includes(last.verdict))
       throw new Error(`tuned / ${s.tuned} / ${LAST} rows: no verdict in ${source}`);
@@ -95,7 +98,6 @@ const requests = Object.fromEntries(
         verdict: last.verdict,
         // out of the box ÷ tuned at 10M rows, as the benchmark measured it
         ratio: last.ratio,
-        engineChange: SIZES.some((n) => cellAt("tuned", s.tuned!, n).requiresEngineChange === true),
       },
     ];
   }),
@@ -122,24 +124,29 @@ for (const [key, r] of Object.entries(requests)) {
     );
 }
 
-const previous = (() => {
-  try {
-    return JSON.parse(readFileSync(target, "utf8")) as { measuredOn?: string };
-  } catch {
-    return {};
-  }
-})();
 const commit = data.setup?.engineCommit ?? readFileSync(join(results, "engine-commit.txt"), "utf8");
+/** What the results say about the run; a file from before these fields falls back to the first run's setup. */
+const latestRun = (data.setup?.runs ?? [])
+  .map((r) => r.startedAt)
+  .sort()
+  .at(-1);
+const postgres = /PostgreSQL ([\d.]+)/.exec(data.setup?.database ?? "")?.[1];
+const cpus = Number(data.setup?.databaseHost?.cpus);
+const LEGACY = { measuredOn: "2026-11-26", postgres: "18.7", cpus: 4, runs: 10 };
+if (!latestRun || !postgres || !Number.isFinite(cpus) || !data.setup?.harness?.iterations)
+  console.warn(
+    `warning: ${source} does not say when, on which PostgreSQL, with how many CPUs or runs it was measured; using the first harness's values`,
+  );
 const out = {
   $comment:
     "Numbers for the landing's benchmark chart. Regenerate with `bun tools/landing-bench-data.ts` from tools/results/profiles.json; do not edit by hand. Times are medians in milliseconds, one per table size; ratio is out of the box ÷ tuned at 10M rows.",
   provisional: data.provisional,
-  measuredOn: flag("--measured-on") ?? previous.measuredOn ?? new Date().toISOString().slice(0, 10),
+  measuredOn: flag("--measured-on") ?? latestRun?.slice(0, 10) ?? LEGACY.measuredOn,
   engine: commit.trim().slice(0, 7),
-  postgres: "18.7",
-  cpus: 4,
+  postgres: postgres ?? LEGACY.postgres,
+  cpus: Number.isFinite(cpus) ? cpus : LEGACY.cpus,
   clients: 1,
-  runs: 10,
+  runs: data.setup?.harness?.iterations ?? LEGACY.runs,
   sizes: SIZES,
   requests,
   tunedSettings: { countCap: 10_000 },

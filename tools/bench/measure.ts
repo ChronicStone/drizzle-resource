@@ -1,6 +1,6 @@
 import { loadavg } from "node:os";
 import type { QueryEvent } from "../../packages/core/index.ts";
-import { ITERATIONS, MIN_ROUNDS, TIMEOUT_MS } from "./config.ts";
+import { ITERATIONS, LOAD_THRESHOLD, MIN_ROUNDS, TIMEOUT_MS } from "./config.ts";
 
 /** Every statement the engine runs reports here; the measurement reads it after each call. */
 let sink: QueryEvent[] | undefined;
@@ -18,6 +18,14 @@ export type Cell = {
   countUsed?: string;
   /** Median milliseconds per kind of statement, as the engine reported them. */
   stages?: Record<string, number>;
+  /**
+   * Statements per kind in one call, the most any sample ran (facets split or not, search attempts).
+   * A budgeted search attempt that was cancelled is counted here and in `cancelled`, and its time is
+   * in `stages`: the request waited for it.
+   */
+  statements?: Record<string, number>;
+  /** Cancelled statements per kind in one call, the most any sample had. */
+  cancelled?: Record<string, number>;
   /** Median of the sum of every statement's time (statements may overlap in time). */
   statementsMs?: number;
   /** Set when the request was not measured: `over-limit` or `error: …`. */
@@ -36,7 +44,13 @@ export function median(values: number[]): number {
 const round = (ms: number) => Math.round(ms * 1000) / 1000;
 
 type Pageish = { pageInfo?: { count?: string; rowCount?: number | null } };
-type Sample = { ms: number; stages: Record<string, number>; result: Pageish };
+type Sample = {
+  ms: number;
+  stages: Record<string, number>;
+  statements: Record<string, number>;
+  cancelled: Record<string, number>;
+  result: Pageish;
+};
 export type Run = () => Promise<unknown>;
 
 async function once(run: Run): Promise<Sample> {
@@ -46,8 +60,14 @@ async function once(run: Run): Promise<Sample> {
     const result = (await run()) as Pageish;
     const ms = performance.now() - start;
     const stages: Record<string, number> = {};
-    for (const event of sink) stages[event.stage] = (stages[event.stage] ?? 0) + event.ms;
-    return { ms, stages, result };
+    const statements: Record<string, number> = {};
+    const cancelled: Record<string, number> = {};
+    for (const event of sink) {
+      stages[event.stage] = (stages[event.stage] ?? 0) + event.ms;
+      statements[event.stage] = (statements[event.stage] ?? 0) + 1;
+      if (event.error !== undefined) cancelled[event.stage] = (cancelled[event.stage] ?? 0) + 1;
+    }
+    return { ms, stages, statements, cancelled, result };
   } finally {
     sink = undefined;
   }
@@ -66,6 +86,12 @@ const failure = (error: unknown, method: string): Cell => ({
 const samplesFor = (warmMs: number) =>
   warmMs > 20_000 ? Math.min(ITERATIONS, 3) : warmMs > 1_000 ? Math.min(ITERATIONS, 5) : ITERATIONS;
 
+const mostPerStage = (counts: Record<string, number>[]) => {
+  const out: Record<string, number> = {};
+  for (const c of counts) for (const [k, v] of Object.entries(c)) out[k] = Math.max(out[k] ?? 0, v);
+  return Object.fromEntries(Object.entries(out).sort(([a], [b]) => a.localeCompare(b)));
+};
+
 function summarize(samples: Sample[], method: string): Cell {
   const stageNames = [...new Set(samples.flatMap((s) => Object.keys(s.stages)))].sort();
   const info = samples[0]!.result.pageInfo;
@@ -80,6 +106,10 @@ function summarize(samples: Sample[], method: string): Cell {
     statementsMs: round(
       median(samples.map((s) => Object.values(s.stages).reduce((sum, value) => sum + value, 0))),
     ),
+    statements: mostPerStage(samples.map((s) => s.statements)),
+    ...(samples.some((s) => Object.keys(s.cancelled).length)
+      ? { cancelled: mostPerStage(samples.map((s) => s.cancelled)) }
+      : {}),
     ...(info ? { countUsed: info.count, rowCount: info.rowCount ?? null } : {}),
   };
 }
@@ -186,11 +216,29 @@ export async function measurePaired(
   return out;
 }
 
-/** The one-minute load average, sampled around every scenario so a busy spell shows. */
+/**
+ * The one-minute load average, sampled before every scenario so a busy spell shows. `settle` first
+ * waits, up to two minutes, for the average to fall to the threshold: the harness's own schema
+ * builds and concurrent facets keep it up for a minute after they end, and the sample is meant to
+ * show the rest of the machine. A wait that runs out is not repeated: the run is busy, and its
+ * samples say so.
+ */
 export class LoadMeter {
   samples: number[] = [];
+  /** Seconds spent waiting for the load to settle. */
+  waitedS = 0;
+  private busy = false;
   sample() {
     this.samples.push(loadavg()[0]!);
+  }
+  async settle(threshold = LOAD_THRESHOLD, maxMs = 120_000) {
+    const start = Date.now();
+    while (!this.busy && loadavg()[0]! > threshold) {
+      if (Date.now() - start >= maxMs) this.busy = true;
+      else await new Promise((resolve) => setTimeout(resolve, 5_000));
+    }
+    this.waitedS += Math.round((Date.now() - start) / 1000);
+    this.sample();
   }
   get start() {
     return this.samples[0] ?? 0;

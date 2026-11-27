@@ -74,8 +74,24 @@ const fingerprintKey = (run: RunRecord) => {
 };
 
 /**
+ * A run whose own checks pass: a clean null pair, no failed cell, no checkIndexes error left.
+ * Load is judged apart, so a sound run under a higher load still beats an unsound quiet one.
+ */
+function sound(run: RunRecord) {
+  const ratios = run.nullPair?.ratios ?? [];
+  if (ratios.length < MIN_ROUNDS) return false;
+  const nullPair = judge(ratios);
+  if (nullPair.verdict !== "unchanged" || !(Math.abs(nullPair.ratio - 1) <= 0.05)) return false;
+  if (run.tuning.some((t) => !t.noErrorRemains)) return false;
+  return Object.values(run.cells).every((cells) =>
+    Object.values(cells ?? {}).every((c) => !c.skipped || c.skipped === "over-limit"),
+  );
+}
+
+/**
  * Runs from one engine commit, harness and database only: the newest fingerprint wins and older
- * ones are counted, never mixed in. The run for each size is the one taken under the lowest load.
+ * ones are counted, never mixed in. The run for each size is a sound one if there is one (see
+ * `sound`), and among those the one taken under the lowest load.
  */
 export function chooseRuns(runs: RunRecord[], sizes: number[]) {
   const inScope = runs.filter((r) => sizes.includes(r.rows));
@@ -84,7 +100,11 @@ export function chooseRuns(runs: RunRecord[], sizes: number[]) {
   const best = new Map<number, RunRecord>();
   for (const run of usable) {
     const current = best.get(run.rows);
-    if (!current || run.load.max < current.load.max) best.set(run.rows, run);
+    const better =
+      !current ||
+      (sound(run) && !sound(current)) ||
+      (sound(run) === sound(current) && run.load.max < current.load.max);
+    if (better) best.set(run.rows, run);
   }
   const chosen = [...best.values()].sort((a, b) => a.rows - b.rows);
   if (new Set(chosen.map(fingerprintKey)).size > 1)
@@ -294,9 +314,9 @@ export function tunedChanges(run: RunRecord | undefined) {
       finding: finding(tuned, "search-unindexed")?.message ?? null,
       sql: status,
       applied: status.length > 0,
-      affects: [] as string[],
-      touchesTimedRequests: false,
-      note: "Search is open to every column, so the check asks for it from 100,000 rows. No landing request searches status; only the informational count of a search over every column can use it.",
+      affects: ["the count statements of a search over every column (wide-search-not-here)"],
+      touchesTimedRequests: true,
+      note: "Search is open to every column, so the check asks for it from 100,000 rows. No landing request searches status. The count statements of a search over every column can use it; they are measured on the tuned schema only, exact against capped, so no out-of-the-box comparison credits it.",
     },
     {
       id: "copied-name",
@@ -415,7 +435,7 @@ function build(
     'Every number is one engine call end to end: pages and counts through resource.queryIds, capped counts with count: "capped", facets through resource.queryFacets. `parts` and `stages` are the engine\'s own per-statement times from onQuery; `statementsMs` is their sum (statements can overlap, so it can exceed the call time). `maxMs` is the slowest sample; with ten samples a p95 would be the same number.',
     "Landing requests are measured in pairs: out of the box and the setup it is compared with are called one after the other, at least 10 rounds, in a carryover-balanced (Williams) order, so a verdict compares calls made seconds apart. Only the out-of-the-box schema and the one being compared are resident at a time. verdict: improved when the ratio (out of the box / this) stays above 1 in at least 80% of the pairs and its median is at least 1.15; worse when it stays below 1 in at least 80% and the median is at most 1/1.15; otherwise unchanged. `ratio` is the median; `pairsFaster` counts the pairs above 1. Each ratio is against the out-of-the-box calls of its own pair.",
     "setup.nullPairs: the same request against itself, timed as two arms, with the range of its ratios. It must read unchanged with at least 10 pairs and a median within 5% of 1; a verdict whose ratio is inside that range is reported as unchanged (withinNoise).",
-    "Tuned is what setup.tuning.changes lists: what engine.checkIndexes({ live: true }) asked for, the engine options that go with its findings, and nothing else. The check's only index for the unchanged schema (a trigram index on status) is used by no timed request; the gains come from the capped count, the copied name and the facets setting. `<scenario>:count-exact` and `:count-capped` are the count statement alone, from onQuery's count stage on the tuned schema. Facet cells named `<facets>/<variant>` (GROUPING SETS or one statement per facet, in a transaction or on the pool) are informational and carry no verdict.",
+    "Tuned is what setup.tuning.changes lists: what engine.checkIndexes({ live: true }) asked for, the engine options that go with its findings, and nothing else. The check's only index for the unchanged schema (a trigram index on status) is used by no landing request, only by the count statements of a search over every column; the gains come from the capped count and the copied name. facets.splitAbove 0 runs the same statements as the default, 100,000, on every size measured here. `<scenario>:count-exact` and `:count-capped` are the count statement alone, from onQuery's count stage on the tuned schema. Facet cells named `<facets>/<variant>` (GROUPING SETS or one statement per facet, in a transaction or on the pool) are informational and carry no verdict.",
     "Out of the box facets use the engine's default, facets.splitAbove 100,000, which already splits the facets of a table of this size; a tuned facets request can therefore come out unchanged.",
     "Data: createdAt grows with id, so a cursor with createdAt desc, id asc is cheap without a tuned index. orgId, status and paid are functions of n: inside tenant 42 every order has status 'paid' and paid = false.",
     ...(options.overLimit
@@ -458,6 +478,7 @@ function build(
         loadStart: r.load.start,
         loadEnd: r.load.end,
         loadMax: r.load.max,
+        waitedS: r.load.waitedS ?? null,
         highLoad: r.load.max > options.threshold,
       })),
       nullPairs: options.nulls.map(({ rows, request, verdict, ratio, pairs, min, max }) => ({
