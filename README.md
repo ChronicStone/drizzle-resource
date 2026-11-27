@@ -135,19 +135,18 @@ Each stage can be replaced with your own implementation through `strategy.*`. [S
 
 ## Benchmarks
 
-Median timings from the repository's PostgreSQL benchmark: 200,000 rows, PostgreSQL 18, one client.
+Median time of one request on an `orders` table of 200,000, 1 million and 10 million rows, PostgreSQL 18 on 4 CPUs. The first three columns are the schema the benchmark starts with, and the last is the same request at 10 million rows after tuning.
 
-| Request               | 2.4.1 (Sept 2026) | Now      |
-| --------------------- | ----------------- | -------- |
-| Page, no count        | 39.95 ms          | 0.51 ms  |
-| Cursor page, 90% deep | 20.11 ms          | 1.09 ms  |
-| Page and exact count  | 62.46 ms          | 4.17 ms  |
-| Relation search       | 79.46 ms          | 16.80 ms |
-| 3 root facets         | 90.03 ms          | 24.76 ms |
-| 5 mixed facets        | 195.04 ms         | 57.38 ms |
-| Exclude-self facets   | 138.22 ms         | 35.84 ms |
+| Request                      | 200k rows | 1M rows  | 10M rows   | 10M rows, tuned |
+| ---------------------------- | --------- | -------- | ---------- | --------------- |
+| Page of 50, no count         | 0.29 ms   | 0.31 ms  | 0.27 ms    | not tuned       |
+| Cursor page, 90% deep        | 0.50 ms   | 0.35 ms  | 0.36 ms    | not tuned       |
+| Page and exact count         | 10.9 ms   | 16.1 ms  | 100.3 ms   | 1.04 ms         |
+| Sort by `customer.name`      | 24.7 ms   | 67.4 ms  | 751.8 ms   | 1.02 ms         |
+| 4 facets, 2 through customer | 32.4 ms   | 127.4 ms | 1,354.5 ms | 1,404.7 ms      |
+| Search `"ord"`, with a count | 155.6 ms  | 657.3 ms | 6,109.8 ms | 5.42 ms         |
 
-Single-client engine timings, not HTTP or production latency. [Full results](https://drizzle-resource.chronicstone.dev/scale/benchmarks).
+Tuned is a capped count, plus the indexes and the copied customer name that `checkIndexes()` asked for. These are single-client timings of the engine itself, not HTTP or production latency. [Full results](https://drizzle-resource.chronicstone.dev/scale/benchmarks).
 
 ## Methods
 
