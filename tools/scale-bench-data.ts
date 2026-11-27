@@ -15,20 +15,50 @@ import { join } from "node:path";
 type Verdict = "improved" | "unchanged" | "worse";
 type Cell = {
   medianMs?: number;
-  p95Ms?: number;
+  maxMs?: number;
   method?: string;
   verdict?: Verdict;
   ratio?: number;
   rowCount?: number;
   uses?: string;
-  requiresEngineChange?: boolean;
   parts?: Record<string, number | string>;
 };
 type ProfileName = "out-of-the-box" | "tuned" | "scoped";
+type TunedChange = {
+  id: string;
+  change: string;
+  origin: string;
+  rule: string | null;
+  finding: string | null;
+  sql: string[];
+  applied: boolean;
+  affects: string[];
+  touchesTimedRequests: boolean;
+  note: string;
+};
+type NullPair = {
+  rows: number;
+  verdict: Verdict;
+  ratio: number;
+  ratioMin: number;
+  ratioMax: number;
+};
 type Profiles = {
   provisional?: boolean;
   sizes: number[];
-  setup: Record<string, unknown> & { engineCommit?: string };
+  setup: {
+    database: string;
+    postgresSettings: Record<string, string | number>;
+    dataset: string;
+    client: string;
+    engineCommit?: string;
+    handSql?: string;
+    /** Written by the first harness, before \`setup.tuning\` existed. */
+    profileDefinitions?: Record<string, string>;
+    engineNote?: string;
+    nullPairs?: NullPair[];
+    tuning?: { changes: TunedChange[]; runs: unknown[] };
+  };
   profiles: Record<ProfileName, Record<string, Record<string, Cell>>>;
 };
 type HarnessRun = {
@@ -62,7 +92,10 @@ const read = <T>(file: string) => JSON.parse(readFileSync(join(results, file), "
 const SIZES = [200_000, 1_000_000, 10_000_000];
 const VERDICTS: Verdict[] = ["improved", "unchanged", "worse"];
 const PROFILES_FILE = "profiles.json";
-const data = read<Profiles>(PROFILES_FILE);
+const profilesPath = flag("--profiles");
+const data = profilesPath
+  ? (JSON.parse(readFileSync(profilesPath, "utf8")) as Profiles)
+  : read<Profiles>(PROFILES_FILE);
 if (typeof data.provisional !== "boolean")
   throw new Error(`${PROFILES_FILE} must say "provisional": true or false at its top level`);
 for (const n of SIZES)
@@ -72,18 +105,22 @@ for (const n of SIZES)
 const round = (ms: number) => Math.round(ms * 1000) / 1000;
 const cellAt = (profile: ProfileName, scenario: string, n: number) => {
   const cell = data.profiles[profile]?.[scenario]?.[String(n)];
+  if ((cell as { skipped?: string } | undefined)?.skipped)
+    throw new Error(
+      `${profile} / ${scenario} / ${n} rows: ${(cell as { skipped?: string }).skipped} in ${PROFILES_FILE}; the Scale pages have no way to show a request with no time yet`,
+    );
   if (typeof cell?.medianMs !== "number")
     throw new Error(`${profile} / ${scenario} / ${n} rows: no measured median in ${PROFILES_FILE}`);
   return cell;
 };
-/** One series: a median and a p95 per table size, and how they were measured. */
+/** One series: a median and the slowest sample per table size, and how they were measured. */
 const series = (profile: ProfileName, scenario: string) => {
   const cells = SIZES.map((n) => cellAt(profile, scenario, n));
   const methods = [...new Set(cells.map((c) => c.method ?? "engine"))];
   return {
     scenario,
     ms: cells.map((c) => round(c.medianMs!)),
-    p95: cells.map((c) => (typeof c.p95Ms === "number" ? round(c.p95Ms) : null)),
+    max: cells.map((c) => (typeof c.maxMs === "number" ? round(c.maxMs) : null)),
     method: methods.join(", "),
   };
 };
@@ -102,7 +139,6 @@ const judged = (profile: ProfileName, scenario: string) => {
     ...s,
     verdict,
     ratio: cells.map((c) => c.ratio ?? null),
-    engineChange: cells.some((c) => c.requiresEngineChange === true),
   };
 };
 
@@ -144,22 +180,13 @@ const REQUESTS: Record<
       how: "name copied onto orders, capped count",
     },
   },
-  relationSortIndexOnly: {
-    label: "Sort by customer.name + count",
-    shape: "sort customer.name asc · count exact",
-    outOfTheBox: "landing/sort-customer-name-plus-count",
-    tuned: {
-      scenario: "landing/sort-customer-name-plus-count",
-      how: "index on customers (name), capped count",
-    },
-  },
   twoFacets: {
     label: "2 facets",
     shape: "facets status,paid",
     outOfTheBox: "landing/two-root-facets",
     tuned: {
       scenario: "landing/two-root-facets",
-      how: "fastest of shared and separate statements",
+      how: "one statement per facet (facets.splitAbove: 0)",
     },
   },
   fourFacets: {
@@ -168,7 +195,7 @@ const REQUESTS: Record<
     outOfTheBox: "landing/four-mixed-facets",
     tuned: {
       scenario: "landing/four-mixed-facets",
-      how: "fastest of shared and separate statements",
+      how: "one statement per facet (facets.splitAbove: 0)",
     },
   },
   searchCommon: {
@@ -417,6 +444,33 @@ const previous = (() => {
     return {};
   }
 })();
+/**
+ * What each profile contains, in words, written from the results file: the tuned changes are
+ * listed from `setup.tuning`, with the tool that asked for each, so the page says exactly what
+ * "tuned" means and which of it touches no timed request.
+ */
+function profileDefinitions() {
+  const changes = (data.setup.tuning?.changes ?? []).filter((c) => c.applied);
+  if (changes.length === 0) {
+    // A results file from before `setup.tuning` carries the words itself.
+    if (data.setup.profileDefinitions) return data.setup.profileDefinitions;
+    throw new Error(`${PROFILES_FILE} has no setup.tuning.changes`);
+  }
+  const list = (cs: TunedChange[]) => cs.map((c) => `${c.change} (${c.origin})`).join("; ");
+  const idle = changes.filter((c) => !c.touchesTimedRequests).map((c) => c.change);
+  const scope = changes.find((c) => c.id === "scope-index");
+  return {
+    "out-of-the-box":
+      "The schema the benchmark starts with: primary keys, an index on orders (createdAt, id) and one on orders (customerId), trigram indexes on lower(orders.reference) and lower(customers.name). Exact counts; facets use the engine's default, facets.splitAbove 100,000.",
+    tuned: `${list(changes.filter((c) => c.id !== "scope-index"))}.${idle.length ? ` Of these, ${idle.join(" and ")} is used by no timed request.` : ""}`,
+    scoped: `Tuned, with the resource scoped to one tenant of 100 (orgId 42)${scope ? `: ${scope.change} (${scope.origin})` : ""}. Capped counts.`,
+  };
+}
+const engineNote = () =>
+  data.setup.tuning ? engineNoteFromTuning() : (data.setup.engineNote ?? engineNoteFromTuning());
+const engineNoteFromTuning = () =>
+  `Every timing is an engine call at commit ${commit.trim().slice(0, 7)}: pages and counts through queryIds, counts capped with count: "capped", facets through queryFacets, per-statement times from onQuery. ${data.setup.handSql ?? ""}`.trim();
+
 const out = {
   $comment:
     "Numbers for the docs' Scale pages. Regenerate with `bun tools/scale-bench-data.ts` from tools/results; do not edit by hand. Times are milliseconds, one per table size.",
@@ -429,8 +483,10 @@ const out = {
     postgresSettings: data.setup.postgresSettings,
     dataset: data.setup.dataset,
     client: data.setup.client,
-    profiles: data.setup.profileDefinitions,
-    engineNote: data.setup.engineNote,
+    profiles: profileDefinitions(),
+    engineNote: engineNote(),
+    tuning: data.setup.tuning ?? null,
+    nullPairs: data.setup.nullPairs ?? [],
   },
   sizes: SIZES,
   requests,

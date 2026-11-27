@@ -1,6 +1,6 @@
 import { loadavg } from "node:os";
 import type { QueryEvent } from "../../packages/core/index.ts";
-import { ITERATIONS, TIMEOUT_MS } from "./config.ts";
+import { ITERATIONS, MIN_ROUNDS, TIMEOUT_MS } from "./config.ts";
 
 /** Every statement the engine runs reports here; the measurement reads it after each call. */
 let sink: QueryEvent[] | undefined;
@@ -106,47 +106,80 @@ export async function measure(run: Run, method = "engine"): Promise<Cell> {
 }
 
 /**
- * Runs the same request against several setups, one call of each in turn, the order rotating every
- * round, so each ratio to the first (out-of-the-box) arm comes from calls made seconds apart.
- * Returns one cell per arm; every arm after the first carries `pairedRatios`.
+ * Orderings for `k` arms in which every arm follows every other arm equally often (a Williams
+ * design: a Latin square whose first row is 0, 1, k-1, 2, k-2, …; for odd `k` it is followed by the
+ * reversed rows). A plain rotation would leave one arm always right after the same neighbour.
+ */
+export function williamsOrders(k: number): number[][] {
+  if (k <= 1) return [[0]];
+  const first = [0];
+  let low = 1;
+  let high = k - 1;
+  while (first.length < k) {
+    first.push(low++);
+    if (first.length < k) first.push(high--);
+  }
+  const rows = Array.from({ length: k }, (_, shift) => first.map((x) => (x + shift) % k));
+  return k % 2 === 0 ? rows : [...rows, ...rows.map((row) => [...row].reverse())];
+}
+
+/** Rounds to run: the fewest that is a whole number of orderings and at least MIN_ROUNDS. */
+export const roundsFor = (arms: number) => {
+  const orders = williamsOrders(arms).length;
+  return Math.ceil(MIN_ROUNDS / orders) * orders;
+};
+
+/**
+ * Runs the same request against several setups, one call of each in turn, in a carryover-balanced
+ * order, at least ten rounds whatever the weight of the request, so each ratio to the first
+ * (out-of-the-box) arm comes from calls made seconds apart. Every timed call is preceded by an
+ * untimed one of the same request. Returns one cell per arm; every arm
+ * after the first carries `pairedRatios`. An arm that times out or fails is marked alone; the
+ * others carry on.
  */
 export async function measurePaired(
   arms: Array<{ name: string; run: Run }>,
   method = "engine",
 ): Promise<Record<string, Cell>> {
   const out: Record<string, Cell> = {};
-  const live: Array<{ name: string; run: Run }> = [];
-  let slowest = 0;
+  let live: Array<{ name: string; run: Run }> = [];
   for (const arm of arms) {
     try {
       const warm = await once(arm.run);
       if (warm.ms > TIMEOUT_MS) out[arm.name] = { method, skipped: "over-limit" };
-      else {
-        live.push(arm);
-        slowest = Math.max(slowest, warm.ms);
-      }
+      else live.push(arm);
     } catch (error) {
       out[arm.name] = failure(error, method);
     }
   }
-  const rounds = samplesFor(slowest);
-  const samples = new Map<string, Sample[]>(live.map((arm) => [arm.name, []]));
-  try {
-    for (let i = 0; i < rounds; i += 1)
-      for (let j = 0; j < live.length; j += 1) {
-        const arm = live[(i + j) % live.length]!;
-        samples.get(arm.name)!.push(await once(arm.run));
+  const rounds = roundsFor(live.length);
+  const orders = williamsOrders(live.length);
+  const slots = live.slice();
+  const samples = new Map<string, Array<Sample | undefined>>(slots.map((arm) => [arm.name, []]));
+  for (let i = 0; i < rounds; i += 1)
+    for (const index of orders[i % orders.length]!) {
+      const arm = slots[index]!;
+      if (!live.includes(arm)) continue;
+      try {
+        // An untimed call of the same request first, so the timed one finds its own pages in
+        // memory whatever the other setup's calls have evicted since it last ran.
+        await arm.run();
+        samples.get(arm.name)![i] = await once(arm.run);
+      } catch (error) {
+        out[arm.name] = failure(error, method);
+        live = live.filter((a) => a !== arm);
       }
-  } catch (error) {
-    for (const arm of live) out[arm.name] = failure(error, method);
-    return out;
-  }
+    }
   const reference = samples.get(arms[0]!.name);
   for (const arm of live) {
-    const cell = summarize(samples.get(arm.name)!, method);
-    if (reference && arm.name !== arms[0]!.name)
-      cell.pairedRatios = reference.map(
-        (r, i) => Math.round((r.ms / samples.get(arm.name)![i]!.ms) * 1000) / 1000,
+    const own = samples.get(arm.name)!;
+    const cell = summarize(
+      own.filter((s): s is Sample => s !== undefined),
+      method,
+    );
+    if (reference && arm.name !== arms[0]!.name && live.some((a) => a.name === arms[0]!.name))
+      cell.pairedRatios = own.flatMap((s, i) =>
+        s && reference[i] ? [Math.round((reference[i]!.ms / s.ms) * 1000) / 1000] : [],
       );
     out[arm.name] = cell;
   }

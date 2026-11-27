@@ -1,4 +1,5 @@
 import { spawnSync } from "node:child_process";
+import { randomBytes } from "node:crypto";
 import { DOCKER } from "./config.ts";
 
 function docker(args: string[], allowFail = false) {
@@ -11,14 +12,18 @@ function docker(args: string[], allowFail = false) {
 export const dockerAvailable = () =>
   spawnSync("docker", ["info"], { stdio: "ignore" }).status === 0;
 
+/** The container this process started. Its name is unique, so a second run never touches the first. */
+export let containerName: string | undefined;
+
 /** Starts the benchmark database: postgres:18, 4 CPUs, 4 GB, the settings the published numbers used. */
-export async function startContainer(): Promise<string> {
-  docker(["rm", "-f", "-v", DOCKER.name], true);
+export async function startContainer(): Promise<{ url: string; name: string }> {
+  const name = `drizzle-resource-bench-${randomBytes(3).toString("hex")}`;
+  containerName = name;
   docker([
     "run",
     "-d",
     "--name",
-    DOCKER.name,
+    name,
     "--cpus",
     DOCKER.cpus,
     "--memory",
@@ -29,32 +34,29 @@ export async function startContainer(): Promise<string> {
     "POSTGRES_PASSWORD=bench",
     "-e",
     "POSTGRES_DB=bench",
+    // Docker picks a free port on this machine.
     "-p",
-    `127.0.0.1:${DOCKER.port}:5432`,
+    "127.0.0.1::5432",
     DOCKER.image,
     ...Object.entries(DOCKER.settings).flatMap(([key, value]) => ["-c", `${key}=${value}`]),
   ]);
-  const url = `postgres://postgres:bench@127.0.0.1:${DOCKER.port}/bench`;
+  const mapping = docker(["port", name, "5432/tcp"]).stdout.trim().split("\n")[0]!;
+  const port = mapping.slice(mapping.lastIndexOf(":") + 1);
+  const url = `postgres://postgres:bench@127.0.0.1:${port}/bench`;
+  const ready = () =>
+    docker(["exec", name, "pg_isready", "-U", "postgres", "-d", "bench"], true).status === 0;
   for (let attempt = 0; attempt < 60; attempt += 1) {
-    const ready = docker(
-      ["exec", DOCKER.name, "pg_isready", "-U", "postgres", "-d", "bench"],
-      true,
-    );
-    // The image restarts once after initialising; wait until a query goes through twice in a row.
-    if (ready.status === 0) {
+    // The image restarts once after initialising; wait until it answers twice in a row.
+    if (ready()) {
       await new Promise((resolve) => setTimeout(resolve, 2_000));
-      if (
-        docker(["exec", DOCKER.name, "pg_isready", "-U", "postgres", "-d", "bench"], true)
-          .status === 0
-      )
-        return url;
+      if (ready()) return { url, name };
     }
     await new Promise((resolve) => setTimeout(resolve, 1_000));
   }
-  throw new Error(`${DOCKER.name} did not become ready`);
+  throw new Error(`${name} did not become ready`);
 }
 
 /** Removes the container and its anonymous volume, so the disk comes back. */
 export function removeContainer() {
-  docker(["rm", "-f", "-v", DOCKER.name], true);
+  if (containerName) docker(["rm", "-f", "-v", containerName], true);
 }
