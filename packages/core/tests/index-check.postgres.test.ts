@@ -250,7 +250,16 @@ function verdictOf(findings: IndexFinding[], resource: string) {
 describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
   beforeAll(async () => {
     await db.execute(sql`create schema ${sql.identifier(namespace.schemaName)}`);
-    await db.execute(sql`create extension if not exists pg_trgm`);
+    // Test files run in parallel: on a fresh database another one may create pg_trgm at the same
+    // moment, and `if not exists` still fails with a duplicate key. The extension is then there.
+    try {
+      await db.execute(sql`create extension if not exists pg_trgm`);
+    } catch (error) {
+      const present = await db.execute(
+        sql`select 1 as present from pg_extension where extname = 'pg_trgm'`,
+      );
+      if (present.rows.length === 0) throw error;
+    }
     const everyTable = [
       ...variantNames,
       "declared",
