@@ -209,8 +209,8 @@ const consoleFor = computed(() => {
           ["ok", "      copy name onto orders and index it, or disable the sort"],
         ],
         say: r.improved
-          ? `checkIndexes() flags the relation sort. With its fix: ${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms.`
-          : `checkIndexes() flags the relation sort, but on this run its fix did not make it faster (${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms), so the chart leaves it as it was.`,
+          ? `checkIndexes() flags the relation sort. With the name copied onto orders, and the capped count from step 4: ${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms.`
+          : `checkIndexes() flags the relation sort, but on this run the copied name and the capped count did not make it faster (${atLast(r, "outOfTheBox")} → ${fmt(r.tuned[LAST]!)} ms), so the chart leaves it as it was.`,
       };
     }
     default:
