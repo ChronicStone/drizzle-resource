@@ -5,7 +5,7 @@ import { hl, inView, prefersReducedMotion } from "./px";
 defineProps<{ bare?: boolean }>();
 
 /*
- * A request falls through the five engine steps. Three scenarios: a normal request,
+ * A request falls through the six engine steps. Three scenarios: a normal request,
  * a field the resource doesn't allow (stops at validation), and an attempt at another tenant's data.
  */
 type Tone = "ok" | "bad" | "";
@@ -24,11 +24,12 @@ interface Scenario {
 }
 
 const LAYERS = [
-  ["01", "scope"],
-  ["02", "validate"],
-  ["03", "page ids"],
-  ["04", "rows"],
-  ["05", "facets & totals"],
+  ["01", "validate"],
+  ["02", "scope"],
+  ["03", "count & totals"],
+  ["04", "page ids"],
+  ["05", "rows"],
+  ["06", "facets"],
 ] as const;
 
 const SCENARIOS: Scenario[] = [
@@ -38,25 +39,27 @@ const SCENARIOS: Scenario[] = [
   filters: [{ key: "status", operator: "is", value: "shipped" }],
   facets: [{ key: "status" }], summary: true }`,
     steps: [
-      { text: 'where c."org_id" = $1 and ( … )   -- tenant from ctx', lang: "sql" },
       { text: "keys, operators and paths allowed", lang: "ts", tone: "ok" },
+      { text: 'where c."org_id" = $1 and ( … )   -- tenant from ctx', lang: "sql" },
+      { text: "one aggregate statement → count 1,240 · revenue 411230", lang: "sql" },
       { text: 'select "id" … limit 26   -- 0.51 ms', lang: "sql" },
       { text: '25 rows · view "list" · relations in the same statement', lang: "ts" },
-      { text: "grouping sets → status buckets + revenue", lang: "sql" },
+      { text: "grouping sets → status buckets", lang: "sql" },
     ],
     response: `{ rows: [ /* 25 typed rows */ ],
   pageInfo: { nextCursor: "eyJrIjox…" },
   facets: { status: [ /* 4 buckets */ ] },
   summary: { revenue: "411230" } }`,
-    meta: "200 · 2 statements",
+    meta: "200 · 4 statements",
   },
   {
     name: "a field you didn't allow",
     request: `{ filters: [{ key: "customer.email",
   operator: "contains", value: "@" }] }`,
     steps: [
-      { text: 'where c."org_id" = $1 and ( … )', lang: "sql" },
       { text: 'Unknown filter field "customer.email"', lang: "ts", tone: "bad" },
+      null,
+      null,
       null,
       null,
       null,
@@ -65,15 +68,16 @@ const SCENARIOS: Scenario[] = [
   issues: [{ path: ["filters", 0, "key"],
     message: "Unknown filter field" }] }`,
     meta: "400 · no SQL ran",
-    stopsAt: 1,
+    stopsAt: 0,
   },
   {
     name: "another tenant's data",
     request: `{ filters: [{ type: "group", combinator: "or",
   children: [ … orgId: "globex" … ] }] }`,
     steps: [
-      { text: `where c."org_id" = 'acme' and ( … or … )`, lang: "sql" },
       { text: "allowed, but it can only narrow", lang: "ts", tone: "ok" },
+      { text: `where c."org_id" = 'acme' and ( … or … )`, lang: "sql" },
+      { text: "count 0", lang: "sql" },
       { text: 'select "id" … limit 26', lang: "sql" },
       { text: "0 rows from globex", lang: "ts" },
       { text: "buckets for acme only", lang: "ts" },
@@ -155,7 +159,7 @@ onBeforeUnmount(clear);
     <div v-if="!bare" class="px-head">
       <h2>How a request <span class="px-acc">is handled</span></h2>
       <p class="px-lede">
-        Every request goes through the same five steps. The tenant scope is added on the server,
+        Every request goes through the same six steps. The tenant scope is added on the server,
         unknown fields are rejected before any SQL runs, and compatible facets share one statement.
         Pick a request to follow it.
       </p>
@@ -193,7 +197,7 @@ onBeforeUnmount(clear);
       </div>
 
       <div ref="layersEl" class="px-win px-layers">
-        <div class="px-win-h"><i />Engine<small>5 steps, always in this order</small></div>
+        <div class="px-win-h"><i />Engine<small>6 steps, always in this order</small></div>
         <div class="px-layers-body">
           <div
             class="px-drop"
