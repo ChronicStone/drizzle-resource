@@ -1,5 +1,41 @@
 # @drizzle-resource/core
 
+## 1.3.0
+
+### Minor Changes
+
+- [#50](https://github.com/ChronicStone/drizzle-resource/pull/50) [`55d2ff0`](https://github.com/ChronicStone/drizzle-resource/commit/55d2ff052a323dd0d1f5adfbaa24b15c9836ea31) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add `engine.checkIndexes()` and `resource.checkIndexes()`. They compare each resource's default sort, sortable columns, scope, search and facets with the indexes of its tables, and return findings with the Drizzle index and the SQL that fix them. `checkIndexes({ live: true })` reads the real btree and `pg_trgm` indexes and table sizes from PostgreSQL instead of the Drizzle schema. `formatIndexFindings(findings)` prints them for the console.
+
+  `QueryEngine` and `QueryResource` gain a `checkIndexes` member, so a mock you build by hand and type as one of them needs it.
+
+- [#50](https://github.com/ChronicStone/drizzle-resource/pull/50) [`9c3bf97`](https://github.com/ChronicStone/drizzle-resource/commit/9c3bf97cfdca8f0ac3fac49e8ea25b00ec5a143d) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add `capped` and `estimated` count modes, with `pagination.countCap` (10,000 by default) and typed `pageInfo` variants, so a page can show "10,000+" without reading every matching row. Offset pages read `hasNextPage` from a one-row lookahead whenever the count is not exact.
+
+  Add opt-in guards: `validation.maxPageIndex` (also enforced by the Zod, Valibot and Vine request schemas), `facets.whenCapped: "skip"` and per-stage `timeouts` for the count, facets and summary. A stage that times out degrades instead of failing the request. Every facet result now carries `status: "ok" | "skipped" | "timeout"`, and a summary carries `summaryStatus`.
+
+  Search without an exact count no longer trusts PostgreSQL's cost estimate, which took a rare term through the whole sort index. The count and the page each get bounded attempts: the ordinary plan under a time budget (`search.planBudget`, 25 ms by default), then the trigram-indexed plan under four times that budget, then the ordinary plan with no budget. A common term usually finishes in the first attempt. A term that matches nearly every row can miss the 25 ms budget and finish on a later attempt; raise `planBudget` if your ordinary search page takes longer than that. With a capped count, the count's result chooses where the page starts: a count under its cap starts it on the indexed plan, a count that hit the cap starts it on the ordinary plan. An `estimated` count over a search across tables falls back to `capped` and behaves the same way.
+
+  Type changes to check in your code:
+
+  - An exhaustive `switch (pageInfo.count)` must now handle `"capped"` and `"estimated"`.
+  - A `QueryCountMode` value no longer fits a parameter typed `"none" | "exact"`.
+  - `QueryFacetResult` gains an optional `status` and `reason`. Facets you write by hand keep compiling, and an absent `status` means `ok`. Use `QueryFacetOutcome` to narrow on `status`.
+  - `scan` accepts any `QueryCountMode` and rejects `"capped"` and `"estimated"` at runtime.
+  - `ResourceRuntimeQueryConfig` gains a required `timeouts` member. An object you build by hand and type as one needs it.
+
+  Search budgets and `timeouts` apply only when the engine owns the connection. With `db: tx` (your own transaction) the engine sets no `statement_timeout` and picks the search plan as before, because statements that overlap on one connection would share the limit.
+
+- [#50](https://github.com/ChronicStone/drizzle-resource/pull/50) [`654d343`](https://github.com/ChronicStone/drizzle-resource/commit/654d3439d58273c0aa2c14e73c4f6b31a8da1be5) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Run facets as separate statements on big tables. PostgreSQL cannot use parallel workers for a `GROUPING SETS` statement, so facets that shared one ran on a single CPU. Above `query.facets.splitAbove` estimated rows (default 100,000) each facet now gets its own statement, at most four at a time, and the exact count of a page is a statement of its own instead of riding in the shared one. Results, ordering, cursors, `missing` and `status` are unchanged; a timed-out facet no longer takes the facets that shared its statement with it, and a split exact count runs under `timeouts.count`.
+
+  The estimate is the root table's `pg_class.reltuples`, read once per database object and reused for five minutes. A request that filters or searches on root columns is judged by the planner's estimate of the rows it matches, so a narrow request keeps one shared statement. `splitAbove: 0` always splits and `Infinity` never does. The row estimate is reported to `onQuery` as a `plan` statement; `explain()` still reports `single-cpu-facets` for a shared statement that reads many rows, now with `splitAbove` as its fix.
+
+- [#50](https://github.com/ChronicStone/drizzle-resource/pull/50) [`becec96`](https://github.com/ChronicStone/drizzle-resource/commit/becec96c8aa2ff2c1ea6256b9d64cccdd98a0bbf) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Add `onQuery` to `createQueryEngine`: one event per statement the engine runs, with its stage (`ids`, `count`, `rows`, `facets`, `summary`, `plan`, `scan`), a value-free request shape, its duration, the rows it returned and its SQL with placeholders. A hook that throws never reaches the request, and an engine without a hook pays one boolean check per statement.
+
+  Add `resource.explain({ request, context, analyze })` and `formatExplain(report)`. It runs `EXPLAIN` (or `EXPLAIN ANALYZE, BUFFERS` in a transaction that is rolled back) on the exact statements `query` would run, and reports `full-count`, `index-walk`, `seq-scan`, `deep-offset`, `misestimate`, `relation-sort` and `single-cpu-facets` in plain words, with the numbers from the plan and a fix. PostgreSQL only. `QueryResource` gains the `explain` member, so a mock you build by hand and type as one needs it.
+
+### Patch Changes
+
+- [#50](https://github.com/ChronicStone/drizzle-resource/pull/50) [`64d5218`](https://github.com/ChronicStone/drizzle-resource/commit/64d5218682747f55ccc9228e4e7423bd6e3add46) Thanks [@ChronicStone](https://github.com/ChronicStone)! - Fix wrong counts in the shared `GROUPING SETS` facet statement: a root-column facet that shared a statement with a relation facet lost the rows whose relation is empty, because the statement inner-joined the relation. Facets now share a statement only when they read the same relations, and the exact count only rides in a statement with no inner-joined relation.
+
 ## 1.2.1
 
 ### Patch Changes
