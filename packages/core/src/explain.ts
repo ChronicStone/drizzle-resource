@@ -1,5 +1,10 @@
 import { sql } from "drizzle-orm";
-import { isPostgresDatabase, parseDurationMilliseconds, runTimed } from "./postgres.js";
+import {
+  isCallerTransaction,
+  isPostgresDatabase,
+  parseDurationMilliseconds,
+  runTimed,
+} from "./postgres.js";
 import { cloneShape, describeRequestShape, statementText } from "./observe.js";
 import type { CapturedStatement, QueryEvent, RequestShape } from "./observe.js";
 import type { QueryEngineDb, QueryRequest } from "./types.js";
@@ -54,8 +59,14 @@ export interface ExplainStage {
   attempt?: "ordinary" | "indexed";
   /** With `analyze`, the budget the attempt ran under and whether it ran over. */
   budget?: { ms: number; exceeded: boolean };
-  /** The ordinary plan run again with no budget, after both attempts ran over. */
+  /** The ordinary plan run again with no budget, after the attempts before it ran over. */
   final?: boolean;
+  /** Which attempt of its statement this row is: 1, 2 or 3. */
+  attemptNumber?: number;
+  /** For a page after a capped count: the count outcome that makes this row part of the path. */
+  countOutcome?: "at cap" | "under cap";
+  /** `analyze` only: the stage's `query.timeouts` value and whether the statement ran over it. */
+  timeout?: { ms: number; exceeded: boolean };
   /** `analyze` only: the statement would fail, and why. */
   failure?: string;
 }
@@ -761,6 +772,8 @@ export interface ExplainRun {
   planning: QueryEvent[];
   analyze: boolean;
   countCap: number;
+  /** The resource's `query.timeouts`, in milliseconds. */
+  timeouts?: { count?: number; facets?: number; summary?: number };
   facetSplitAbove: number;
   allowsCursor: boolean;
   relationSorts: readonly string[];
@@ -784,6 +797,12 @@ interface Explained {
   budgetMs?: number;
   /** The ordinary plan again, with no budget, after the attempts before it ran over. */
   final?: boolean;
+  /** Which attempt of its statement this row is, and for a page, which count outcome selects it. */
+  role?: { nth: number; outcome?: "at cap" | "under cap" };
+  /** The stage's `query.timeouts` value, under analyze. */
+  timeout?: { ms: number; exceeded: boolean };
+  /** Same statement as an earlier row: its warnings are not repeated. */
+  duplicate?: boolean;
 }
 
 /** How a count that was measured under `analyze` came out. */
@@ -814,7 +833,12 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
   const attemptAt = (stage: ExplainStageName, attempt: "ordinary" | "indexed") =>
     statements.findIndex((e) => e.stage === stage && e.attempt === attempt && budgeted(e));
   // A capped count steers the page that follows it.
-  const informed = run.request.pagination.count === "capped";
+  // An estimated count over a search across tables falls back to a capped one.
+  const informed =
+    run.request.pagination.count === "capped" ||
+    (run.request.pagination.count === "estimated" && attemptAt("count", "ordinary") >= 0);
+  // `query` sets no timeouts inside a transaction the caller passed in.
+  const timeouts = isCallerTransaction(database) ? {} : (run.timeouts ?? {});
 
   const plainPrefix = sql`explain (verbose, format json)`;
   const analyzePrefix = sql`explain (analyze, buffers, verbose, format json)`;
@@ -824,12 +848,17 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
    * timeout. A cancel after the budget is the budget running out; a cancel before it is the
    * connection's own timeout, which the engine does not catch, so query throws it.
    */
-  async function attemptWithin(db: QueryEngineDb, entry: Entry, budget: number) {
+  async function attemptWithin(
+    db: QueryEngineDb,
+    entry: Entry,
+    budget: number,
+    options: { capToCurrent: boolean } = { capToCurrent: true },
+  ) {
     const outcome = await runTimed(
       db,
       budget,
       (timed) => (timed as any).execute(sql`${analyzePrefix} ${entry.statement}`, "objects"),
-      { capToCurrent: true },
+      options,
     );
     if (outcome.kind === "ok") {
       return {
@@ -859,50 +888,120 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
     let failed = false;
     let countOutcome: CountOutcome | undefined;
     let facetsSkipped: { counted: number } | undefined;
+    let countTimedOut = false;
     // Which attempt each budgeted statement ended on, for the notes.
-    const kept = new Map<ExplainStageName, "ordinary" | "indexed" | "final" | "failed">();
+    const kept = new Map<
+      ExplainStageName,
+      "ordinary" | "indexed" | "final" | "failed" | "timeout"
+    >();
     let pageFirst: "ordinary" | "indexed" | undefined;
 
+    /** The rows a measured count matched: its Limit, or what its aggregate was fed. */
+    const countedBy = (plan: Node) => {
+      const all = nodes(plan);
+      const limit = all.find(({ node }) => node["Node Type"] === "Limit");
+      if (limit) return actualRows(limit.node);
+      const aggregates = all.filter(({ node }) => node["Node Type"] === "Aggregate");
+      const bottom = aggregates.filter(
+        ({ node }) =>
+          !aggregates.some(
+            ({ node: other }) =>
+              other !== node && nodes(node).some((inner) => inner.node === other),
+          ),
+      );
+      return bottom.length > 0
+        ? bottom.reduce(
+            (total, { node }) =>
+              total + (node.Plans ?? []).reduce((sum, child) => sum + actualRows(child), 0),
+            0,
+          )
+        : undefined;
+    };
     const decide = (result: Explained | undefined) => {
-      const limit =
-        result?.plan && nodes(result.plan).find(({ node }) => node["Node Type"] === "Limit");
-      if (!limit) return;
-      const counted = actualRows(limit.node);
+      if (!result?.plan || result.exceeded || result.timeout?.exceeded) return;
+      const counted = countedBy(result.plan);
+      if (counted === undefined) return;
       countOutcome = { counted, underCap: counted <= run.countCap };
       if (run.skipsFacetsAboveCap && !countOutcome.underCap) facetsSkipped = { counted };
     };
+    /** The page does not run when the count is exactly 0: query returns before it. */
+    const pageSkipped = () => countOutcome?.counted === 0;
 
     /** One statement's attempts, in the order the engine tries them. */
-    async function sequence(stage: ExplainStageName, first: "ordinary" | "indexed") {
+    async function sequence(
+      stage: ExplainStageName,
+      first: "ordinary" | "indexed",
+      outcome?: "at cap" | "under cap",
+    ) {
       const ordinaryAt = attemptAt(stage, "ordinary");
       const indexedAt = attemptAt(stage, "indexed");
+      const stageTimeout = stage === "count" ? timeouts.count : undefined;
       const tried: Array<[number, "ordinary" | "indexed"]> = [];
       if (first === "ordinary" && ordinaryAt >= 0) tried.push([ordinaryAt, "ordinary"]);
       if (indexedAt >= 0) tried.push([indexedAt, "indexed"]);
+      let nth = 0;
       for (const [at, kind] of tried) {
+        nth += 1;
         const entry = statements[at]!;
-        const outcome = await attemptWithin(db, entry, entry.budget!);
-        results[at] = { entry, ...outcome };
-        if (outcome.failure) {
+        // `query.timeouts` caps each attempt, as the connection's own timeout does.
+        const budget = Math.min(entry.budget!, stageTimeout ?? Number.POSITIVE_INFINITY);
+        const attempt = await attemptWithin(db, entry, budget);
+        results[at] = { entry, ...attempt, role: { nth, outcome } };
+        if (attempt.failure) {
           failed = true;
           kept.set(stage, "failed");
           return results[at];
         }
-        if (!outcome.exceeded) {
+        if (!attempt.exceeded) {
           kept.set(stage, kind);
           return results[at];
         }
       }
       const entry = statements[ordinaryAt]!;
-      const rows = await (db as any).execute(sql`${analyzePrefix} ${entry.statement}`, "objects");
-      const final: Explained = { entry, ...parsePlan(rows), measured: true, final: true };
+      nth += 1;
+      let final: Explained;
+      if (stageTimeout !== undefined) {
+        // The ordinary plan with no budget still runs under the stage's timeout.
+        const attempt = await attemptWithin(db, entry, stageTimeout, { capToCurrent: false });
+        final = {
+          entry,
+          ...attempt,
+          final: true,
+          role: { nth, outcome },
+          timeout: { ms: stageTimeout, exceeded: attempt.exceeded === true },
+        };
+        if (attempt.failure) {
+          failed = true;
+          kept.set(stage, "failed");
+        } else if (attempt.exceeded) {
+          countTimedOut = true;
+          kept.set(stage, "timeout");
+        } else kept.set(stage, "final");
+      } else {
+        const rows = await (db as any).execute(sql`${analyzePrefix} ${entry.statement}`, "objects");
+        final = { entry, ...parsePlan(rows), measured: true, final: true, role: { nth, outcome } };
+        kept.set(stage, "final");
+      }
       finals.set(indexedAt >= 0 ? indexedAt : ordinaryAt, final);
-      kept.set(stage, "final");
       return final;
     }
 
+    /** A statement that is not budgeted: it runs plain, under its stage's `query.timeouts`. */
     const plainOne = async (index: number) => {
       const entry = statements[index]!;
+      const stageTimeout =
+        analyze && entry.stage !== "ids"
+          ? timeouts[entry.stage as "count" | "facets" | "summary"]
+          : undefined;
+      if (stageTimeout !== undefined) {
+        const attempt = await attemptWithin(db, entry, stageTimeout, { capToCurrent: false });
+        Object.assign(results[index]!, attempt, {
+          timeout: { ms: stageTimeout, exceeded: attempt.exceeded === true },
+        });
+        if (attempt.failure) failed = true;
+        if (attempt.exceeded && entry.stage === "count") countTimedOut = true;
+        return;
+      }
       const rows = await (db as any).execute(
         sql`${analyze ? analyzePrefix : plainPrefix} ${entry.statement}`,
         "objects",
@@ -912,7 +1011,51 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
 
     if (!analyze) {
       for (const index of statements.keys()) await plainOne(index);
-      return { results, finals, kept, countOutcome, facetsSkipped, pageFirst };
+      // Without the count's value, every path the page can take is listed, one role per row.
+      const rows: Explained[] = [];
+      const shown = new Set<string>();
+      for (const [index, entry] of statements.entries()) {
+        if (!budgeted(entry)) {
+          rows.push(results[index]!);
+          continue;
+        }
+        if (entry.attempt === "indexed") continue;
+        const stage = entry.stage;
+        const ordinary = results[index]!;
+        const indexed = results[attemptAt(stage, "indexed")]!;
+        const paths: Array<{
+          outcome?: "at cap" | "under cap";
+          order: Array<"ordinary" | "indexed" | "final">;
+        }> =
+          stage === "ids" && informed
+            ? [
+                { outcome: "at cap", order: ["ordinary", "indexed", "final"] },
+                { outcome: "under cap", order: ["indexed", "final"] },
+              ]
+            : [{ order: ["ordinary", "indexed", "final"] }];
+        for (const path of paths) {
+          for (const [position, kind] of path.order.entries()) {
+            const source = kind === "indexed" ? indexed : ordinary;
+            const key = `${stage}:${kind === "indexed" ? "indexed" : "ordinary"}`;
+            rows.push({
+              ...source,
+              final: kind === "final",
+              role: { nth: position + 1, outcome: path.outcome },
+              duplicate: shown.has(key),
+            });
+            shown.add(key);
+          }
+        }
+      }
+      return {
+        rows,
+        kept,
+        countOutcome,
+        facetsSkipped,
+        pageFirst,
+        countTimedOut,
+        pageSkipped: false,
+      };
     }
     // The count first: it decides the facets and the page. Then the rest, in run order.
     if (attemptAt("count", "ordinary") >= 0) {
@@ -925,31 +1068,46 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       await plainOne(index);
       if (entry.stage === "count") decide(results[index]);
     }
-    if (!failed && attemptAt("ids", "ordinary") >= 0) {
+    const skipPage = pageSkipped();
+    if (!failed && !skipPage && attemptAt("ids", "ordinary") >= 0) {
       // A capped count that came back under its cap is exact and small: the indexed plan reads at
-      // most that many matches. One that hit the cap says the matches are common.
+      // most that many matches. One that hit the cap says the matches are common. A count that
+      // timed out, or an estimated one, steers nothing.
       pageFirst = informed && countOutcome?.underCap ? "indexed" : "ordinary";
-      await sequence("ids", pageFirst);
+      await sequence(
+        "ids",
+        pageFirst,
+        informed && countOutcome ? (countOutcome.underCap ? "under cap" : "at cap") : undefined,
+      );
     }
     for (const [index, entry] of statements.entries()) {
-      if (failed) break;
+      if (failed || skipPage) break;
       if (entry.stage === "ids" && !budgeted(entry)) await plainOne(index);
     }
-    return { results, finals, kept, countOutcome, facetsSkipped, pageFirst };
+    const rows = results.flatMap((result, index) => {
+      const final = finals.get(index);
+      return final ? [result, final] : [result];
+    });
+    return {
+      rows,
+      kept,
+      countOutcome,
+      facetsSkipped,
+      pageFirst,
+      countTimedOut,
+      pageSkipped: skipPage,
+    };
   }
 
   let explained: Explained[] = [];
-  let kept = new Map<ExplainStageName, "ordinary" | "indexed" | "final" | "failed">();
+  let kept = new Map<ExplainStageName, "ordinary" | "indexed" | "final" | "failed" | "timeout">();
   let countOutcome: CountOutcome | undefined;
   let facetsSkipped: { counted: number } | undefined;
-  let pageFirst: "ordinary" | "indexed" | undefined;
+  let countTimedOut = false;
+  let pageSkipped = false;
   const assemble = (done: Awaited<ReturnType<typeof explainAll>>) => {
-    // A final run follows the indexed attempt it came after.
-    explained = done.results.flatMap((result, index) => {
-      const final = done.finals.get(index);
-      return final ? [result, final] : [result];
-    });
-    ({ kept, countOutcome, facetsSkipped, pageFirst } = done);
+    explained = done.rows;
+    ({ kept, countOutcome, facetsSkipped, countTimedOut, pageSkipped } = done);
   };
   if (analyze) {
     // EXPLAIN ANALYZE runs the statements for real: do it where nothing can be kept.
@@ -1027,6 +1185,9 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       failure,
       budgetMs,
       final,
+      role,
+      timeout,
+      duplicate,
     }): ExplainStage => {
       const analysis = analyzePlan({
         stage: entry.stage,
@@ -1050,24 +1211,13 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
         facets: entry.facets,
         indexes,
       });
-      const steered = entry.stage === "ids" && informed;
-      const attempt = final
-        ? "ordinary search plan again, with no budget, after the attempts before it ran over"
-        : entry.attempt === "ordinary"
-          ? steered
-            ? analyze
-              ? `ordinary search plan, first because the count hit its cap, with a ${millis(entry.budget)} budget`
-              : `ordinary search plan, first when the count hits its cap (${millis(entry.budget)} budget), and run again with no budget when the count is under it and the indexed plan runs over`
-            : `ordinary search plan, runs first with a ${millis(entry.budget)} budget`
-          : entry.attempt === "indexed"
-            ? steered
-              ? analyze && pageFirst === "indexed"
-                ? `indexed search plan, first because the count came back under its cap, with a ${millis(entry.budget)} budget`
-                : analyze
-                  ? `indexed search plan, after the ordinary plan ran over, with a ${millis(entry.budget)} budget`
-                  : `indexed search plan, first when the count comes back under its cap, and after the ordinary plan runs over otherwise, with a ${millis(entry.budget)} budget`
-              : `indexed search plan, runs when the ordinary one ran over, with a ${millis(entry.budget)} budget`
-            : undefined;
+      const ordinal = (position: number) => ["1st", "2nd", "3rd"][position - 1] ?? `${position}th`;
+      const kind = final ? "ordinary" : entry.attempt;
+      // One role per row: which attempt of which statement, and for a page the count outcome.
+      const attempt =
+        role && kind
+          ? `${entry.stage === "count" ? "count" : "page"}${role.outcome ? ` · count ${role.outcome}` : ""}: ${ordinal(role.nth)} attempt, ${final ? "no budget" : millis(entry.budget)}, ${kind} plan`
+          : undefined;
       const label = [
         entry.stage === "facets" && entry.facets
           ? `${entry.facets.join(", ")}${entry.groupingSets ? " (GROUPING SETS)" : ""}`
@@ -1077,11 +1227,15 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       ]
         .filter(Boolean)
         .join("; ");
-      const summary = failure
-        ? `${failure}; planned: ${analysis.summary}`
-        : exceeded
-          ? `stopped at its ${millis(budgetMs)} budget; planned: ${analysis.summary}`
-          : analysis.summary;
+      const summary = duplicate
+        ? `the statement of an earlier row: ${analysis.summary}`
+        : failure
+          ? `${failure}; planned: ${analysis.summary}`
+          : timeout?.exceeded
+            ? `stopped at query.timeouts.${entry.stage === "ids" ? "page" : entry.stage} (${millis(timeout.ms)}); planned: ${analysis.summary}`
+            : exceeded
+              ? `stopped at its ${millis(budgetMs)} budget; planned: ${analysis.summary}`
+              : analysis.summary;
       return {
         stage: entry.stage,
         ...(label ? { label } : {}),
@@ -1093,8 +1247,11 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
         ...(analysis.rowsReturned === undefined ? {} : { rowsReturned: analysis.rowsReturned }),
         summary,
         plan,
-        warnings: analysis.warnings,
+        warnings: duplicate ? [] : analysis.warnings,
         ...(failure ? { failure } : {}),
+        ...(timeout ? { timeout } : {}),
+        ...(role ? { attemptNumber: role.nth } : {}),
+        ...(role?.outcome ? { countOutcome: role.outcome } : {}),
         ...(entry.attempt === undefined
           ? {}
           : {
@@ -1129,15 +1286,19 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
           ? countOutcome.underCap
             ? `the count came back under its cap (${formatNumber(countOutcome.counted)} rows), so ${what} starts on the indexed plan; `
             : `the count hit its cap, so ${what} starts on the ordinary plan; `
-          : "";
+          : steered && countTimedOut
+            ? `the count timed out, so ${what} takes the per-statement path; `
+            : "";
       const body =
-        outcome === "failed"
-          ? `${ran.find(({ failure, entry }) => failure && entry.stage === stage)?.failure ?? ""}: the request fails there, so later statements are not run`
-          : outcome === "ordinary"
-            ? `the ordinary plan finished within its ${ordinaryBudget} ms budget, so query keeps it and never runs the indexed plan`
-            : outcome === "indexed"
-              ? `${first?.exceeded ? `the ordinary plan ran over its ${ordinaryBudget} ms budget and ` : ""}the indexed plan finished within its ${indexedBudget} ms, so query keeps it; ${what} pays ${first?.exceeded ? `the first ${ordinaryBudget} ms on every request with this search` : "nothing extra"}`
-              : `${first?.exceeded ? `the ordinary plan ran over its ${ordinaryBudget} ms budget and ` : ""}the indexed plan ran over its ${indexedBudget} ms too, so query runs the ordinary plan again with no budget and keeps it`;
+        outcome === "timeout"
+          ? `the ordinary plan, run with no budget, ran over query.timeouts.count (${formatNumber(timeouts.count ?? 0)} ms): query reports no count (pageInfo count "none", reason "timeout") and goes on`
+          : outcome === "failed"
+            ? `${ran.find(({ failure, entry }) => failure && entry.stage === stage)?.failure ?? ""}: the request fails there, so later statements are not run`
+            : outcome === "ordinary"
+              ? `the ordinary plan finished within its ${ordinaryBudget} ms budget, so query keeps it and never runs the indexed plan`
+              : outcome === "indexed"
+                ? `${first?.exceeded ? `the ordinary plan ran over its ${ordinaryBudget} ms budget and ` : ""}the indexed plan finished within its ${indexedBudget} ms, so query keeps it; ${what} pays ${first?.exceeded ? `the first ${ordinaryBudget} ms on every request with this search` : "nothing extra"}`
+                : `${first?.exceeded ? `the ordinary plan ran over its ${ordinaryBudget} ms budget and ` : ""}the indexed plan ran over its ${indexedBudget} ms too, so query runs the ordinary plan again with no budget and keeps it`;
       notes.push(`search, ${what}: ${why}${body}`);
     } else if (first && second) {
       const cost = (node: Node) => number(node, "Total Cost") ?? 0;
@@ -1145,6 +1306,22 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
       const indexedCost = cost(second.plan);
       notes.push(
         `search, ${what}: the engine runs the ordinary plan with a ${ordinaryBudget} ms budget; if that runs over it tries the indexed plan with ${indexedBudget} ms; if that runs over too it runs the ordinary plan again with no budget${steered ? ". The count steers it: when the count comes back under its cap the page starts on the indexed plan, and when the count hits the cap it starts on the ordinary plan" : ""}. It cannot know which before running. PostgreSQL costs the ordinary plan at ${formatNumber(ordinaryCost)} and the indexed plan at ${formatNumber(indexedCost)}, so ${indexedCost < ordinaryCost ? "it expects the indexed plan to be cheaper: a rare term falls back to it" : "it expects the ordinary plan to be the cheaper one"}`,
+      );
+    }
+  }
+
+  if (analyze && pageSkipped) {
+    notes.push(
+      "the count is 0, so query returns before it runs the page: the page is not run here either",
+    );
+  }
+  if (!analyze) {
+    const configured = (["count", "facets", "summary"] as const)
+      .filter((stage) => timeouts[stage] !== undefined)
+      .map((stage) => `${stage} ${formatNumber(timeouts[stage]!)} ms`);
+    if (configured.length > 0) {
+      notes.push(
+        `query.timeouts (${configured.join(", ")}) apply when the statements run; a plain explain runs nothing, and analyze applies them`,
       );
     }
   }

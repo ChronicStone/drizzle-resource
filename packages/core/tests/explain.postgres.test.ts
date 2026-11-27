@@ -345,10 +345,8 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       expect(ordinary).toMatchObject({ attempt: "ordinary" });
       expect(indexed).toMatchObject({ attempt: "indexed" });
       expect(ordinary!.sql).not.toBe(indexed!.sql);
-      expect(ordinary!.label).toBe("ordinary search plan, runs first with a 25 ms budget");
-      expect(indexed!.label).toBe(
-        "indexed search plan, runs when the ordinary one ran over, with a 100 ms budget",
-      );
+      expect(ordinary!.label).toBe("page: 1st attempt, 25 ms, ordinary plan");
+      expect(indexed!.label).toBe("page: 2nd attempt, 100 ms, indexed plan");
       expect(report.notes.join("\n")).toMatch(
         /^search, the page: the engine runs the ordinary plan with a 25 ms budget; if that runs over it tries the indexed plan with 100 ms; if that runs over too it runs the ordinary plan again with no budget\./,
       );
@@ -485,34 +483,36 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
           );
           const firstPage = listed.find((stage) => stage.stage === "ids")!;
           expect(firstPage.attempt).toBe(pageFirst);
-          expect(firstPage.label).toContain(
+          expect(firstPage.label).toBe(
             pageFirst === "indexed"
-              ? "first because the count came back under its cap"
-              : "first because the count hit its cap",
+              ? "page · count under cap: 1st attempt, 240000 ms, indexed plan"
+              : "page · count at cap: 1st attempt, 60000 ms, ordinary plan",
           );
+          expect(firstPage.countOutcome).toBe(pageFirst === "indexed" ? "under cap" : "at cap");
         });
       }
     });
 
-    it("lists both paths without analyze, in the order the request runs them", async () => {
+    it("lists every path without analyze, one role per row, in the order the request runs them", async () => {
       const report = await resourceWith(25).explain({ request: searchRequest("capped") });
-      expect(report.stages.map((stage) => [stage.stage, stage.attempt])).toEqual([
-        ["count", "ordinary"],
-        ["count", "indexed"],
-        ["ids", "ordinary"],
-        ["ids", "indexed"],
+      expect(report.stages.map((stage) => stage.label)).toEqual([
+        "count: 1st attempt, 25 ms, ordinary plan",
+        "count: 2nd attempt, 100 ms, indexed plan",
+        "count: 3rd attempt, no budget, ordinary plan",
+        "page · count at cap: 1st attempt, 25 ms, ordinary plan",
+        "page · count at cap: 2nd attempt, 100 ms, indexed plan",
+        "page · count at cap: 3rd attempt, no budget, ordinary plan",
+        "page · count under cap: 1st attempt, 100 ms, indexed plan",
+        "page · count under cap: 2nd attempt, no budget, ordinary plan",
       ]);
+      // a statement that appears under two roles is explained once: the repeat has no warnings
+      const repeats = report.stages.filter((stage) =>
+        stage.summary.startsWith("the statement of an earlier row"),
+      );
+      expect(repeats.every((stage) => stage.warnings.length === 0)).toBe(true);
+      expect(repeats.length).toBeGreaterThan(0);
       const printed = formatExplain(report);
-      expect(printed).toContain("ordinary search plan, runs first with a 25 ms budget");
-      expect(printed).toContain(
-        "indexed search plan, runs when the ordinary one ran over, with a 100 ms budget",
-      );
-      expect(printed).toContain(
-        "indexed search plan, first when the count comes back under its cap",
-      );
-      expect(printed).toContain(
-        "ordinary search plan, first when the count hits its cap (25 ms budget)",
-      );
+      expect(printed).toContain("page · count under cap: 1st attempt, 100 ms, indexed plan");
     });
 
     it("runs facets once, on the ordinary plan, whichever attempt the count takes", async () => {
@@ -677,6 +677,84 @@ describe.skipIf(!fixture.connectionString)("explain on a 300,000-row table", () 
       expect(report.stages.map((stage) => stage.stage)).toEqual(["count", "facets", "ids"]);
       expect(report.notes.join("\n")).toContain(
         'facets.whenCapped is "skip", but the count stays within 100: query runs the facets',
+      );
+    });
+  });
+
+  describe("a count of 0", () => {
+    for (const count of ["exact", "capped"] as const) {
+      it(`${count}: query returns before the page, and so does analyze`, async () => {
+        const request = pageRequest({
+          pagination: { mode: "offset", pageIndex: 1, pageSize: 25, count },
+          search: { value: "no-such-reference", fields: ["reference", "customer.name"] },
+        });
+        fixture.events.length = 0;
+        const result = await ordersResource.query({ request });
+        expect((result.pageInfo as { rowCount: number }).rowCount).toBe(0);
+        expect(fixture.events.some((event) => event.stage === "ids")).toBe(false);
+        const report = await ordersResource.explain({ request, analyze: true });
+        expect(report.stages.some((stage) => stage.stage === "ids")).toBe(false);
+        expect(report.stages.some((stage) => stage.stage === "count")).toBe(true);
+        expect(report.notes.join("\n")).toContain(
+          "the count is 0, so query returns before it runs the page",
+        );
+        // without analyze the count is unknown: the page is listed
+        const plain = await ordersResource.explain({ request });
+        expect(plain.stages.some((stage) => stage.stage === "ids")).toBe(true);
+      });
+    }
+  });
+
+  describe("query.timeouts", () => {
+    const timed = (timeouts: { count?: number; facets?: number }) =>
+      fixture.engine.defineResource("orders", {
+        relations: { customer: true },
+        query: {
+          pagination: { modes: ["offset"] },
+          facets: { allowed: ["status", "region"] },
+          search: { allowed: ["reference", "customer.name"] },
+          timeouts,
+        },
+      });
+
+    it("shows a count that query would time out, and the page after it", async () => {
+      const resource = timed({ count: 2 });
+      const request = pageRequest();
+      fixture.events.length = 0;
+      const result = await resource.query({ request });
+      expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
+      const report = await resource.explain({ request, analyze: true });
+      const count = report.stages.find((stage) => stage.stage === "count")!;
+      expect(count.timeout).toEqual({ ms: 2, exceeded: true });
+      expect(count.summary).toMatch(/^stopped at query\.timeouts\.count \(2 ms\); planned: /);
+      expect(report.stages.some((stage) => stage.stage === "ids")).toBe(true);
+      const plain = await resource.explain({ request });
+      expect(plain.notes.join("\n")).toContain("query.timeouts (count 2 ms) apply when");
+    });
+
+    it("caps a search count's attempts to the timeout, then takes the per-statement page path", async () => {
+      const resource = timed({ count: 2 });
+      const request = pageRequest({
+        pagination: { mode: "offset", pageIndex: 1, pageSize: 25, count: "capped" },
+        search: { value: "ref-29999", fields: ["reference", "customer.name"] },
+      });
+      fixture.events.length = 0;
+      const result = await resource.query({ request });
+      expect(result.pageInfo).toMatchObject({ count: "none", reason: "timeout" });
+      const report = await resource.explain({ request, analyze: true });
+      const counts = report.stages.filter((stage) => stage.stage === "count");
+      expect(counts.map((stage) => stage.budget?.ms ?? stage.timeout?.ms)).toEqual([2, 2, 2]);
+      expect(counts.at(-1)).toMatchObject({ final: true, timeout: { ms: 2, exceeded: true } });
+      // a count that timed out steers nothing: the page runs its own attempts
+      const pageRows = report.stages.filter((stage) => stage.stage === "ids");
+      expect(pageRows.every((stage) => stage.countOutcome === undefined)).toBe(true);
+      expect(pageRows[0]!.label).toMatch(/^page: 1st attempt, 25 ms, ordinary plan$/);
+      const ran = fixture.events
+        .filter((event) => event.stage === "ids")
+        .map((event) => (event.sql.includes(" union ") ? "indexed" : "ordinary"));
+      expect(ran[0]).toBe("ordinary");
+      expect(report.notes.join("\n")).toContain(
+        "the count timed out, so the page takes the per-statement path",
       );
     });
   });

@@ -10,7 +10,7 @@ Add `capped` and `estimated` count modes, with `pagination.countCap` (10,000 by 
 
 Add opt-in guards: `validation.maxPageIndex` (also enforced by the Zod, Valibot and Vine request schemas), `facets.whenCapped: "skip"` and per-stage `timeouts` for the count, facets and summary. A stage that times out degrades instead of failing the request. Every facet result now carries `status: "ok" | "skipped" | "timeout"`, and a summary carries `summaryStatus`.
 
-Search without an exact count now runs the ordinary plan with a small time budget (`search.planBudget`, 25 ms) and retries with the trigram-indexed plan only when the budget runs out, instead of trusting PostgreSQL's cost estimate, which took a rare term through the whole sort index. Common terms run as before.
+Search without an exact count no longer trusts PostgreSQL's cost estimate, which took a rare term through the whole sort index. The count and the page each get bounded attempts: the ordinary plan under a time budget (`search.planBudget`, 25 ms by default), then the trigram-indexed plan under four times that budget, then the ordinary plan with no budget. A common term finishes in the first attempt and costs what it always cost. With a capped count, the count's result chooses where the page starts: a count under its cap starts it on the indexed plan, a count that hit the cap starts it on the ordinary plan. An `estimated` count over a search across tables falls back to `capped` and behaves the same way.
 
 Type changes to check in your code:
 

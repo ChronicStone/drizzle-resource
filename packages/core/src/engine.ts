@@ -799,6 +799,7 @@ export function createQueryEngine<
             planning,
             analyze,
             countCap: resource.queryConfig.pagination.countCap,
+            timeouts: resource.queryConfig.timeouts,
             facetSplitAbove: resource.queryConfig.facets.splitAbove,
             allowsCursor: paginationModes.has("cursor"),
             relationSorts: prepared.sorting
