@@ -131,9 +131,7 @@ Each stage can be replaced with your own implementation through `strategy.*`. [S
 - Totals from your own aggregates (`count()`, `sum(...)`), typed from the expression
 - Field policy: hide a field, or stop it from being filtered, searched or sorted
 - Views: several response shapes from one resource
-- Virtual fields: a SQL expression or a correlated subquery, filtered and sorted like a column
-- Bulk scans: every matching row in batches from one cursor, for exports and jobs
-- Request schemas for Zod, Valibot and Vine, and response schemas for Zod and Valibot
+- Request and response schemas for Zod, Valibot and Vine
 
 ## Benchmarks
 
