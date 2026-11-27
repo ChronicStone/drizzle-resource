@@ -1,11 +1,19 @@
 import type { Pool } from "pg";
 import { makeCheck, type IndexFindingLike } from "./resources.ts";
 
+export type Finding = {
+  level: string;
+  rule: string;
+  message: string;
+  fields: string[];
+  fix: string | null;
+};
+
 export type Tuning = {
   schema: string;
   resource: string;
   /** What `checkIndexes({ live: true })` said about the out-of-the-box state, errors and warnings. */
-  before: Array<{ level: string; rule: string; fields: string[]; fix: string | null }>;
+  before: Finding[];
   /** The `fix.sql` statements applied, in order. */
   applied: string[];
   /**
@@ -14,15 +22,22 @@ export type Tuning = {
    */
   byHand: Array<{ rule: string; advice: string; sql: string }>;
   /** What it said after applying them. */
-  after: Array<{ level: string; rule: string; fields: string[]; fix: string | null }>;
+  after: Finding[];
   /** True when no `error` finding is left. */
   noErrorRemains: boolean;
 };
 
-const brief = (findings: IndexFindingLike[]) =>
+/** Errors and warnings, plus the one informational finding the tuned counts answer. */
+const brief = (findings: IndexFindingLike[]): Finding[] =>
   findings
-    .filter((f) => f.level !== "info")
-    .map((f) => ({ level: f.level, rule: f.rule, fields: f.fields, fix: f.fix?.sql ?? null }));
+    .filter((f) => f.level !== "info" || f.rule === "exact-count-large-table")
+    .map((f) => ({
+      level: f.level,
+      rule: f.rule,
+      message: f.message,
+      fields: f.fields,
+      fix: f.fix?.sql ?? null,
+    }));
 
 /** Statements in a `fix.sql`: one per line, each ending in a semicolon. */
 const statements = (sql: string) =>

@@ -1,11 +1,19 @@
 <script setup lang="ts">
-import { benchScale, formatCount } from "~/utils/bench-scale";
+import { benchScale, formatCount, verdictText } from "~/utils/bench-scale";
 
 /** How the numbers of the Scale pages were measured, read from data/bench-scale.json. */
 const d = benchScale;
 const settings = Object.entries(d.setup.postgresSettings)
   .map(([key, value]) => (key === "other" ? `${value} otherwise` : `${key} ${value}`))
   .join(", ");
+const sizeName = (n: number) => (n >= 1_000_000 ? `${n / 1_000_000}M` : `${n / 1_000}k`);
+/** A request measured against itself should read "no change"; its ratios show the noise of the run. */
+const nullText = (d.setup.nullPairs ?? [])
+  .map(
+    (p) =>
+      `${sizeName(p.rows)}: ${verdictText(p.verdict)}, ratios ${p.ratioMin.toFixed(2)} to ${p.ratioMax.toFixed(2)}`,
+  )
+  .join("; ");
 const rows = [
   ["Measured on", `${d.measuredOn}, engine commit ${d.engine}`],
   ["Status", d.provisional ? "provisional: taken while the machine ran other work" : "final"],
@@ -14,7 +22,8 @@ const rows = [
   ["Data", d.setup.dataset],
   ["Sizes", d.sizes.map((n) => `${formatCount(n)} orders`).join(", ")],
   ["Client", d.setup.client],
-  ...Object.entries(d.setup.profiles).map(([name, text]) => [`Profile "${name}"`, text]),
+  ...Object.entries(d.setup.profiles ?? {}).map(([name, text]) => [`Profile "${name}"`, text]),
+  ...(nullText ? [["Same request against itself", nullText]] : []),
   ["Engine", d.setup.engineNote],
   ["Results", d.source],
 ];

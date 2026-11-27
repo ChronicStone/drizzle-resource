@@ -7,13 +7,13 @@ export type Verdict = "improved" | "unchanged" | "worse";
 export interface Series {
   scenario: string;
   ms: number[];
-  p95: (number | null)[];
+  /** The slowest sample at each table size. */
+  max: (number | null)[];
   method: string;
 }
 export interface Judged extends Series {
   verdict: Verdict[];
   ratio: (number | null)[];
-  engineChange: boolean;
 }
 export interface BenchRequest {
   label: string;
@@ -34,6 +34,29 @@ export const benchScale = bench as unknown as {
     client: string;
     profiles: Record<string, string>;
     engineNote: string;
+    /** Every change "tuned" makes, with the check that asked for it. */
+    tuning: {
+      changes: Array<{
+        id: string;
+        change: string;
+        origin: string;
+        rule: string | null;
+        finding: string | null;
+        sql: string[];
+        applied: boolean;
+        affects: string[];
+        touchesTimedRequests: boolean;
+        note: string;
+      }>;
+    } | null;
+    /** The same request against itself: the verdict and the range of its ratios, per size. */
+    nullPairs: Array<{
+      rows: number;
+      verdict: Verdict;
+      ratio: number;
+      ratioMin: number;
+      ratioMax: number;
+    }>;
   };
   sizes: number[];
   requests: Record<string, BenchRequest>;
@@ -115,9 +138,8 @@ export function benchValue(path: string): unknown {
 /** How a series was measured, in words, keyed by the `method` the results file gives. */
 export const METHOD_TEXT: Record<string, string> = {
   engine: "Through the engine, end to end, from Node over TCP.",
-  "hand-sql": "Measured as SQL with psql inside the database container: no network, no JavaScript.",
-  "engine+hand-sql":
-    "Tuned counts add the engine's page statement to the capped count statement run as SQL: the engine of this run predates capped counts.",
+  "engine (onQuery count stage)":
+    "The count statement alone, as the engine's onQuery hook timed it, including the driver round trip.",
 };
 
 export function methodSentences(methods: string[]) {
