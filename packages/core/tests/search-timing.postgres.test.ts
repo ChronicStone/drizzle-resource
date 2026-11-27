@@ -53,9 +53,11 @@ describe.skipIf(!fixture.connectionString)(
       try {
         const db = drizzle({ client: pool, relations: fixture.relationsGraph });
         const busy = pool.query("select pg_sleep(0.3)");
+        // A 1 s budget keeps the 50 ms cancel far from "ours"; 250 ms stays far below the
+        // 300 ms the pool made the call wait, which a clock started at checkout would include.
         const outcome = await runTimed(
           db as never,
-          100,
+          1000,
           async (tx) => {
             await (tx as any).execute("set local statement_timeout = '50ms'");
             await (tx as any).execute("select pg_sleep(1)");
@@ -64,7 +66,7 @@ describe.skipIf(!fixture.connectionString)(
         );
         await busy;
         expect(outcome.kind).toBe("cancelled");
-        expect(outcome.elapsed).toBeLessThan(95);
+        expect(outcome.elapsed).toBeLessThan(250);
       } finally {
         await pool.end();
       }

@@ -3,7 +3,7 @@ import { describe, expect, it } from "vite-plus/test";
 
 import { createQueryEngine, formatExplain } from "../index.js";
 import type { ExplainPlanNode, ExplainReport, QueryEvent, QueryRequest } from "../index.js";
-import { analyzePlan, lowerExpressions } from "../src/explain.js";
+import { analyzePlan, lowerExpressions, measuredCount } from "../src/explain.js";
 import type { AnalysisInput } from "../src/explain.js";
 import { createStatementObserver, describeRequestShape } from "../src/observe.js";
 import { isOurTimeout } from "../src/postgres.js";
@@ -888,5 +888,106 @@ describe("explain on other databases", () => {
         },
       }),
     ).rejects.toThrow("explain() needs a PostgreSQL database");
+  });
+});
+
+describe("measured count of an analysed count statement", () => {
+  it("reads a parallel exact count as approximate, since PostgreSQL 17 rounds rows per loop", () => {
+    // One matching row read by three workers prints as 0 rows × 3 loops.
+    const tree = {
+      "Node Type": "Aggregate",
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      Plans: [
+        {
+          "Node Type": "Gather",
+          "Actual Rows": 3,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Aggregate",
+              "Actual Rows": 1,
+              "Actual Loops": 3,
+              Plans: [
+                {
+                  "Node Type": "Seq Scan",
+                  "Relation Name": "orders",
+                  "Actual Rows": 0,
+                  "Actual Loops": 3,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(measuredCount(tree)).toEqual({ rows: 0, approximate: true });
+  });
+
+  it("reads a serial exact count of 0 as exact", () => {
+    const tree = {
+      "Node Type": "Aggregate",
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      Plans: [
+        { "Node Type": "Seq Scan", "Relation Name": "orders", "Actual Rows": 0, "Actual Loops": 1 },
+      ],
+    };
+    expect(measuredCount(tree)).toEqual({ rows: 0, approximate: false });
+  });
+
+  it("reads a capped count from its Limit, which runs once", () => {
+    const tree = {
+      "Node Type": "Aggregate",
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      Plans: [
+        {
+          "Node Type": "Limit",
+          "Actual Rows": 412,
+          "Actual Loops": 1,
+          Plans: [
+            {
+              "Node Type": "Gather",
+              "Actual Rows": 412,
+              "Actual Loops": 1,
+              Plans: [
+                {
+                  "Node Type": "Seq Scan",
+                  "Relation Name": "orders",
+                  "Actual Rows": 137,
+                  "Actual Loops": 3,
+                },
+              ],
+            },
+          ],
+        },
+      ],
+    };
+    expect(measuredCount(tree)).toEqual({ rows: 412, approximate: false });
+  });
+
+  it("rounds the fractional per-loop rows PostgreSQL 18 prints", () => {
+    const tree = {
+      "Node Type": "Aggregate",
+      "Actual Rows": 1,
+      "Actual Loops": 1,
+      Plans: [
+        {
+          "Node Type": "Aggregate",
+          "Actual Rows": 1,
+          "Actual Loops": 3,
+          Plans: [
+            {
+              "Node Type": "Seq Scan",
+              "Relation Name": "orders",
+              "Actual Rows": 0.33,
+              "Actual Loops": 3,
+            },
+          ],
+        },
+      ],
+    };
+    expect(measuredCount(tree)).toEqual({ rows: 1, approximate: true });
   });
 });

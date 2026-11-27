@@ -171,6 +171,37 @@ function actualRows(node: Node) {
   return (number(node, "Actual Rows") ?? 0) * loops(node);
 }
 
+/**
+ * The rows a measured count matched: its Limit, or what its lowest aggregates were fed.
+ * PostgreSQL 17 and older print `Actual Rows` per loop rounded to a whole number, so a sum
+ * over a node that ran in several loops (a parallel scan) is approximate: one matching row
+ * read by three workers prints as 0 rows × 3 loops.
+ */
+export function measuredCount(plan: Node): { rows: number; approximate: boolean } | undefined {
+  const all = nodes(plan);
+  const limit = all.find(({ node }) => node["Node Type"] === "Limit");
+  if (limit) {
+    return { rows: Math.round(actualRows(limit.node)), approximate: loops(limit.node) > 1 };
+  }
+  const aggregates = all.filter(({ node }) => node["Node Type"] === "Aggregate");
+  const bottom = aggregates.filter(
+    ({ node }) =>
+      !aggregates.some(
+        ({ node: other }) => other !== node && nodes(node).some((inner) => inner.node === other),
+      ),
+  );
+  if (bottom.length === 0) return undefined;
+  let rows = 0;
+  let approximate = false;
+  for (const { node } of bottom) {
+    for (const child of node.Plans ?? []) {
+      rows += actualRows(child);
+      if (loops(child) > 1) approximate = true;
+    }
+  }
+  return { rows: Math.round(rows), approximate };
+}
+
 function relationKey(node: Node) {
   return `${text(node, "Schema") ?? "public"}.${text(node, "Relation Name")}`;
 }
@@ -810,6 +841,8 @@ interface CountOutcome {
   counted: number;
   /** A capped count under its cap is exact: the page then starts on the indexed plan. */
   underCap: boolean;
+  /** `counted` was summed from per-loop rounded rows, so a 0 may hide a few matches. */
+  approximate: boolean;
 }
 
 /** EXPLAIN every captured statement, one after the other, and read what the plans say. */
@@ -896,36 +929,23 @@ export async function explainCaptured(run: ExplainRun): Promise<ExplainReport> {
     >();
     let pageFirst: "ordinary" | "indexed" | undefined;
 
-    /** The rows a measured count matched: its Limit, or what its aggregate was fed. */
-    const countedBy = (plan: Node) => {
-      const all = nodes(plan);
-      const limit = all.find(({ node }) => node["Node Type"] === "Limit");
-      if (limit) return actualRows(limit.node);
-      const aggregates = all.filter(({ node }) => node["Node Type"] === "Aggregate");
-      const bottom = aggregates.filter(
-        ({ node }) =>
-          !aggregates.some(
-            ({ node: other }) =>
-              other !== node && nodes(node).some((inner) => inner.node === other),
-          ),
-      );
-      return bottom.length > 0
-        ? bottom.reduce(
-            (total, { node }) =>
-              total + (node.Plans ?? []).reduce((sum, child) => sum + actualRows(child), 0),
-            0,
-          )
-        : undefined;
-    };
     const decide = (result: Explained | undefined) => {
       if (!result?.plan || result.exceeded || result.timeout?.exceeded) return;
-      const counted = countedBy(result.plan);
-      if (counted === undefined) return;
-      countOutcome = { counted, underCap: counted <= run.countCap };
+      const measured = measuredCount(result.plan);
+      if (measured === undefined) return;
+      const counted = measured.rows;
+      countOutcome = {
+        counted,
+        underCap: counted <= run.countCap,
+        approximate: measured.approximate,
+      };
       if (run.skipsFacetsAboveCap && !countOutcome.underCap) facetsSkipped = { counted };
     };
-    /** The page does not run when the count is exactly 0: query returns before it. */
-    const pageSkipped = () => countOutcome?.counted === 0;
+    /**
+     * The page does not run when the count is exactly 0: query returns before it. A 0 read
+     * from a parallel plan may be a rounded 1 or 2, so the page is kept then.
+     */
+    const pageSkipped = () => countOutcome?.counted === 0 && !countOutcome.approximate;
 
     /** One statement's attempts, in the order the engine tries them. */
     async function sequence(
