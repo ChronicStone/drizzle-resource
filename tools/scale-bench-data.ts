@@ -16,6 +16,7 @@ type Verdict = "improved" | "unchanged" | "worse";
 type Cell = {
   medianMs?: number;
   maxMs?: number;
+  skipped?: string;
   method?: string;
   verdict?: Verdict;
   ratio?: number;
@@ -53,6 +54,8 @@ type Profiles = {
     client: string;
     engineCommit?: string;
     handSql?: string;
+    databaseHost?: { via: string; cpus: string; memory: string } | null;
+    harness?: { timeoutMs?: number } | null;
     /** Written by the first harness, before \`setup.tuning\` existed. */
     profileDefinitions?: Record<string, string>;
     engineNote?: string;
@@ -103,12 +106,17 @@ for (const n of SIZES)
     throw new Error(`${PROFILES_FILE} has no ${n.toLocaleString("en-US")}-row run`);
 
 const round = (ms: number) => Math.round(ms * 1000) / 1000;
+/** A file written by the first harness has no \`setup.tuning\`; its wording is kept as it was. */
+const legacy = !data.setup.tuning;
+/** The limit a call may take, in seconds: what an over-limit cell was cut off at. */
+const limitSeconds = (data.setup.harness?.timeoutMs ?? 60_000) / 1000;
+const isOver = (cell: Cell | undefined) => cell?.skipped === "over-limit";
 const cellAt = (profile: ProfileName, scenario: string, n: number) => {
   const cell = data.profiles[profile]?.[scenario]?.[String(n)];
-  if ((cell as { skipped?: string } | undefined)?.skipped)
-    throw new Error(
-      `${profile} / ${scenario} / ${n} rows: ${(cell as { skipped?: string }).skipped} in ${PROFILES_FILE}; the Scale pages have no way to show a request with no time yet`,
-    );
+  // A request past the limit is a result: the pages say so instead of showing a time.
+  if (isOver(cell)) return cell!;
+  if (cell?.skipped)
+    throw new Error(`${profile} / ${scenario} / ${n} rows: ${cell.skipped} in ${PROFILES_FILE}`);
   if (typeof cell?.medianMs !== "number")
     throw new Error(`${profile} / ${scenario} / ${n} rows: no measured median in ${PROFILES_FILE}`);
   return cell;
@@ -119,16 +127,20 @@ const series = (profile: ProfileName, scenario: string) => {
   const methods = [...new Set(cells.map((c) => c.method ?? "engine"))];
   return {
     scenario,
-    ms: cells.map((c) => round(c.medianMs!)),
+    ms: cells.map((c) => (isOver(c) ? null : round(c.medianMs!))),
+    /** The limit in seconds where the request ran past it, else null. */
+    over: cells.map((c) => (isOver(c) ? limitSeconds : null)),
     max: cells.map((c) => (typeof c.maxMs === "number" ? round(c.maxMs) : null)),
     method: methods.join(", "),
   };
 };
 /** A series measured against out of the box: the benchmark's verdict for every size. */
-const judged = (profile: ProfileName, scenario: string) => {
+const judged = (profile: ProfileName, scenario: string, reference: { over: (number | null)[] }) => {
   const s = series(profile, scenario);
   const cells = SIZES.map((n) => cellAt(profile, scenario, n));
   const verdict = cells.map((c, i) => {
+    // No pairs, no verdict, when either side ran past the limit.
+    if (isOver(c) || (reference.over[i] !== null && !c.verdict)) return null;
     if (!c.verdict || !VERDICTS.includes(c.verdict))
       throw new Error(
         `${profile} / ${scenario} / ${SIZES[i]} rows: no verdict in ${PROFILES_FILE}`,
@@ -141,6 +153,11 @@ const judged = (profile: ProfileName, scenario: string) => {
     ratio: cells.map((c) => c.ratio ?? null),
   };
 };
+
+/** What the tuned facets setting was: the first harness took the fastest of four, the later ones fix one. */
+const FACETS_HOW = legacy
+  ? "fastest of shared and separate statements"
+  : "one statement per facet (facets.splitAbove: 0)";
 
 /**
  * The requests of "How it scales" and the benchmark tables. `tuned` names the tuned scenario and
@@ -186,7 +203,7 @@ const REQUESTS: Record<
     outOfTheBox: "landing/two-root-facets",
     tuned: {
       scenario: "landing/two-root-facets",
-      how: "one statement per facet (facets.splitAbove: 0)",
+      how: FACETS_HOW,
     },
   },
   fourFacets: {
@@ -195,7 +212,7 @@ const REQUESTS: Record<
     outOfTheBox: "landing/four-mixed-facets",
     tuned: {
       scenario: "landing/four-mixed-facets",
-      how: "one statement per facet (facets.splitAbove: 0)",
+      how: FACETS_HOW,
     },
   },
   searchCommon: {
@@ -252,15 +269,20 @@ const REQUESTS: Record<
 };
 
 const requests = Object.fromEntries(
-  Object.entries(REQUESTS).map(([key, r]) => [
-    key,
-    {
-      label: r.label,
-      shape: r.shape,
-      outOfTheBox: series("out-of-the-box", r.outOfTheBox),
-      tuned: r.tuned ? { how: r.tuned.how, ...judged("tuned", r.tuned.scenario) } : null,
-    },
-  ]),
+  Object.entries(REQUESTS).map(([key, r]) => {
+    const outOfTheBox = series("out-of-the-box", r.outOfTheBox);
+    return [
+      key,
+      {
+        label: r.label,
+        shape: r.shape,
+        outOfTheBox,
+        tuned: r.tuned
+          ? { how: r.tuned.how, ...judged("tuned", r.tuned.scenario, outOfTheBox) }
+          : null,
+      },
+    ];
+  }),
 );
 
 /** Inside one tenant of 100 (the `scoped` profile), next to the whole table. */
@@ -287,14 +309,10 @@ const SCOPED: Record<string, { label: string; scoped: string; outOfTheBox: strin
   },
 };
 const scoped = Object.fromEntries(
-  Object.entries(SCOPED).map(([key, r]) => [
-    key,
-    {
-      label: r.label,
-      outOfTheBox: series("out-of-the-box", r.outOfTheBox),
-      scoped: judged("scoped", r.scoped),
-    },
-  ]),
+  Object.entries(SCOPED).map(([key, r]) => {
+    const outOfTheBox = series("out-of-the-box", r.outOfTheBox);
+    return [key, { label: r.label, outOfTheBox, scoped: judged("scoped", r.scoped, outOfTheBox) }];
+  }),
 );
 
 /** The count statement alone, exact and capped, measured as SQL on the tuned schema. */
@@ -466,10 +484,29 @@ function profileDefinitions() {
     scoped: `Tuned, with the resource scoped to one tenant of 100 (orgId 42)${scope ? `: ${scope.change} (${scope.origin})` : ""}. Capped counts.`,
   };
 }
+/**
+ * "How it was measured", from what the file says: a file from the first harness measured counts
+ * and facets as SQL; the later ones measure everything through the engine, in pairs.
+ */
+function methodParagraphs(): string[] {
+  if (legacy)
+    return [
+      "Each request runs through the engine (`engine`), or as the SQL statement the engine would send, timed with `psql` inside the database container (`hand-sql`). The footnote under each table says which. Hand SQL leaves out the network and JavaScript, so compare numbers measured the same way.",
+      "Tuned values for requests with a count add two medians: the engine's page statement without a count, and the capped count statement run as SQL. The engine measured predates capped counts, so the count could not run through it. The facet comparison is SQL too: the engine of this run shares one `GROUPING SETS` statement between root facets.",
+      "Numbers are warm-cache medians after one warm-up call; a cold first request is slower.",
+    ];
+  return [
+    'Every request runs through the engine, from Node over TCP, timed end to end. Counts that are capped use `count: "capped"`, facets go through `queryFacets`, and the engine\'s own per-statement times (`onQuery`) give the parts of a request. No number here is hand-written SQL.',
+    'A request that tuning changes is called against the out-of-the-box schema and the tuned one in turn, at least 10 rounds, in an order in which each follows the other equally often. Only those two schemas are resident in the database at a time. The benchmark calls a request faster or slower only when at least 80% of its rounds agree and the median ratio is at least 15% from 1; anything else reads "no change".',
+    "The same request against itself is timed as a control: a gain the control could have produced is reported as no change.",
+    '"Tuned" is what `engine.checkIndexes()` asked for plus the engine options that answer its findings; the table above lists every change and the finding behind it, and says which of them touches no timed request.',
+    "Numbers are warm-cache medians after an untimed identical call; a cold first request is slower.",
+  ];
+}
 const engineNote = () =>
   data.setup.tuning ? engineNoteFromTuning() : (data.setup.engineNote ?? engineNoteFromTuning());
 const engineNoteFromTuning = () =>
-  `Every timing is an engine call at commit ${commit.trim().slice(0, 7)}: pages and counts through queryIds, counts capped with count: "capped", facets through queryFacets, per-statement times from onQuery. ${data.setup.handSql ?? ""}`.trim();
+  `Every timing is an engine call at commit ${commit.trim().slice(0, 7)}: pages and counts through queryIds, counts capped with count: "capped", facets through queryFacets, per-statement times from onQuery.`;
 
 const out = {
   $comment:
@@ -486,6 +523,8 @@ const out = {
     profiles: profileDefinitions(),
     engineNote: engineNote(),
     tuning: data.setup.tuning ?? null,
+    databaseHost: data.setup.databaseHost ?? null,
+    method: methodParagraphs(),
     nullPairs: data.setup.nullPairs ?? [],
   },
   sizes: SIZES,

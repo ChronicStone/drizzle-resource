@@ -58,7 +58,8 @@ if (command !== "assemble") {
   // Everything this process made goes away on a clean exit, a failure, and Ctrl-C, SIGTERM or SIGHUP.
   const cleanup = async () => {
     if (keep) return;
-    if (url) await dropCreated(url).catch(() => {});
+    // In a container the schemas go with it: do not wait for the drops.
+    if (url && !started) await dropCreated(url).catch(() => {});
     if (started) removeContainer();
   };
   for (const [signal, code] of [

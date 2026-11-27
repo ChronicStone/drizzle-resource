@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // eslint-disable-next-line import/no-unassigned-import
 import "~/assets/css/pixel.css";
-import { benchScale, formatMs, methodSentences, SIZE_LONG } from "~/utils/bench-scale";
+import { benchScale, formatCell, methodSentences, SIZE_LONG } from "~/utils/bench-scale";
 
 /**
  * One series by table size (200k, 1M, 10M rows), from data/bench-scale.json, as linear bars.
@@ -24,7 +24,10 @@ const props = withDefaults(
 interface Row {
   label: string;
   sub?: string;
-  ms: number[];
+  /** Null where the request ran past the limit. */
+  ms: (number | null)[];
+  /** The limit in seconds where it did, else null. */
+  over: (number | null)[];
 }
 
 const FACET_VARIANTS: Record<string, string> = {
@@ -43,7 +46,7 @@ const table = computed(() => {
       const r = d.requests[key];
       if (!r) throw new Error(`bench-scale: no request "${key}"`);
       methods.push(r.outOfTheBox.method);
-      return { label: r.label, sub: r.shape, ms: r.outOfTheBox.ms };
+      return { label: r.label, sub: r.shape, ms: r.outOfTheBox.ms, over: r.outOfTheBox.over };
     });
   } else {
     const variants = d.facetVariants[props.facet];
@@ -52,25 +55,28 @@ const table = computed(() => {
       const s = variants[variant];
       if (!s) throw new Error(`bench-scale: no facet variant "${variant}"`);
       methods.push(s.method);
-      return { label, ms: s.ms };
+      return { label, ms: s.ms, over: s.over };
     });
   }
   return { rows, methods };
 });
 const rows = computed(() => table.value.rows);
 
+/* a request over the limit counts as the limit, which it reached: a bar as long as the longest */
+const value = (r: Row, i: number) => r.ms[i] ?? (r.over[i] ?? 0) * 1000;
 /* linear bars: per row for requests, per column for the facet comparison */
 const byColumn = computed(() => props.source === "facets");
 const scaleMax = computed(() => {
   const all = rows.value;
   if (byColumn.value) {
-    const columns = (all[0]?.ms ?? []).map((_, i) => Math.max(...all.map((r) => r.ms[i]!)));
+    const columns = (all[0]?.ms ?? []).map((_, i) => Math.max(...all.map((r) => value(r, i))));
     return all.map(() => columns);
   }
-  return all.map((r) => r.ms.map(() => Math.max(...r.ms)));
+  return all.map((r) => r.ms.map(() => Math.max(...r.ms.map((_, i) => value(r, i)))));
 });
 /* rounded so the server and the browser agree; 3px keeps a tiny value visible */
-const width = (ms: number, row: number, col: number) => {
+const width = (ms: number | null, row: number, col: number) => {
+  if (ms === null) return "100%";
   const share = Math.round((ms / scaleMax.value[row]![col]!) * 10_000) / 100;
   return `max(3px, ${Math.min(100, share)}%)`;
 };
@@ -106,8 +112,12 @@ const footnote = computed(() =>
             <span v-if="r.sub" class="bsc-sub">{{ r.sub }}</span>
           </th>
           <td v-for="(ms, i) in r.ms" :key="i">
-            <span class="bsc-val">{{ formatMs(ms) }}</span>
-            <span class="bsc-bar"><i class="a" :style="{ width: width(ms, ri, i) }" /></span>
+            <span class="bsc-val" :class="{ over: ms === null }">{{
+              formatCell(ms, r.over[i] ?? null)
+            }}</span>
+            <span class="bsc-bar"
+              ><i class="a" :class="{ over: ms === null }" :style="{ width: width(ms, ri, i) }"
+            /></span>
           </td>
         </tr>
       </tbody>
@@ -204,6 +214,14 @@ thead th {
 }
 i.a {
   background: var(--ink3);
+}
+/* ran past the limit: a striped bar of full length, its time unknown */
+.bsc-val.over {
+  color: var(--ui-warning);
+}
+i.a.over {
+  background: repeating-linear-gradient(135deg, var(--ui-warning) 0 4px, transparent 4px 8px);
+  opacity: 0.8;
 }
 .bsc-foot {
   margin: 8px 0 2px;

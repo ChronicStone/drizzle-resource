@@ -19,7 +19,8 @@ and still works. The two do not share results.
   `work_mem=4MB`, `max_wal_size=1GB`, everything else default. The name is unique, so a second run
   never touches the first, and Docker picks a free port. The container and its volume are removed
   when the command finishes, fails, or is stopped with Ctrl-C, `kill` or a closed terminal
-  (SIGINT, SIGTERM, SIGHUP). `--keep` leaves the container and the `scale_*` schemas in place and
+  (SIGINT, SIGTERM, SIGHUP); on an interrupt it just runs `docker rm -f` and exits (130 for Ctrl-C)
+  without dropping schemas first. `--keep` leaves the container and the `scale_*` schemas in place and
   prints how to connect (`psql postgres://postgres:bench@127.0.0.1:<port>/bench`) and how to remove
   them (`docker rm -f -v <name>`).
 - Another database: `--url postgres://…`. It creates and drops `scale_<size>*` schemas in it, also
@@ -27,9 +28,9 @@ and still works. The two do not share results.
   with `BENCH_DB_CPUS` and `BENCH_DB_MEMORY` (for example `4` and `4g`): `--final` refuses a result
   whose database it cannot describe.
 - Bun, and `bun install` at the repository root.
-- Time: the 50,000-row check takes under a minute. The full run, three sizes, takes a couple of
-  hours (an estimate: every pair is at least 10 rounds with an untimed call before each timed one,
-  and the 10,000,000-row step is most of it).
+- Time, on a quiet machine (an estimate, not yet measured on the real sizes): the 50,000-row check
+  takes under a minute, 10,000,000 rows about 30 to 45 minutes, and all three sizes about 40 to
+  60 minutes.
 - Disk: two schemas are resident at a time, the out-of-the-box one and the one it is being compared
   with (see below). At 10 million rows the out-of-the-box schema is 1.5 GB and the largest other one
   about 2.2 GB, plus up to 1 GB of write-ahead log. Each schema is dropped as soon as its comparison
@@ -118,9 +119,12 @@ information, and carry no verdict. The tuned facets setting is fixed before meas
 `facets.splitAbove: 0` on the pool.
 
 **The null pair.** Each run also times one request against itself, as two arms: `page-plus-count`,
-exact, out of the box on one schema. It must read `unchanged`. The range of its ratios is in
-`setup.nullPairs`: the noise a verdict has to rise above on that run. If it does not read
-unchanged, the run is flagged in `notes` and `--final` refuses it.
+exact, out of the box on one schema. It must read `unchanged`, with at least 10 pairs and a median
+within 5% of 1. The range of its ratios is in `setup.nullPairs`: the noise a verdict has to rise
+above on that run. A verdict whose ratio lies inside that range (an "improved" at or below the
+largest null ratio, a "worse" at or above the smallest) is reported as `unchanged` with
+`withinNoise: true` and the verdict the pairs gave in `verdictBeforeNoise`. If the null pair is not
+clean, the run is flagged in `notes` and `--final` refuses it.
 
 **Resident schemas.** Only two schemas are resident at a time, at every size, so the memory of the
 container is shared by the same two every time. `bun tools/bench/cache-check.ts` shows what extra
@@ -134,8 +138,11 @@ counts with `count: "capped"`), facets through `resource.queryFacets`. Nothing p
 SQL. SQL is used to build the data, to apply the statements the check names, and to find the
 cursor anchors.
 
-Medians of 10 calls for requests that are not paired (the mean of the two middle values for an
-even count), 5 when the warm-up took over a second, 3 over twenty. `maxMs` is the slowest sample:
+Numbers are warm-cache medians after an untimed identical call; a cold first request is slower.
+A request that is paired gets an untimed call before every timed one. A request that is not paired
+(the out-of-the-box-only requests, the count statements, the facet variants) gets one warm-up call,
+then repeated timed calls with no priming between them: medians of 10 calls (the mean of the two
+middle values for an even count), 5 when the warm-up took over a second, 3 over twenty. `maxMs` is the slowest sample:
 with ten samples a 95th percentile would be the same number, so none is reported. A call that
 takes over 60 seconds, or that the pool's 61-second `statement_timeout` cancels, marks only that
 setup's cell as `skipped: "over-limit"`; the other setups of the pair carry on. Over-limit is a
@@ -157,7 +164,10 @@ and no cell failed (over-limit is not a failure). With `--final` the run must al
 
 - every chosen run's maximum load at most 8 (`BENCH_LOAD_THRESHOLD` cannot change that: the
   command refuses), `packages/core` unmodified, and no `checkIndexes` error left;
-- the null pair reads `unchanged` at every size;
+- the null pair reads `unchanged` at every size, with at least 10 pairs and a median within 5% of 1;
+- the run used the configuration the pages describe: 4 CPUs, 4g, `shared_buffers` 1GB, `work_mem` 4MB,
+  `max_wal_size` 1GB, 10 iterations, a 60 s limit (`BENCH_ITERATIONS`, `BENCH_TIMEOUT_MS`,
+  `BENCH_DB_*` and `BENCH_SHARED_BUFFERS` change them, and then `--final` refuses);
 - every cell that `tools/scale-bench-data.ts` reads is there at every size (`contract.ts`), landing
   cells have at least 10 samples and the others at least 3;
 - the database's CPUs and memory are known.
