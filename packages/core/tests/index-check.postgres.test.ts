@@ -255,9 +255,7 @@ describe.skipIf(!connectionString)("checkIndexes against PostgreSQL", () => {
     try {
       await db.execute(sql`create extension if not exists pg_trgm`);
     } catch (error) {
-      const present = await db.execute(
-        sql`select 1 as present from pg_extension where extname = 'pg_trgm'`,
-      );
+      const present = await pool.query("select 1 from pg_extension where extname = 'pg_trgm'");
       if (present.rows.length === 0) throw error;
     }
     const everyTable = [
