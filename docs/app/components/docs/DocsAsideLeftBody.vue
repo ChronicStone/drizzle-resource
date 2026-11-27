@@ -5,8 +5,8 @@ const { sidebarNavigation } = useSubNavigation();
 <template>
   <UContentNavigation
     highlight
-    type="single"
-    :default-open="true"
+    type="multiple"
+    :collapsible="false"
     :navigation="sidebarNavigation"
   />
 </template>

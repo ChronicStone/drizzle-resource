@@ -23,7 +23,7 @@
     },
     {
       "source": "/getting-started/type-safety",
-      "destination": "/serve/typed-clients",
+      "destination": "/validation/typed-clients",
       "permanent": true
     },
     {
@@ -88,7 +88,7 @@
     },
     {
       "source": "/resource-setup/validation",
-      "destination": "/serve/validation",
+      "destination": "/validation/schemas",
       "permanent": true
     },
     {
@@ -113,7 +113,7 @@
     },
     {
       "source": "/performance/bulk-scans",
-      "destination": "/scale/bulk-scans",
+      "destination": "/query/bulk-scans",
       "permanent": true
     },
     {
@@ -139,6 +139,31 @@
     {
       "source": "/scale/performance",
       "destination": "/scale/optimize",
+      "permanent": true
+    },
+    {
+      "source": "/resource/summaries",
+      "destination": "/query/summaries",
+      "permanent": true
+    },
+    {
+      "source": "/scale/bulk-scans",
+      "destination": "/query/bulk-scans",
+      "permanent": true
+    },
+    {
+      "source": "/serve/validation",
+      "destination": "/validation/schemas",
+      "permanent": true
+    },
+    {
+      "source": "/serve/typed-clients",
+      "destination": "/validation/typed-clients",
+      "permanent": true
+    },
+    {
+      "source": "/serve",
+      "destination": "/validation/schemas",
       "permanent": true
     }
   ]
