@@ -6,7 +6,7 @@ import PxHero from "../landing/PxHero.vue";
 import PxDemo from "../landing/PxDemo.vue";
 import PxFeatures from "../landing/PxFeatures.vue";
 import PxPipeline from "../landing/PxPipeline.vue";
-import PxBench from "../landing/PxBench.vue";
+import PxBenchTuning from "../landing/PxBenchTuning.vue";
 import PxStart from "../landing/PxStart.vue";
 
 useHead({
@@ -38,7 +38,7 @@ useHead({
       <PxFeatures />
       <PxPipeline />
       <PxDemo />
-      <PxBench />
+      <PxBenchTuning />
       <PxStart />
     </div>
   </div>

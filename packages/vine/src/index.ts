@@ -240,6 +240,10 @@ function normalizeNumberInput(value: unknown): unknown {
   return Number.isFinite(normalized) ? normalized : value;
 }
 
+function isCountMode(value: unknown): value is "none" | "exact" | "capped" | "estimated" {
+  return value === "none" || value === "exact" || value === "capped" || value === "estimated";
+}
+
 function isValidPaginationInput(value: unknown): boolean {
   if (!isRecord(value)) return false;
 
@@ -253,7 +257,7 @@ function isValidPaginationInput(value: unknown): boolean {
   if (!hasOnlyKeys(value, allowedKeys)) return false;
   if (value.pageIndex !== undefined && !isFiniteNumberInput(value.pageIndex)) return false;
   if (value.pageSize !== undefined && !isFiniteNumberInput(value.pageSize)) return false;
-  if (value.count !== undefined && value.count !== "none" && value.count !== "exact") return false;
+  if (value.count !== undefined && !isCountMode(value.count)) return false;
   if (
     mode === "cursor" &&
     value.cursor !== undefined &&
@@ -316,12 +320,11 @@ function normalizeRequestDefaults(
             pageSize: isFiniteNumberInput(paginationInput.pageSize)
               ? normalizeNumberInput(paginationInput.pageSize)
               : defaultPageSize,
-            count:
-              paginationInput.count === "none" || paginationInput.count === "exact"
-                ? paginationInput.count
-                : defaultMode === "cursor"
-                  ? defaultCount
-                  : "none",
+            count: isCountMode(paginationInput.count)
+              ? paginationInput.count
+              : defaultMode === "cursor"
+                ? defaultCount
+                : "none",
           }
         : {
             mode: "offset" as const,
@@ -331,12 +334,11 @@ function normalizeRequestDefaults(
             pageSize: isFiniteNumberInput(paginationInput.pageSize)
               ? normalizeNumberInput(paginationInput.pageSize)
               : defaultPageSize,
-            count:
-              paginationInput.count === "none" || paginationInput.count === "exact"
-                ? paginationInput.count
-                : defaultMode === "offset"
-                  ? defaultCount
-                  : "exact",
+            count: isCountMode(paginationInput.count)
+              ? paginationInput.count
+              : defaultMode === "offset"
+                ? defaultCount
+                : "exact",
           };
 
     const sorting =
@@ -373,15 +375,18 @@ function requestSchemaProperties(
   const pageSize = vine.number().withoutDecimals().positive().max(contract.limits.maxPageSize);
   const offsetPagination = strictObject({
     mode: vine.literal("offset").optional(),
-    pageIndex: vine.number().withoutDecimals().positive().optional(),
+    pageIndex: (Number.isFinite(contract.limits.maxPageIndex)
+      ? vine.number().withoutDecimals().positive().max(contract.limits.maxPageIndex)
+      : vine.number().withoutDecimals().positive()
+    ).optional(),
     pageSize: pageSize.optional(),
-    count: vine.enum(["none", "exact"] as const).optional(),
+    count: vine.enum(["none", "exact", "capped", "estimated"] as const).optional(),
   });
   const cursorPagination = strictObject({
     mode: vine.literal("cursor").optional(),
     cursor: vine.string().maxLength(contract.limits.maxCursorLength).nullable().optional(),
     pageSize: pageSize.optional(),
-    count: vine.enum(["none", "exact"] as const).optional(),
+    count: vine.enum(["none", "exact", "capped", "estimated"] as const).optional(),
   });
   const filter = vine
     .array(

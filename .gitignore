@@ -9,3 +9,6 @@ docs/.output
 docs/.data
 docs/bun.lock
 docs/package-lock.json
+
+# benchmark runs
+tools/results/scale-runs/

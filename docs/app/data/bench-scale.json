@@ -1,0 +1,1393 @@
+{
+  "$comment": "Numbers for the docs' Scale pages. Regenerate with `bun tools/scale-bench-data.ts` from tools/results; do not edit by hand. Times are milliseconds, one per table size.",
+  "provisional": false,
+  "measuredOn": "2026-11-27",
+  "engine": "15da95f",
+  "source": "tools/results/profiles.json",
+  "setup": {
+    "database": "PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5)",
+    "postgresSettings": {
+      "shared_buffers": "1GB",
+      "work_mem": "4MB",
+      "max_wal_size": "1GB",
+      "max_parallel_workers_per_gather": "2",
+      "jit": "on",
+      "effective_cache_size": "4GB"
+    },
+    "dataset": "orders (n rows: customerId (n%20000)+1, orgId (n%100)+1, status by n%5, paid n%2=0, createdAt evenly over 7 years to 2026-11-01, reference ORD-00000001) and customers (20,000 rows)",
+    "client": "one engine call at a time; paired requests 10+ rounds, other requests 10 calls (5 when the warm-up took over 1 s, 3 over 20 s); warm cache",
+    "profiles": {
+      "out-of-the-box": "The schema the benchmark starts with: primary keys, an index on orders (createdAt, id) and one on orders (customerId), trigram indexes on lower(orders.reference) and lower(customers.name). Exact counts; facets use the engine's default, facets.splitAbove 100,000.",
+      "tuned": "a trigram index on lower(orders.status) (checkIndexes: fix.sql); orders.customerName copied from the customer, with the index the check then asks for (checkIndexes: advice (copy the name onto orders), then fix.sql for the new column); count: \"capped\" instead of \"exact\" (countCap 10,000) (engine option; checkIndexes reports exact-count-large-table from 1,000,000 rows); facets.splitAbove: 0, one statement per facet (engine option, from the facets guide; checkIndexes has no finding for it).",
+      "scoped": "Tuned, with the resource scoped to one tenant of 100 (orgId 42): an index on (orgId, createdAt, id) for the scoped setting (applied by hand: checkIndexes describes the problem in words and gives no SQL). Capped counts."
+    },
+    "engineNote": "Every timing is an engine call at commit 15da95f: pages and counts through queryIds, counts capped with count: \"capped\", facets through queryFacets, per-statement times from onQuery.",
+    "tuning": {
+      "changes": [
+        {
+          "id": "status-trigram",
+          "change": "a trigram index on lower(orders.status)",
+          "origin": "checkIndexes: fix.sql",
+          "rule": "search-unindexed",
+          "finding": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+          "sql": [
+            "create index orders_status_trgm_idx on <schema>.orders using gin (lower(status) gin_trgm_ops)"
+          ],
+          "applied": true,
+          "affects": ["the count statements of a search over every column (wide-search-not-here)"],
+          "touchesTimedRequests": true,
+          "note": "Search is open to every column, so the check asks for it from 100,000 rows. No landing request searches status. The count statements of a search over every column can use it; they are measured on the tuned schema only, exact against capped, so no out-of-the-box comparison credits it."
+        },
+        {
+          "id": "copied-name",
+          "change": "orders.customerName copied from the customer, with the index the check then asks for",
+          "origin": "checkIndexes: advice (copy the name onto orders), then fix.sql for the new column",
+          "rule": "relation-sort",
+          "finding": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+          "sql": [
+            "create index orders_customer_name_id_idx on <schema>.orders (\"customerName\", id)",
+            "create extension if not exists pg_trgm",
+            "create index \"orders_customerName_trgm_idx\" on <schema>.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+            "create index orders_status_trgm_idx on <schema>.orders using gin (lower(status) gin_trgm_ops)"
+          ],
+          "applied": true,
+          "affects": ["sort-customer-name-plus-count"],
+          "touchesTimedRequests": true,
+          "note": "The copy itself is a table change the harness makes while building the schema; the check gives no SQL for a relation sort."
+        },
+        {
+          "id": "capped-count",
+          "change": "count: \"capped\" instead of \"exact\" (countCap 10,000)",
+          "origin": "engine option; checkIndexes reports exact-count-large-table from 1,000,000 rows",
+          "rule": "exact-count-large-table",
+          "finding": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+          "sql": [],
+          "applied": true,
+          "affects": ["every landing request with a count"],
+          "touchesTimedRequests": true,
+          "note": "Not an index. This is where most of the tuned gain comes from."
+        },
+        {
+          "id": "facets-split",
+          "change": "facets.splitAbove: 0, one statement per facet",
+          "origin": "engine option, from the facets guide; checkIndexes has no finding for it",
+          "rule": null,
+          "finding": null,
+          "sql": [],
+          "applied": true,
+          "affects": ["two-root-facets", "four-mixed-facets"],
+          "touchesTimedRequests": true,
+          "note": "Out of the box already uses the engine's default, facets.splitAbove 100,000."
+        },
+        {
+          "id": "scope-index",
+          "change": "an index on (orgId, createdAt, id) for the scoped setting",
+          "origin": "applied by hand: checkIndexes describes the problem in words and gives no SQL",
+          "rule": "default-sort-unindexed",
+          "finding": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+          "sql": ["create index on <schema>.orders (\"orgId\", \"createdAt\", id)"],
+          "applied": true,
+          "affects": ["scoped requests"],
+          "touchesTimedRequests": true,
+          "note": "Only the scoped setting has it."
+        }
+      ],
+      "runs": [
+        {
+          "rows": 200000,
+          "schemas": [
+            {
+              "schema": "scale_200k_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_200k_t.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_200k_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_200k_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_200k_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_200k_d.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_200k_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_200k_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_200k_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_200k_s.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_200k_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_200k_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        },
+        {
+          "rows": 1000000,
+          "schemas": [
+            {
+              "schema": "scale_1m_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_1m_t.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_1m_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_1m_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_1m_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_1m_d.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_1m_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_1m_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_1m_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_1m_s.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_1m_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_1m_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        },
+        {
+          "rows": 10000000,
+          "schemas": [
+            {
+              "schema": "scale_10m_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_10m_t.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_10m_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_10m_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_10m_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_10m_d.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_10m_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_10m_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_10m_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_10m_s.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_10m_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_10m_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        }
+      ]
+    },
+    "databaseHost": {
+      "via": "docker",
+      "cpus": "4",
+      "memory": "4g"
+    },
+    "method": [
+      "Every request runs through the engine, from Node over TCP, timed end to end. Counts that are capped use `count: \"capped\"`, facets go through `queryFacets`, and the engine's own per-statement times (`onQuery`) give the parts of a request. No number here is hand-written SQL.",
+      "A request that tuning changes is called against the out-of-the-box schema and the tuned one in turn, at least 10 rounds, in an order in which each follows the other equally often. Only those two schemas are resident in the database at a time. The benchmark calls a request faster or slower only when at least 80% of its rounds agree and the median ratio is at least 15% from 1; anything else reads \"no change\".",
+      "The same request against itself is timed as a control: a gain the control could have produced is reported as no change.",
+      "\"Tuned\" is what `engine.checkIndexes()` asked for plus the engine options that answer its findings; the table above lists every change and the finding behind it, and says which of them touches no timed request.",
+      "Numbers are warm-cache medians after an untimed identical call; a cold first request is slower."
+    ],
+    "nullPairs": [
+      {
+        "rows": 200000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 1.01,
+        "pairs": 10,
+        "ratioMin": 0.953,
+        "ratioMax": 1.102
+      },
+      {
+        "rows": 1000000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 0.96,
+        "pairs": 10,
+        "ratioMin": 0.832,
+        "ratioMax": 1.452
+      },
+      {
+        "rows": 10000000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 0.99,
+        "pairs": 10,
+        "ratioMin": 0.932,
+        "ratioMax": 1.048
+      }
+    ]
+  },
+  "sizes": [200000, 1000000, 10000000],
+  "requests": {
+    "page": {
+      "label": "Page of 50",
+      "shape": "sort createdAt desc · count none",
+      "outOfTheBox": {
+        "scenario": "page-without-count",
+        "ms": [0.294, 0.31, 0.266],
+        "over": [null, null, null],
+        "max": [0.417, 0.381, 0.312],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "cursor": {
+      "label": "Cursor page, 90% deep",
+      "shape": "cursor · sort createdAt desc",
+      "outOfTheBox": {
+        "scenario": "deep-cursor-id-desc",
+        "ms": [0.5, 0.347, 0.363],
+        "over": [null, null, null],
+        "max": [0.554, 0.684, 0.568],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "ids": {
+      "label": "Filter on 10 ids",
+      "shape": "filter id:isAnyOf · count none",
+      "outOfTheBox": {
+        "scenario": "id-selection-10-page-only",
+        "ms": [0.272, 0.331, 0.284],
+        "over": [null, null, null],
+        "max": [0.377, 0.523, 0.403],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "count": {
+      "label": "Page + count",
+      "shape": "sort createdAt desc · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [10.943, 16.129, 100.333],
+        "over": [null, null, null],
+        "max": [11.965, 16.798, 107.336],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/page-plus-count",
+        "ms": [0.89, 1.043, 1.037],
+        "over": [null, null, null],
+        "max": [1.047, 1.311, 1.738],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [12.43, 15.05, 94.67]
+      }
+    },
+    "relationSort": {
+      "label": "Sort by customer.name + count",
+      "shape": "sort customer.name asc · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/sort-customer-name-plus-count",
+        "ms": [24.747, 67.378, 751.791],
+        "over": [null, null, null],
+        "max": [29.849, 72.936, 796.38],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "name copied onto orders, capped count",
+        "scenario": "landing/sort-customer-name-denormalized-plus-count",
+        "ms": [1.026, 0.915, 1.023],
+        "over": [null, null, null],
+        "max": [2.145, 1.252, 2.621],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [25.94, 74.22, 732.95]
+      }
+    },
+    "twoFacets": {
+      "label": "2 facets",
+      "shape": "facets status,paid",
+      "outOfTheBox": {
+        "scenario": "landing/two-root-facets",
+        "ms": [12.992, 49.093, 468.065],
+        "over": [null, null, null],
+        "max": [14.471, 66.24, 865.619],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "one statement per facet (facets.splitAbove: 0)",
+        "scenario": "landing/two-root-facets",
+        "ms": [12.733, 59.21, 541.89],
+        "over": [null, null, null],
+        "max": [13.753, 66.216, 638.112],
+        "method": "engine",
+        "verdict": ["unchanged", "unchanged", "unchanged"],
+        "ratio": [1.02, 1.01, 0.88]
+      }
+    },
+    "fourFacets": {
+      "label": "4 facets, 2 through customer",
+      "shape": "facets status,paid,customer.segment,customer.name",
+      "outOfTheBox": {
+        "scenario": "landing/four-mixed-facets",
+        "ms": [32.387, 127.392, 1354.479],
+        "over": [null, null, null],
+        "max": [44.111, 158.633, 1485.703],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "one statement per facet (facets.splitAbove: 0)",
+        "scenario": "landing/four-mixed-facets",
+        "ms": [33.143, 125.04, 1404.735],
+        "over": [null, null, null],
+        "max": [40.059, 168.307, 1555.379],
+        "method": "engine",
+        "verdict": ["unchanged", "unchanged", "unchanged"],
+        "ratio": [0.98, 1.07, 0.99]
+      }
+    },
+    "searchCommon": {
+      "label": "Search \"ord\" + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-ord-plus-count",
+        "ms": [155.613, 657.328, 6109.777],
+        "over": [null, null, null],
+        "max": [184.971, 681.453, 9703.687],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-ord-plus-count",
+        "ms": [4.135, 3.954, 5.42],
+        "over": [null, null, null],
+        "max": [4.603, 4.385, 7.117],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [39.57, 165.46, 1120.7]
+      }
+    },
+    "searchCustomer": {
+      "label": "Search \"customer\" + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-customer-plus-count",
+        "ms": [145.52, 576.524, 5076.983],
+        "over": [null, null, null],
+        "max": [157.19, 595.098, 7523.122],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-customer-plus-count",
+        "ms": [15.367, 15.962, 17.094],
+        "over": [null, null, null],
+        "max": [15.983, 24.256, 17.917],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [9.56, 35.64, 297.08]
+      }
+    },
+    "relationSearch": {
+      "label": "Search customer.name \"customer 1\" + count",
+      "shape": "search customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [15.415, 27.403, 158.317],
+        "over": [null, null, null],
+        "max": [16.544, 34.931, 175.449],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [1.81, 1.407, 1.229],
+        "over": [null, null, null],
+        "max": [2.331, 1.694, 1.474],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [8.55, 19.03, 128.33]
+      }
+    },
+    "searchRareReference": {
+      "label": "Search one reference + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-rare-reference-plus-count",
+        "ms": [5.036, 15.833, 107.411],
+        "over": [null, null, null],
+        "max": [5.39, 16.468, 108.075],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-rare-reference-plus-count",
+        "ms": [32.538, 42.953, 134.459],
+        "over": [null, null, null],
+        "max": [34.807, 44.838, 138.046],
+        "method": "engine",
+        "verdict": ["worse", "worse", "worse"],
+        "ratio": [0.15, 0.37, 0.79]
+      }
+    },
+    "searchRareCustomer": {
+      "label": "Search one customer + count",
+      "shape": "search reference,customer.name · count exact",
+      "outOfTheBox": {
+        "scenario": "landing/search-rare-customer-plus-count",
+        "ms": [2.673, 2.898, 3.98],
+        "over": [null, null, null],
+        "max": [3.555, 3.114, 11.374],
+        "method": "engine"
+      },
+      "tuned": {
+        "how": "capped count",
+        "scenario": "landing/search-rare-customer-plus-count",
+        "ms": [29.823, 30.016, 31.943],
+        "over": [null, null, null],
+        "max": [32.346, 30.693, 33.179],
+        "method": "engine",
+        "verdict": ["worse", "worse", "worse"],
+        "ratio": [0.09, 0.1, 0.12]
+      }
+    },
+    "wideCommon": {
+      "label": "Search every column for \"customer\"",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-customer-none",
+        "ms": [7.235, 7.023, 6.773],
+        "over": [null, null, null],
+        "max": [7.472, 7.725, 7.579],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideCommonCount": {
+      "label": "Search every column for \"customer\" + count",
+      "shape": "search 9 fields · count exact",
+      "outOfTheBox": {
+        "scenario": "wide-search-customer-exact",
+        "ms": [183.635, 678.119, 6498.879],
+        "over": [null, null, null],
+        "max": [188.422, 701.128, 6522.822],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideRare": {
+      "label": "Search every column for \"19999\"",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-19999-none",
+        "ms": [134.62, 516.011, 554.301],
+        "over": [null, null, null],
+        "max": [136.001, 543.621, 567.139],
+        "method": "engine"
+      },
+      "tuned": null
+    },
+    "wideNoMatch": {
+      "label": "Search every column, no match",
+      "shape": "search 9 fields · count none",
+      "outOfTheBox": {
+        "scenario": "wide-search-not-here-none",
+        "ms": [125.314, 600.73, 6357.368],
+        "over": [null, null, null],
+        "max": [127.983, 623.894, 6437.499],
+        "method": "engine"
+      },
+      "tuned": null
+    }
+  },
+  "scoped": {
+    "countExact": {
+      "label": "Page + exact count",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [10.943, 16.129, 100.333],
+        "over": [null, null, null],
+        "max": [11.965, 16.798, 107.336],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/page-plus-count-exact",
+        "ms": [0.707, 0.896, 4.236],
+        "over": [null, null, null],
+        "max": [0.956, 1.109, 5.088],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [5.33, 11.93, 24.47]
+      }
+    },
+    "countCapped": {
+      "label": "Page + capped count",
+      "outOfTheBox": {
+        "scenario": "landing/page-plus-count",
+        "ms": [10.943, 16.129, 100.333],
+        "over": [null, null, null],
+        "max": [11.965, 16.798, 107.336],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/page-plus-count",
+        "ms": [0.709, 0.935, 1.061],
+        "over": [null, null, null],
+        "max": [0.969, 1.045, 1.553],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [5.03, 12.04, 94.79]
+      }
+    },
+    "relationSearch": {
+      "label": "Search customer.name \"customer 1\" + count",
+      "outOfTheBox": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [15.415, 27.403, 158.317],
+        "over": [null, null, null],
+        "max": [16.544, 34.931, 175.449],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/relation-search-plus-count",
+        "ms": [5.164, 9.165, 43.103],
+        "over": [null, null, null],
+        "max": [6.141, 10.464, 49.478],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [1.88, 2.32, 4.08]
+      }
+    },
+    "twoFacets": {
+      "label": "2 facets",
+      "outOfTheBox": {
+        "scenario": "landing/two-root-facets",
+        "ms": [12.992, 49.093, 468.065],
+        "over": [null, null, null],
+        "max": [14.471, 66.24, 865.619],
+        "method": "engine"
+      },
+      "scoped": {
+        "scenario": "landing/two-root-facets",
+        "ms": [1.162, 6.686, 188.04],
+        "over": [null, null, null],
+        "max": [2.1, 8.675, 197.468],
+        "method": "engine",
+        "verdict": ["improved", "improved", "improved"],
+        "ratio": [12.11, 7.75, 3.28]
+      }
+    }
+  },
+  "counts": {
+    "all": {
+      "label": "Every row",
+      "exact": {
+        "scenario": "page-exact-count:count-exact",
+        "ms": [3.608, 15.793, 151.658],
+        "over": [null, null, null],
+        "max": [4.459, 24.725, 246.049],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "page-exact-count:count-capped",
+        "ms": [0.505, 0.597, 0.64],
+        "over": [null, null, null],
+        "max": [2.472, 1.321, 2.253],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "searchCommon": {
+      "label": "Search \"ord\" (every row)",
+      "exact": {
+        "scenario": "cross-table-search-ord:count-exact",
+        "ms": [61.176, 280.527, 2555.645],
+        "over": [null, null, null],
+        "max": [184.601, 679.845, 7085.065],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "cross-table-search-ord:count-capped",
+        "ms": [1.847, 1.87, 2.027],
+        "over": [null, null, null],
+        "max": [4.052, 4.325, 5.483],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "searchCustomer": {
+      "label": "Search \"customer\" (every row)",
+      "exact": {
+        "scenario": "cross-table-search-customer:count-exact",
+        "ms": [69.488, 239.981, 1947.036],
+        "over": [null, null, null],
+        "max": [151.94, 668.395, 5740.83],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "cross-table-search-customer:count-capped",
+        "ms": [9.133, 9.383, 9.261],
+        "over": [null, null, null],
+        "max": [17.966, 15.995, 16.914],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [200000, 1000000, 10000000]
+    },
+    "relationSearch": {
+      "label": "customer.name \"customer 1\"",
+      "exact": {
+        "scenario": "relation-search-page:count-exact",
+        "ms": [15.662, 26.711, 161.9],
+        "over": [null, null, null],
+        "max": [47.34, 28.938, 217.638],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "relation-search-page:count-capped",
+        "ms": [1.266, 0.891, 0.734],
+        "over": [null, null, null],
+        "max": [1.861, 1.709, 2.726],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [111110, 555550, 5555500]
+    },
+    "rareCustomer": {
+      "label": "One customer's orders",
+      "exact": {
+        "scenario": "cross-table-search-customer-19999:count-exact",
+        "ms": [0.623, 0.679, 1.48],
+        "over": [null, null, null],
+        "max": [3.051, 3.024, 5.985],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "cross-table-search-customer-19999:count-capped",
+        "ms": [26.296, 26.573, 28.096],
+        "over": [null, null, null],
+        "max": [30.661, 43.427, 35.888],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [10, 50, 500]
+    },
+    "rareReference": {
+      "label": "One reference",
+      "exact": {
+        "scenario": "cross-table-search-ORD-00199999:count-exact",
+        "ms": [1.86, 7.363, 53.211],
+        "over": [null, null, null],
+        "max": [5.821, 18.216, 144.715],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "cross-table-search-ORD-00199999:count-capped",
+        "ms": [27.485, 32.669, 77.81],
+        "over": [null, null, null],
+        "max": [33.988, 45.198, 135.279],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [1, 1, 1]
+    },
+    "ids": {
+      "label": "1,000 ids",
+      "exact": {
+        "scenario": "id-selection-1000:count-exact",
+        "ms": [1.095, 1.537, 1.148],
+        "over": [null, null, null],
+        "max": [9.2, 43.088, 5.32],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "id-selection-1000:count-capped",
+        "ms": [1.083, 1.439, 0.923],
+        "over": [null, null, null],
+        "max": [10.534, 43.936, 2.919],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [1000, 1000, 1000]
+    },
+    "noMatch": {
+      "label": "No match, every column searched",
+      "exact": {
+        "scenario": "wide-search-not-here-exact:count-exact",
+        "ms": [166.929, 632.261, 5910.958],
+        "over": [null, null, null],
+        "max": [173.138, 652.337, 6308.313],
+        "method": "engine (onQuery count stage)"
+      },
+      "capped": {
+        "scenario": "wide-search-not-here-exact:count-capped",
+        "ms": [133.285, 625.031, 6246.828],
+        "over": [null, null, null],
+        "max": [140.422, 673.895, 6301.919],
+        "method": "engine (onQuery count stage)"
+      },
+      "matches": [0, 0, 0]
+    }
+  },
+  "facetVariants": {
+    "twoFacets": {
+      "grouping-sets/sequential": {
+        "scenario": "two-root-facets/grouping-sets/sequential",
+        "ms": [22.594, 101.309, 1067.567],
+        "over": [null, null, null],
+        "max": [26.018, 116.481, 1212.231],
+        "method": "engine"
+      },
+      "grouping-sets/concurrent": {
+        "scenario": "two-root-facets/grouping-sets/concurrent",
+        "ms": [21.525, 100.347, 1040.63],
+        "over": [null, null, null],
+        "max": [23.271, 104.372, 1048.571],
+        "method": "engine"
+      },
+      "separate/sequential": {
+        "scenario": "two-root-facets/separate/sequential",
+        "ms": [24.156, 60.137, 468.883],
+        "over": [null, null, null],
+        "max": [24.552, 84.153, 484.873],
+        "method": "engine"
+      },
+      "separate/concurrent": {
+        "scenario": "two-root-facets/separate/concurrent",
+        "ms": [12.66, 44.215, 416.877],
+        "over": [null, null, null],
+        "max": [14.112, 59.006, 451.453],
+        "method": "engine"
+      }
+    },
+    "fourFacets": {
+      "grouping-sets/sequential": {
+        "scenario": "four-mixed-facets/grouping-sets/sequential",
+        "ms": [96.441, 270.089, 2429.147],
+        "over": [null, null, null],
+        "max": [110.474, 273.329, 2457.802],
+        "method": "engine"
+      },
+      "grouping-sets/concurrent": {
+        "scenario": "four-mixed-facets/grouping-sets/concurrent",
+        "ms": [74.776, 167.626, 1420.491],
+        "over": [null, null, null],
+        "max": [96.688, 208.777, 1482.462],
+        "method": "engine"
+      },
+      "separate/sequential": {
+        "scenario": "four-mixed-facets/separate/sequential",
+        "ms": [72.566, 131.932, 1198.312],
+        "over": [null, null, null],
+        "max": [80.713, 135.936, 1241.42],
+        "method": "engine"
+      },
+      "separate/concurrent": {
+        "scenario": "four-mixed-facets/separate/concurrent",
+        "ms": [32.23, 118.1, 1297.424],
+        "over": [null, null, null],
+        "max": [40.391, 163.895, 1374.117],
+        "method": "engine"
+      }
+    }
+  },
+  "load": {
+    "file": "postgres-concurrency-32-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 20,
+    "concurrency": 32,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "note": "32 concurrent callers, 10 pooled connections, PostgreSQL container limited to 4 CPUs; one scenario per process, 20 rounds",
+    "requests": [
+      {
+        "key": "page",
+        "label": "Page",
+        "note": null,
+        "rps": 11563,
+        "p95": 3.484,
+        "ms": 1.707
+      },
+      {
+        "key": "cursor",
+        "label": "Cursor page",
+        "note": "180,000 rows in",
+        "rps": 5746,
+        "p95": 8.254,
+        "ms": 3.489
+      },
+      {
+        "key": "ids",
+        "label": "1,000 ids filter",
+        "note": null,
+        "rps": 1741,
+        "p95": 23.151,
+        "ms": 14.656
+      },
+      {
+        "key": "count",
+        "label": "Page + exact count",
+        "note": null,
+        "rps": 729,
+        "p95": 66.888,
+        "ms": 26.741
+      },
+      {
+        "key": "relationSearch",
+        "label": "Search a relation + count",
+        "note": null,
+        "rps": 124,
+        "p95": 286.558,
+        "ms": 224.455
+      },
+      {
+        "key": "threeFacets",
+        "label": "3 facets",
+        "note": "one statement",
+        "rps": 74,
+        "p95": 476.008,
+        "ms": 269.778
+      },
+      {
+        "key": "filteredFacets",
+        "label": "Filtered facets",
+        "note": "each ignores its own filter",
+        "rps": 32,
+        "p95": 1043.939,
+        "ms": 590.633
+      },
+      {
+        "key": "fiveFacets",
+        "label": "5 facets",
+        "note": "two statements",
+        "rps": 19,
+        "p95": 2094.918,
+        "ms": 963.338
+      }
+    ]
+  },
+  "history": {
+    "file": "postgres-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 10,
+    "concurrency": 1,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "baseline": "2.4.1",
+    "requests": [
+      {
+        "key": "page",
+        "label": "Page",
+        "before": 39.946,
+        "after": 0.506
+      },
+      {
+        "key": "cursor",
+        "label": "Cursor page, 180,000 rows in",
+        "before": 20.114,
+        "after": 1.087
+      },
+      {
+        "key": "count",
+        "label": "Page + exact count",
+        "before": 62.46,
+        "after": 4.166
+      },
+      {
+        "key": "relationSearch",
+        "label": "Search a relation + count",
+        "before": 79.464,
+        "after": 16.798
+      },
+      {
+        "key": "threeFacets",
+        "label": "3 facets, one statement",
+        "before": 90.03,
+        "after": 24.758
+      },
+      {
+        "key": "fiveFacets",
+        "label": "5 facets, two statements",
+        "before": 195.045,
+        "after": 57.381
+      },
+      {
+        "key": "filteredFacets",
+        "label": "Filtered facets, each ignores its own filter",
+        "before": 138.224,
+        "after": 35.844
+      }
+    ]
+  },
+  "scans": {
+    "file": "postgres-2026-11-18.json",
+    "measuredOn": "2026-11-18",
+    "rows": 200000,
+    "iterations": 10,
+    "concurrency": 1,
+    "postgres": "PostgreSQL 18.6",
+    "workMem": "4MB",
+    "requests": [
+      {
+        "label": "Sorted by date",
+        "pages": 1019.848,
+        "scan": 928.387
+      },
+      {
+        "label": "Sorted by customer",
+        "pages": 5176.817,
+        "scan": 853.256
+      }
+    ]
+  }
+}

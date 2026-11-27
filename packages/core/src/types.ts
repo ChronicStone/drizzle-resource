@@ -1,3 +1,6 @@
+import type { CheckIndexesOptions, IndexFinding } from "./index-check.js";
+import type { ExplainReport } from "./explain.js";
+import type { QueryObserver } from "./observe.js";
 import type { Projection, RuntimeModel, VirtualField } from "./models.js";
 import type { PgColumn } from "drizzle-orm/pg-core";
 import type { SQL } from "drizzle-orm";
@@ -104,7 +107,26 @@ export type QueryFilterInput<TField extends string = string> =
 
 export type QueryFilters<TField extends string = string> = QueryFilterNode<TField>[];
 
-export type QueryCountMode = "none" | "exact";
+/** `checkIndexes()` reads the schema and returns findings; `checkIndexes({ live: true })` also asks PostgreSQL. */
+export interface CheckIndexes {
+  (options?: CheckIndexesOptions & { live?: false }): IndexFinding[];
+  (options: CheckIndexesOptions & { live: true }): Promise<IndexFinding[]>;
+  (options: CheckIndexesOptions): IndexFinding[] | Promise<IndexFinding[]>;
+}
+
+/**
+ * How the filtered row count is computed.
+ *
+ * - `none`: no count; offset pages use a one-row lookahead for `hasNextPage`.
+ * - `exact`: counts every matching row.
+ * - `capped`: counts at most the resource's `pagination.countCap` rows (10,000 by default).
+ * - `estimated`: reads PostgreSQL's row estimate, and falls back to `capped` when the estimate is
+ *   unreliable (filters or search through relations, small results, other databases).
+ */
+export type QueryCountMode = "none" | "exact" | "capped" | "estimated";
+
+/** Count modes a scan reports: an exact total or none. */
+export type QueryScanCountMode = "none" | "exact";
 
 export interface QueryOffsetPagination {
   mode: "offset";
@@ -144,9 +166,27 @@ export type QueryPaginationInput =
       count?: QueryCountMode;
     };
 
+/**
+ * The count a page actually carries. `count` is what was used, which can differ from what was
+ * requested: `estimated` may fall back to `capped`, and a count that hits its timeout degrades to
+ * `none` with `reason: "timeout"`.
+ */
 export type QueryPageCount =
-  | { count: "none"; rowCount: null }
-  | { count: "exact"; rowCount: number };
+  | {
+      count: "none";
+      rowCount: null;
+      /** Present when a requested count was dropped because it exceeded `timeouts.count`. */
+      reason?: "timeout";
+    }
+  | { count: "exact"; rowCount: number }
+  | {
+      count: "capped";
+      /** At most `pagination.countCap`. */
+      rowCount: number;
+      /** `false` when the cap was hit: more rows match than `rowCount` (show "10,000+"). */
+      exact: boolean;
+    }
+  | { count: "estimated"; rowCount: number };
 
 export type QueryOffsetPageInfo = {
   mode: "offset";
@@ -232,6 +272,9 @@ export interface QueryResponse<TRow = Record<string, unknown>> {
   facets?: QueryFacetResult[];
 }
 
+/** What a custom `strategy.query` returns: the same shape as {@link QueryResponse}. */
+export type QueryStrategyResponse<TRow = Record<string, unknown>> = QueryResponse<TRow>;
+
 /**
  * IDs-only result returned by `resource.queryIds(...)`.
  */
@@ -313,8 +356,26 @@ export interface QueryFacetOption {
 
 /**
  * Aggregated response for a single facet field.
+ *
+ * `status` narrows the result: `ok` carries buckets, `skipped` means the request's count was
+ * capped and `facets.whenCapped` is `"skip"`, `timeout` means the facet exceeded
+ * `timeouts.facets`. Skipped and timed-out facets come back with empty `options`.
+ *
+ * The engine always sets `status`. It is optional in the type so that facets built by hand, such
+ * as the ones a custom strategy returns, keep compiling: an absent `status` means `ok`.
  */
-export interface QueryFacetResult<TField extends string = string> {
+export interface QueryFacetResult<TField extends string = string> extends QueryFacetBase<TField> {
+  /** `"ok"` when absent. `"skipped"` comes with `reason: "above-cap"`. */
+  status?: "ok" | "skipped" | "timeout";
+  reason?: "above-cap";
+}
+
+/** A {@link QueryFacetResult} as a union on `status`, for narrowing in a `switch`. */
+export type QueryFacetOutcome<TField extends string = string> = QueryFacetBase<TField> &
+  ({ status?: "ok" } | { status: "skipped"; reason: "above-cap" } | { status: "timeout" });
+
+/** Facet payload without `status`. */
+export interface QueryFacetBase<TField extends string = string> {
   /**
    * Faceted field path.
    */
@@ -343,6 +404,10 @@ export interface QueryFacetResult<TField extends string = string> {
 export interface QueryFacetsResponse<TField extends string = string> {
   facets: QueryFacetResult<TField>[];
 }
+
+/** What a custom `strategy.facets` returns: the same shape as {@link QueryFacetsResponse}. */
+export type QueryFacetsStrategyResponse<TField extends string = string> =
+  QueryFacetsResponse<TField>;
 
 export type QueryEngineDb = {
   query: Record<string, { findMany: (args?: any) => Promise<any[]> }>;
@@ -804,9 +869,16 @@ export interface QueryResourceUtils<
   executeIdsQuery: (args: {
     request: QueryRequest;
     rowCount?: number;
+    /** A count already resolved for this request, so the page does not count again. */
+    pageCount?: QueryPageCount;
   }) => Promise<QueryIdsResponse<TRow extends { id: infer TId } ? TId : unknown>>;
   scanIds: <TResult>(
-    args: { request: QueryRequest; batchSize: number; count: QueryCountMode; signal?: AbortSignal },
+    args: {
+      request: QueryRequest;
+      batchSize: number;
+      count: QueryScanCountMode;
+      signal?: AbortSignal;
+    },
     consume: (batches: AsyncIterable<{ ids: unknown[]; totalRows?: number }>) => Promise<TResult>,
   ) => Promise<TResult>;
   /**
@@ -841,7 +913,12 @@ export interface QueryResourceUtils<
     request: QueryRequest;
     summary: (fields: Record<string, any>) => Record<string, SQL | SQL.Aliased>;
     includeCount?: boolean;
-  }) => Promise<{ summary: Record<string, unknown>; rowCount?: number }>;
+  }) => Promise<{
+    summary: Record<string, unknown>;
+    rowCount?: number;
+    /** `timeout`: `timeouts.summary` was exceeded and every summary value is `null`. */
+    status: "ok" | "timeout";
+  }>;
   resolveField: (path: string) => FieldRegistryEntry | undefined;
 }
 
@@ -864,6 +941,12 @@ export interface ResourceQuerySearchConfig<TField extends string> {
    * ```
    */
   defaults?: readonly TField[];
+  /**
+   * Milliseconds a search request without an exact count may spend on its ordinary plan before the
+   * engine retries with the trigram-indexed plan (default 25). Only applies when every searched
+   * column has a `pg_trgm` index; see the search guide for what it costs.
+   */
+  planBudget?: number;
 }
 
 /**
@@ -911,11 +994,56 @@ export interface ResourceQueryFacetsConfig<TField extends string> {
    * When omitted, every registered field is considered facetable.
    */
   allowed?: readonly TField[];
+  /**
+   * What to do with facets when the request's count is `capped` or `estimated` and the cap is hit.
+   *
+   * - `"run"` (default): compute the facets anyway.
+   * - `"skip"`: do not compute them; each requested facet comes back with `status: "skipped"`.
+   */
+  whenCapped?: "skip" | "run";
+  /**
+   * Estimated rows the facets read, above which every facet runs as its own statement (at most
+   * four at a time) instead of facets sharing one `GROUPING SETS` statement. A `GROUPING SETS`
+   * statement runs on one CPU; a single-facet statement can use parallel workers, and the
+   * statements overlap. Default 100,000.
+   *
+   * The estimate is the root table's `pg_class.reltuples`, read once per database object and
+   * reused for five minutes (a transaction passed in with `db` reads it once). A request that
+   * filters or searches on the root table's own columns is judged by the planner's estimate of the
+   * rows it matches, so a narrow request keeps the cheaper shared statement; a filter through a
+   * relation has no estimate, and the table size decides. `0` always runs facets separately and
+   * `Infinity` always shares one statement. The engine shares one statement when PostgreSQL has no
+   * estimate. When facets are split, at most four statements of a request run at once (the cap is
+   * per request, not per pool), one after the other in a transaction the caller passed in, which makes splitting worth less below about 200,000 rows.
+   * A split exact count is timed by `timeouts.count`, and a request whose facets queue behind each
+   * other can take up to `ceil(n / 4)` times `timeouts.facets`.
+   */
+  splitAbove?: number;
 }
 
 export interface ResourceQueryPaginationConfig {
   /** Pagination modes accepted by this resource. Offset pagination is enabled by default. */
   modes?: readonly QueryPagination["mode"][];
+  /**
+   * Most rows a `capped` count reads (default 10,000). Set by the resource, never by clients.
+   * `estimated` counts at or below this size are replaced by an exact `capped` count.
+   */
+  countCap?: number;
+}
+
+/**
+ * Per-stage statement timeouts in milliseconds, applied with `SET LOCAL statement_timeout` inside
+ * a transaction. Only configured stages pay for the transaction. A stage that times out degrades
+ * instead of failing the request:
+ *
+ * - `count`: `pageInfo` becomes `{ count: "none", rowCount: null, reason: "timeout" }`.
+ * - `facets`: the affected facets come back with `status: "timeout"` and empty `options`.
+ * - `summary`: the response carries `summaryStatus: "timeout"` and every summary value is `null`.
+ */
+export interface ResourceQueryTimeoutsConfig {
+  count?: number;
+  facets?: number;
+  summary?: number;
 }
 
 export interface ResourceQueryPaginationDefaultsConfig {
@@ -947,6 +1075,8 @@ export interface ResourceQueryDefaultsConfig {
 export interface ResourceQueryValidationConfig {
   maxPageSize?: number;
   maxCursorLength?: number;
+  /** Highest one-based offset page index accepted. Unlimited by default. */
+  maxPageIndex?: number;
   maxFilterDepth?: number;
   maxFilterNodes?: number;
   maxFacetCount?: number;
@@ -1070,7 +1200,7 @@ export interface ResourceQueryStrategyConfig<
    */
   query?: (
     args: ResourceQueryStrategyQueryArgs<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>,
-  ) => Promise<QueryResponse<TRow>>;
+  ) => Promise<QueryStrategyResponse<TRow>>;
   /**
    * IDs-stage override.
    *
@@ -1101,7 +1231,7 @@ export interface ResourceQueryStrategyConfig<
       TRow,
       TFacetKey
     >,
-  ) => Promise<QueryFacetsResponse<TFacetKey>>;
+  ) => Promise<QueryFacetsStrategyResponse<TFacetKey>>;
 }
 
 /**
@@ -1149,12 +1279,15 @@ export interface ResourceQueryConfig<
   defaults?: ResourceQueryDefaultsConfig;
   /** Defensive limits for request complexity and result size. */
   validation?: ResourceQueryValidationConfig;
+  /** Statement timeouts per stage, in milliseconds. */
+  timeouts?: ResourceQueryTimeoutsConfig;
 }
 
 export interface ResourceRuntimeQueryConfig<TField extends string> {
   search: {
     allowed: Set<TField>;
     defaults: TField[];
+    planBudget: number;
   };
   sort: {
     disabled: Set<TField>;
@@ -1166,12 +1299,16 @@ export interface ResourceRuntimeQueryConfig<TField extends string> {
   };
   facets: {
     allowed: Set<TField>;
+    whenCapped: "skip" | "run";
+    splitAbove: number;
   };
   pagination: {
     modes: Set<QueryPagination["mode"]>;
+    countCap: number;
   };
   defaults: ResourceQueryDefaultsConfig;
   validation: Required<ResourceQueryValidationConfig>;
+  timeouts: ResourceQueryTimeoutsConfig;
 }
 
 type TypesEqual<TLeft, TRight> =
@@ -1254,6 +1391,11 @@ export interface QueryResource<
    */
   fields: Map<string, FieldRegistryEntry>;
   /**
+   * Check this resource's sorts, scope, search and facets against the indexes of its tables.
+   * Without `live`, it reads only the Drizzle schema and returns at once.
+   */
+  checkIndexes: CheckIndexes;
+  /**
    * Runtime-normalized query configuration.
    */
   queryConfig: ResourceRuntimeQueryConfig<QueryFieldPath<TSchema, TRelations, TRoot, TWith>>;
@@ -1280,6 +1422,21 @@ export interface QueryResource<
       >
     >
   >;
+  /**
+   * Run `EXPLAIN` on the statements `query` would run for this request and report what is slow.
+   * With `analyze: true` the statements run for real inside a transaction that is rolled back.
+   * PostgreSQL only.
+   */
+  explain: <TContextOverride extends TContext = TContext>(args: {
+    request: QueryRequestInput;
+    context?: TContextOverride;
+    db?: QueryEngineDb;
+    execution?: ResourceQueryExecutionOptions;
+    /** Run the statements under `EXPLAIN ANALYZE, BUFFERS` for real timings and row counts. */
+    analyze?: boolean;
+    /** Also explain the summary, as `query({ summary: true })` runs it. */
+    summary?: boolean;
+  }) => Promise<ExplainReport>;
   scan: <
     TResult,
     const TLoad extends ResourceLoad<TWith, THydration> | undefined = undefined,
@@ -1290,6 +1447,7 @@ export interface QueryResource<
       context?: TContextOverride;
       db?: QueryEngineDb;
       batchSize?: number;
+      /** A scan reports an exact total or none; `capped` and `estimated` are rejected. */
       count?: QueryCountMode;
       signal?: AbortSignal;
       load?: TLoad;
@@ -1451,6 +1609,12 @@ export interface QueryEngineConfig<
    * Drizzle relations object created from the same schema.
    */
   relations: TRelations;
+  /**
+   * Called once for every statement the engine runs, with its stage, request shape, duration and
+   * SQL. The SQL keeps its `$1` placeholders: parameter values are never included. An error thrown
+   * by the hook is ignored and never reaches the request.
+   */
+  onQuery?: QueryObserver;
 }
 
 /**
@@ -1558,4 +1722,10 @@ export interface QueryEngine<
    * Backwards-compatible alias of {@link defineResource}.
    */
   defineQueryResource: QueryEngine<TDb, TSchema, TRelations, TEngineContext>["defineResource"];
+
+  /**
+   * Check every resource defined on this engine against the indexes of its tables.
+   * Without `live`, it reads only the Drizzle schema and returns at once.
+   */
+  checkIndexes: CheckIndexes;
 }

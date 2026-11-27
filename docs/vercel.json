@@ -108,7 +108,7 @@
     },
     {
       "source": "/performance/optimization",
-      "destination": "/scale/performance",
+      "destination": "/scale/optimize",
       "permanent": true
     },
     {
@@ -133,7 +133,12 @@
     },
     {
       "source": "/performance",
-      "destination": "/scale/performance",
+      "destination": "/scale/optimize",
+      "permanent": true
+    },
+    {
+      "source": "/scale/performance",
+      "destination": "/scale/optimize",
       "permanent": true
     }
   ]

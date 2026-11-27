@@ -38,6 +38,7 @@ import type {
   QueryRelationsConfig,
   QueryRelationsSubset,
   QueryRequest,
+  QueryPageCount,
   QueryPageInfo,
   QueryResource,
   QueryResourceUtils,
@@ -45,12 +46,57 @@ import type {
   QueryWith,
 } from "./types.js";
 import { decodeCursor, encodeCursor } from "./cursor.js";
+import { pageQueryHooks } from "./plan-hook.js";
 import {
   estimatePostgresQuery,
+  estimatePostgresTableRows,
+  isCallerTransaction,
   isPostgresDatabase,
   probePostgresSearch,
   scanPostgresCursor,
+  withStatementTimeout,
 } from "./postgres.js";
+import { isAboveCap, skippedFacets, timedOutFacet } from "./capped.js";
+import { createStatementObserver } from "./observe.js";
+import type { CapturedStatement, QueryObserver } from "./observe.js";
+
+/** The indexed search plan gets this many times `search.planBudget` before the ordinary plan returns. */
+const indexedBudgetFactor = 4;
+
+/** Most statements of one request that run at the same time when facets are split. */
+const maxSplitStatements = 4;
+
+/**
+ * Lets `limit` tasks run at a time; the others wait for a slot. After the first failure the ones
+ * that have not started never start.
+ */
+function createStatementSlots(limit: number) {
+  let active = 0;
+  let failed = false;
+  const waiting: Array<() => void> = [];
+  return {
+    async run<TResult>(task: () => Promise<TResult>): Promise<TResult> {
+      if (active < limit) active += 1;
+      else await new Promise<void>((resolve) => waiting.push(resolve));
+      try {
+        if (failed) return undefined as TResult;
+        return await task();
+      } catch (error) {
+        failed = true;
+        throw error;
+      } finally {
+        const next = waiting.shift();
+        if (next) next();
+        else active -= 1;
+      }
+    },
+  };
+}
+type StatementSlots = ReturnType<typeof createStatementSlots>;
+
+function isExactCount(count: QueryPageCount) {
+  return count.count === "exact" || (count.count === "capped" && count.exact);
+}
 
 const utilsCache = new WeakMap<object, unknown>();
 const scopeFilterNodes = new WeakSet<QueryFilterNode>();
@@ -510,13 +556,32 @@ export function createQueryResourceUtils<
   {
     resource,
     db: database = config.db,
+    tap,
+    capture,
   }: {
     resource: QueryResource<TDb, TSchema, TRelations, TRoot, TWith, TContext, TRow>;
     db?: QueryEngineDb;
+    /** Also sees every statement, next to the engine's `onQuery`. */
+    tap?: QueryObserver;
+    /** A dry run: stage statements are captured here instead of being executed. */
+    capture?: CapturedStatement[];
   },
 ): QueryResourceUtils<TRow, TWith> {
-  const cached = database === config.db ? utilsCache.get(resource) : undefined;
+  const shared = tap === undefined && capture === undefined;
+  const cached = shared && database === config.db ? utilsCache.get(resource) : undefined;
   if (cached) return cached as QueryResourceUtils<TRow, TWith>;
+  const observer = createStatementObserver(String(resource.key), [config.onQuery, tap], {
+    ignoreFilter: isScopeFilterNode,
+    capture,
+  });
+  /** A dry run applies no timeouts: it runs nothing. */
+  async function withTimeout<TResult>(
+    milliseconds: number | undefined,
+    run: (db: QueryEngineDb) => Promise<TResult>,
+  ) {
+    if (observer.dry) return { timedOut: false as const, value: await run(database) };
+    return withStatementTimeout(database, milliseconds, run);
+  }
 
   if (database !== config.db && config.models) {
     resource = {
@@ -541,6 +606,7 @@ export function createQueryResourceUtils<
   const indexedSearchColumns = new Set<PgColumn>();
   const searchPlans = new WeakMap<QueryRequest, Promise<void>>();
   const indexedSearchRequests = new WeakSet<QueryRequest>();
+  const budgetedSearches = new WeakSet<QueryRequest>();
 
   function resolveField(path: string) {
     return resource.fields.get(path);
@@ -720,7 +786,7 @@ export function createQueryResourceUtils<
     );
     await Promise.all(
       [...tables].map(async (table) => {
-        const indexed = await probePostgresSearch(database, table);
+        const indexed = await probePostgresSearch(database, table, { observer, request });
         for (const entry of entries) {
           const column = entry.column as PgColumn;
           if (config.schema[entry.tableName] === table && indexed.has(column.name))
@@ -730,6 +796,14 @@ export function createQueryResourceUtils<
     );
     const indexed = compileIndexedSearch(request);
     if (!indexed) return;
+    if (request.pagination.count !== "exact" && !isCallerTransaction(database)) {
+      // Without an exact count PostgreSQL's estimate cannot tell a rare term from a common one
+      // (it assumes millions of matches for both), so it walks the sort index for a rare term.
+      // The count and the page of the request each run the ordinary plan with a time budget
+      // instead, and `plannedSearch` tries the indexed plan only when the budget runs out.
+      budgetedSearches.add(request);
+      return;
+    }
     const filter = compileFilterNode(normalizeFilters(request.filters));
     const queries = [compileSearch(search), indexed].map((predicate) => {
       const where = and(filter, predicate);
@@ -753,11 +827,74 @@ export function createQueryResourceUtils<
       return sql`select (${count}) as total, array(select id from (${page}) as page) as ids`;
     });
     const [ordinaryCost, indexedCost] = await Promise.all(
-      queries.map((query) => estimatePostgresQuery(database, query)),
+      queries.map((query) =>
+        estimatePostgresQuery(database, query, "Total Cost", { observer, request }),
+      ),
     );
     if (ordinaryCost !== undefined && indexedCost !== undefined && indexedCost < ordinaryCost) {
       indexedSearchRequests.add(request);
     }
+  }
+
+  /**
+   * Run one statement of a search that has no exact count (the count, or the page). Each such
+   * statement makes its own choice, because what one statement learns says nothing about the
+   * next: a capped count stops at its cap, and the page behind it still has to sort every match.
+   *
+   * 1. The ordinary plan runs with `search.planBudget`. A common term finishes within it and costs
+   *    what it always cost. A rare term makes PostgreSQL walk the whole sort index.
+   * 2. On a miss, the indexed plan gets `indexedBudgetFactor` times the budget. A busy server can
+   *    make a common term miss the first budget, and the indexed plan is the wrong plan for it.
+   * 3. If that misses too, the ordinary plan runs with no budget.
+   *
+   * The page starts at step 2 (`first: "indexed"`) when the capped count before it came back under
+   * its cap: the count is then exact and small, so the indexed plan reads at most that many
+   * matches. A count that hit the cap says the matches are common, and the page starts at step 1.
+   *
+   * The worst case for one statement is both budgets plus the ordinary time. The indexed attempt
+   * runs on a copy of the request, so no other statement of the request sees its plan.
+   */
+  async function plannedSearch<TResult>(
+    request: QueryRequest,
+    db: QueryEngineDb,
+    run: (db: QueryEngineDb, planned: QueryRequest) => Promise<TResult>,
+    first: "ordinary" | "indexed" = "ordinary",
+  ): Promise<TResult> {
+    if (!budgetedSearches.has(request)) return run(db, request);
+    const budget = resource.queryConfig.search.planBudget;
+    if (observer.dry) {
+      // A dry run cannot tell which attempt a statement ends on. It captures the statements the
+      // attempts build, the ordinary plan and the indexed plan, and `explain` runs them in the
+      // order the engine does. Facets and the summary never take part: they keep the ordinary plan.
+      const from = observer.captured();
+      const ordinary = run(db, request);
+      const between = observer.captured();
+      const indexedRequest = { ...request };
+      indexedSearchRequests.add(indexedRequest);
+      void run(db, indexedRequest);
+      observer.annotate(from, between, { attempt: "ordinary", budget });
+      observer.annotate(between, observer.captured(), {
+        attempt: "indexed",
+        budget: budget * indexedBudgetFactor,
+      });
+      return ordinary;
+    }
+    if (first === "ordinary") {
+      const ordinary = await withStatementTimeout(db, budget, (d) => run(d, request), {
+        capToCurrent: true,
+      });
+      if (!ordinary.timedOut) return ordinary.value;
+    }
+    const indexedRequest = { ...request };
+    indexedSearchRequests.add(indexedRequest);
+    const indexed = await withStatementTimeout(
+      db,
+      budget * indexedBudgetFactor,
+      (d) => run(d, indexedRequest),
+      { capToCurrent: true },
+    );
+    if (!indexed.timedOut) return indexed.value;
+    return run(db, request);
   }
 
   function compileSearch(search: QueryRequest["search"], request?: QueryRequest) {
@@ -937,23 +1074,133 @@ export function createQueryResourceUtils<
     return lookupKeys.has(column.name);
   }
 
-  function buildCountQuery(request: QueryRequest) {
+  function buildCountQuery(request: QueryRequest, db: QueryEngineDb = database) {
     const countPlan = buildAggregatePlan(request);
     return preservesRootCardinality(countPlan.joins)
       ? joinRelationSteps(
-          (database as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
+          (db as any).select({ rowCount: sql<number>`count(*)` }).from(rootTable),
           config.schema,
           countPlan.joins,
         ).where(countPlan.where)
-      : (database as any).select({ rowCount: sql<number>`count(*)` }).from(
+      : (db as any).select({ rowCount: sql<number>`count(*)` }).from(
           joinRelationSteps(
-            (database as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+            (db as any).selectDistinct({ id: rootTable.id }).from(rootTable),
             config.schema,
             countPlan.joins,
           )
             .where(countPlan.where)
             .as("count_matching_ids"),
         );
+  }
+
+  /** What a dry run answers for an exact count: large, so the page behind it is not skipped. */
+  const dryExactCount = 1_000_000_000;
+
+  function countCap() {
+    return resource.queryConfig.pagination.countCap;
+  }
+
+  /** Counts at most `cap + 1` matching rows: the extra row tells "exactly cap" from "more". */
+  function buildCappedCountQuery(request: QueryRequest, db: QueryEngineDb = database) {
+    const countPlan = buildAggregatePlan(request);
+    const matching = preservesRootCardinality(countPlan.joins)
+      ? joinRelationSteps(
+          (db as any).select({ one: sql<number>`1`.as("one") }).from(rootTable),
+          config.schema,
+          countPlan.joins,
+        )
+      : joinRelationSteps(
+          (db as any).selectDistinct({ id: rootTable.id }).from(rootTable),
+          config.schema,
+          countPlan.joins,
+        );
+    return (db as any).select({ rowCount: sql<number>`count(*)` }).from(
+      matching
+        .where(countPlan.where)
+        .limit(countCap() + 1)
+        .as("capped_matching_ids"),
+    );
+  }
+
+  /**
+   * PostgreSQL's row estimate for the request, or `undefined` when it is not trustworthy: filters
+   * or search through relations or virtual fields, another database, or a failed EXPLAIN.
+   */
+  async function estimateMatchingRows(request: QueryRequest) {
+    if (!isPostgresDatabase(database)) return undefined;
+    const paths: string[] = [];
+    collectConditionFieldsFromFilters(request.filters, paths);
+    if (request.search.value.length > 0) paths.push(...request.search.fields);
+    for (const path of paths) {
+      const entry = resolveField(path);
+      if (!entry || entry.source !== "root" || entry.virtual || entry.isManyPath) return undefined;
+    }
+    const plan = buildAggregatePlan(request);
+    if (plan.joins.length > 0) return undefined;
+    const query = (database as any).select({ id: rootTable.id }).from(rootTable).where(plan.where);
+    return {
+      statement: query.getSQL(),
+      estimate: await estimatePostgresQuery(database, query.getSQL(), "Plan Rows", {
+        observer,
+        request,
+      }),
+    };
+  }
+
+  async function estimateRowCount(request: QueryRequest) {
+    const { statement, estimate } = (await estimateMatchingRows(request)) ?? {};
+    // The estimate is read from this statement's plan, so a dry run reports the statement itself.
+    if (statement && estimate !== undefined && estimate > countCap()) {
+      observer.record({
+        stage: "count",
+        statement,
+        note: "the count is the planner's row estimate for this statement, nothing is counted",
+      });
+    }
+    return estimate;
+  }
+
+  /** Resolve the request's count mode into the count a page reports. */
+  async function resolveCount(request: QueryRequest): Promise<QueryPageCount> {
+    const mode = request.pagination.count;
+    if (mode === "none") return { count: "none", rowCount: null };
+    await prepareSearch(request);
+    const cap = countCap();
+    if (mode === "estimated") {
+      const estimate = await estimateRowCount(request);
+      // A small estimate is cheap to confirm, and the planner is least reliable there.
+      if (estimate !== undefined && estimate > cap) {
+        return { count: "estimated", rowCount: Math.round(estimate) };
+      }
+    }
+    const outcome = await withTimeout(
+      resource.queryConfig.timeouts.count,
+      async (db): Promise<QueryPageCount> => {
+        if (mode === "exact") {
+          const [total] = await observer.run(
+            "count",
+            request,
+            buildCountQuery(request, db),
+            observer.dry ? { dry: [{ rowCount: dryExactCount }] } : undefined,
+          );
+          return { count: "exact", rowCount: Number(total?.rowCount ?? 0) };
+        }
+        const [total] = await plannedSearch<Array<{ rowCount: unknown }>>(
+          request,
+          db,
+          async (planned, plannedRequest) =>
+            observer.run(
+              "count",
+              request,
+              buildCappedCountQuery(plannedRequest, planned),
+              observer.dry ? { dry: [{ rowCount: cap }] } : undefined,
+            ),
+        );
+        const found = Number(total?.rowCount ?? 0);
+        return { count: "capped", rowCount: Math.min(found, cap), exact: found <= cap };
+      },
+    );
+    return outcome.timedOut ? { count: "none", rowCount: null, reason: "timeout" } : outcome.value;
   }
 
   function buildCursorBoundary(request: QueryRequest, cursor: string) {
@@ -1010,55 +1257,51 @@ export function createQueryResourceUtils<
   async function executeIdsQuery({
     request,
     rowCount: knownRowCount,
+    pageCount,
   }: {
     request: QueryRequest;
     rowCount?: number;
+    pageCount?: QueryPageCount;
   }) {
     await prepareSearch(request);
     const pageSize = request.pagination.pageSize <= 0 ? 25 : request.pagination.pageSize;
     const sorting = compileOrderBy(request.sorting);
     const orderBy = sorting.length ? sorting : [asc(rootTable.id)];
     const direct = preservesRootCardinality(buildOuterJoins(resource, request));
-    const whereClause = buildWhereClause(request);
 
     const firstPage =
       request.pagination.mode === "cursor"
         ? !request.pagination.cursor
         : request.pagination.pageIndex === 1;
+    const mode = request.pagination.count;
     const inferCount =
-      request.pagination.count === "exact" &&
+      mode === "exact" &&
       knownRowCount === undefined &&
+      pageCount === undefined &&
       firstPage &&
       direct &&
       request.filters.some((node) => fitsUniqueLookup(node, pageSize));
-    let rowCount = knownRowCount ?? null;
-    if (request.pagination.count === "exact" && !inferCount) {
-      if (rowCount === null) {
-        const [total] = await buildCountQuery(request);
-        rowCount = Number(total?.rowCount ?? 0);
-      }
-      if (rowCount === 0) {
-        return {
-          ids: [],
-          pageInfo:
-            request.pagination.mode === "cursor"
-              ? {
-                  mode: "cursor" as const,
-                  pageSize,
-                  nextCursor: null,
-                  count: "exact" as const,
-                  rowCount,
-                }
-              : {
-                  mode: "offset" as const,
-                  pageIndex: request.pagination.pageIndex,
-                  pageSize,
-                  hasNextPage: false,
-                  count: "exact" as const,
-                  rowCount,
-                },
-        };
-      }
+    let count: QueryPageCount =
+      pageCount ??
+      (mode === "exact" && knownRowCount !== undefined
+        ? { count: "exact", rowCount: knownRowCount }
+        : { count: "none", rowCount: null });
+    const countKnown = pageCount !== undefined || (mode === "exact" && knownRowCount !== undefined);
+    if (!countKnown && mode !== "none" && !inferCount) count = await resolveCount(request);
+    if (isExactCount(count) && count.rowCount === 0) {
+      return {
+        ids: [],
+        pageInfo:
+          request.pagination.mode === "cursor"
+            ? { mode: "cursor" as const, pageSize, nextCursor: null, ...count }
+            : {
+                mode: "offset" as const,
+                pageIndex: request.pagination.pageIndex,
+                pageSize,
+                hasNextPage: false,
+                ...count,
+              },
+      };
     }
 
     const cursorSelection =
@@ -1071,50 +1314,53 @@ export function createQueryResourceUtils<
           )
         : {};
 
-    let idsQuery: any;
-    if (direct) {
-      idsQuery = (database as any).select({ id: rootTable.id, ...cursorSelection }).from(rootTable);
-    } else {
-      const matchingIds = (database as any)
-        .$with("matching_ids")
-        .as(buildMatchingIdsSelect(request));
-      idsQuery = (database as any)
-        .with(matchingIds)
-        .select({ id: matchingIds.id, ...cursorSelection })
-        .from(matchingIds)
-        .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
-    }
-
-    idsQuery = applyOuterJoins(idsQuery, request);
-
-    const cursorPredicate =
-      request.pagination.mode === "cursor" && request.pagination.cursor
-        ? buildCursorBoundary(request, request.pagination.cursor)
-        : undefined;
-    idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
-
     const offset =
       request.pagination.mode === "offset"
         ? (Math.max(request.pagination.pageIndex, 1) - 1) * pageSize
         : 0;
+    // Only a count that is exact tells whether a next page exists; every other page looks ahead.
     const needsLookahead =
-      request.pagination.mode === "cursor" || request.pagination.count === "none";
-    idsQuery = idsQuery
-      .orderBy(...orderBy)
-      .limit(pageSize + (needsLookahead ? 1 : 0))
-      .offset(offset);
-
-    const queriedRows = await idsQuery;
-    if (inferCount) rowCount = queriedRows.length;
+      request.pagination.mode === "cursor" || (!isExactCount(count) && !inferCount);
+    // The search plan is read while the query is built, so each attempt builds it again.
+    const fetchPage = async (db: QueryEngineDb, planned: QueryRequest) => {
+      const whereClause = buildWhereClause(planned);
+      let idsQuery: any;
+      if (direct) {
+        idsQuery = (db as any).select({ id: rootTable.id, ...cursorSelection }).from(rootTable);
+      } else {
+        const matchingIds = (db as any).$with("matching_ids").as(buildMatchingIdsSelect(planned));
+        idsQuery = (db as any)
+          .with(matchingIds)
+          .select({ id: matchingIds.id, ...cursorSelection })
+          .from(matchingIds)
+          .innerJoin(rootTable, eq(rootTable.id, matchingIds.id));
+      }
+      idsQuery = applyOuterJoins(idsQuery, planned);
+      const cursorPredicate =
+        request.pagination.mode === "cursor" && request.pagination.cursor
+          ? buildCursorBoundary(request, request.pagination.cursor)
+          : undefined;
+      idsQuery = idsQuery.where(and(direct ? whereClause : undefined, cursorPredicate));
+      const pageQuery = idsQuery
+        .orderBy(...orderBy)
+        .limit(pageSize + (needsLookahead ? 1 : 0))
+        .offset(offset);
+      // `checkIndexes({ live: true })` reads the page query of a probe database instead of running it.
+      const intercepted = pageQueryHooks.get(database)?.(pageQuery);
+      return (await (intercepted ??
+        observer.run("ids", request, pageQuery, observer.dry ? { dry: [] } : undefined))) as any[];
+    };
+    // A capped count that fits under its cap is exact and small, so the indexed plan reads at most
+    // that many matches. A count that hit the cap says the matches are common: walk the sort index.
+    const pageFirst = count.count === "capped" && count.exact ? "indexed" : "ordinary";
+    const queriedRows = await plannedSearch(request, database, fetchPage, pageFirst);
+    if (inferCount) count = { count: "exact", rowCount: queriedRows.length };
     const hasNextPage =
-      request.pagination.count === "exact" && request.pagination.mode === "offset"
-        ? offset + Math.min(queriedRows.length, pageSize) < (rowCount ?? 0)
+      request.pagination.mode === "offset" && isExactCount(count)
+        ? offset + Math.min(queriedRows.length, pageSize) < (count.rowCount ?? 0)
         : queriedRows.length > pageSize;
     const pageRows = queriedRows.slice(0, pageSize);
-    const countInfo =
-      request.pagination.count === "exact"
-        ? ({ count: "exact", rowCount: rowCount ?? 0 } as const)
-        : ({ count: "none", rowCount: null } as const);
+    const countInfo = count;
     let pageInfo: QueryPageInfo;
 
     if (request.pagination.mode === "cursor") {
@@ -1150,6 +1396,7 @@ export function createQueryResourceUtils<
 
   async function executeRowsQuery({
     ids,
+    request,
     relations = resource.relations as QueryRelationsSubset<TWith> | undefined,
     projection,
   }: {
@@ -1161,15 +1408,20 @@ export function createQueryResourceUtils<
     const orderedIds = dedupeIds(ids);
     if (orderedIds.length === 0) return [];
 
-    const rows = await (database.query as any)[resource.key].findMany({
-      where: {
-        id: {
-          in: orderedIds,
+    const rows = await observer.run<any[]>(
+      "rows",
+      request,
+      (database.query as any)[resource.key].findMany({
+        where: {
+          id: {
+            in: orderedIds,
+          },
         },
-      },
-      with: relations,
-      ...projection?.config(database, true),
-    });
+        with: relations,
+        ...projection?.config(database, true),
+      }),
+      observer.dry ? { dry: [] } : undefined,
+    );
 
     const orderIndex = new Map(orderedIds.map((id: unknown, index: number) => [id, index]));
     rows.sort(
@@ -1233,6 +1485,7 @@ export function createQueryResourceUtils<
         query: query.getSQL(),
         batchSize: options.batchSize,
         signal: options.signal,
+        observing: { observer, request },
       },
       async (batches) => {
         async function* decode() {
@@ -1277,15 +1530,35 @@ export function createQueryResourceUtils<
       : selection;
     const joins = buildOuterJoins(resource, aggregateRequest);
     const direct = preservesRootCardinality(joins);
-    const query = (database as any).select(selected).from(rootTable);
-    const rows = await (direct
-      ? joinRelationSteps(query, config.schema, joins).where(buildWhereClause(aggregateRequest))
-      : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))));
+    const outcome = await withTimeout(resource.queryConfig.timeouts.summary, async (db) => {
+      const query = (db as any).select(selected).from(rootTable);
+      return (await observer.run(
+        "summary",
+        request,
+        direct
+          ? joinRelationSteps(query, config.schema, joins).where(buildWhereClause(aggregateRequest))
+          : query.where(inArray(rootTable.id, buildMatchingIdsSelect(aggregateRequest))),
+        observer.dry
+          ? {
+              dry: [{ ...(includeCount ? { [countKey]: dryExactCount } : {}) }],
+              carriesCount: includeCount,
+            }
+          : undefined,
+      )) as Array<Record<string, unknown>>;
+    });
+    if (outcome.timedOut) {
+      return {
+        summary: Object.fromEntries(Object.keys(selection).map((key) => [key, null])),
+        rowCount: undefined,
+        status: "timeout" as const,
+      };
+    }
+    const rows = outcome.value;
     if (rows.length !== 1) throw new Error("Summary query must return exactly one aggregate row");
-    const row = rows[0];
+    const row = rows[0]!;
     const rowCount = includeCount ? (row[countKey] as number) : undefined;
     if (includeCount) delete row[countKey];
-    return { summary: row, rowCount };
+    return { summary: row, rowCount, status: "ok" as const };
   }
 
   async function executeHydratedPage({
@@ -1299,17 +1572,41 @@ export function createQueryResourceUtils<
     request: QueryRequest;
     relations?: QueryRelationsSubset<TWith>;
   }) {
-    const aggregates = request.facets?.length
-      ? await resolveAggregates({
-          request,
-          facets: request.facets,
-          knownRowCount: rowCount,
-          includeCount: request.pagination.count === "exact" && rowCount === undefined,
-        })
-      : undefined;
+    const mode = request.pagination.count;
+    const approximate = mode === "capped" || mode === "estimated";
+    const facets = request.facets ?? [];
+    // Split facets and the count that runs next to them share one limit.
+    const slots = createStatementSlots(isCallerTransaction(database) ? 1 : maxSplitStatements);
+    let pageCount: QueryPageCount | undefined;
+    let aggregates:
+      | (QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount })
+      | undefined;
+    if (facets.length === 0) {
+      aggregates = undefined;
+    } else if (!approximate) {
+      aggregates = await resolveAggregates({
+        request,
+        facets,
+        knownRowCount: rowCount,
+        includeCount: mode === "exact" && rowCount === undefined,
+        slots,
+      });
+    } else if (resource.queryConfig.facets.whenCapped === "skip") {
+      // Facets are the expensive part, so the count decides first whether they run at all.
+      pageCount = await resolveCount(request);
+      aggregates = isAboveCap(pageCount, countCap())
+        ? { facets: skippedFacets(facets) }
+        : await resolveAggregates({ request, facets, slots });
+    } else {
+      [pageCount, aggregates] = await Promise.all([
+        slots.run(() => resolveCount(request)),
+        resolveAggregates({ request, facets, slots }),
+      ]);
+    }
     const { ids, pageInfo } = await executeIdsQuery({
       request,
       rowCount: rowCount ?? aggregates?.rowCount,
+      pageCount: pageCount ?? aggregates?.pageCount,
     });
     const rows =
       ids.length === 0 ? [] : await executeRowsQuery({ ids, request, relations, projection });
@@ -1321,12 +1618,14 @@ export function createQueryResourceUtils<
     facets,
     knownRowCount,
     includeCount = false,
+    slots = createStatementSlots(isCallerTransaction(database) ? 1 : maxSplitStatements),
   }: {
     request: QueryRequest;
     facets: QueryFacetRequest[];
     knownRowCount?: number;
     includeCount?: boolean;
-  }): Promise<QueryFacetsResponse & { rowCount?: number }> {
+    slots?: StatementSlots;
+  }): Promise<QueryFacetsResponse & { rowCount?: number; pageCount?: QueryPageCount }> {
     await prepareSearch(request);
     let rowCount: number | undefined;
     const results: QueryFacetsResponse["facets"] = [];
@@ -1344,6 +1643,7 @@ export function createQueryResourceUtils<
       if (!entry) {
         results[index] = {
           key: facet.key,
+          status: "ok",
           options: [],
           nextCursor: null,
           total: 0,
@@ -1380,6 +1680,7 @@ export function createQueryResourceUtils<
       const total = Number(rows[0]?.total ?? 0);
       return {
         key: plan.facet.key,
+        status: "ok" as const,
         options: rows
           .filter((row) => row.value !== null && row.value !== undefined)
           .map((row) => ({ value: row.value, count: Number(row.count ?? 0) })),
@@ -1426,7 +1727,10 @@ export function createQueryResourceUtils<
       let estimate = distinctEstimates.get(key);
       if (!estimate) {
         const distinct = (database as any).select({ key }).from(rootTable).groupBy(key);
-        estimate = estimatePostgresQuery(database, distinct.getSQL(), "Plan Rows");
+        estimate = estimatePostgresQuery(database, distinct.getSQL(), "Plan Rows", {
+          observer,
+          request,
+        });
         distinctEstimates.set(key, estimate);
       }
       const groups = await estimate;
@@ -1460,13 +1764,13 @@ export function createQueryResourceUtils<
       };
     }
 
-    async function resolveSingle(plan: (typeof plans)[number]) {
+    async function resolveSingle(plan: (typeof plans)[number], db: QueryEngineDb) {
       const { entry, index, limit, offset, facet } = plan;
       const column = is(entry.column, PgColumn);
       const source = await facetSource(plan);
       const bucketsQuery = source
         .from(
-          (database as any).select({
+          (db as any).select({
             value: column ? entry.column : (entry.column as SQL).as("value"),
             count: source.count.as("count"),
           }),
@@ -1474,8 +1778,8 @@ export function createQueryResourceUtils<
         )
         .where(and(plan.where, buildFacetValuePredicate(entry.column, facet.search)))
         .groupBy(column ? (entry.column as any) : sql`1`);
-      const facetBuckets = (database as any).$with(`facet_buckets_${index}`).as(bucketsQuery);
-      let facetQuery: any = (database as any)
+      const facetBuckets = (db as any).$with(`facet_buckets_${index}`).as(bucketsQuery);
+      let facetQuery: any = (db as any)
         .with(facetBuckets)
         .select({
           value: facetBuckets.value,
@@ -1492,10 +1796,18 @@ export function createQueryResourceUtils<
         }
       }
 
-      results[index] = formatResult(plan, await facetQuery);
+      results[index] = formatResult(
+        plan,
+        await observer.run(
+          "facets",
+          request,
+          facetQuery,
+          observer.dry ? { dry: [], facets: [String(facet.key)] } : undefined,
+        ),
+      );
     }
 
-    async function resolveGroupingSets(group: typeof plans, count = false) {
+    async function resolveGroupingSets(group: typeof plans, db: QueryEngineDb, count = false) {
       const first = group[0]!;
       const columns = group.map(({ entry }) => entry.column as PgColumn);
       const selections = Object.fromEntries(
@@ -1507,7 +1819,7 @@ export function createQueryResourceUtils<
       const source = await facetSource(first);
       const aggregate = source
         .from(
-          (database as any).select({
+          (db as any).select({
             ...selections,
             mask: sql<number>`grouping(${sql.join(columns, sql`, `)})`.as("mask"),
             count: source.count.as("count"),
@@ -1521,7 +1833,7 @@ export function createQueryResourceUtils<
             sql`, `,
           )})`,
         );
-      const buckets = (database as any).$with(`facet_groups_${first.index}`).as(aggregate);
+      const buckets = (db as any).$with(`facet_groups_${first.index}`).as(aggregate);
       const values = Object.fromEntries(
         columns.map((_, index) => [`value_${index}`, buckets[`value_${index}`]]),
       );
@@ -1529,8 +1841,8 @@ export function createQueryResourceUtils<
         [desc(buckets.count), ...Object.values(values).map((value) => asc(value as SQL))],
         sql`, `,
       );
-      const ranked = (database as any).$with(`facet_ranked_${first.index}`).as(
-        (database as any)
+      const ranked = (db as any).$with(`facet_ranked_${first.index}`).as(
+        (db as any)
           .select({
             ...values,
             mask: buckets.mask,
@@ -1546,7 +1858,7 @@ export function createQueryResourceUtils<
       const masks = group.map(
         (_, index) => 2 ** group.length - 1 - 2 ** (group.length - index - 1),
       );
-      const rows = await (database as any)
+      const rowsQuery = (db as any)
         .with(buckets, ranked)
         .select()
         .from(ranked)
@@ -1567,6 +1879,20 @@ export function createQueryResourceUtils<
           ),
         )
         .orderBy(asc(ranked.mask), asc(ranked.position));
+      const rows = await observer.run(
+        "facets",
+        request,
+        rowsQuery,
+        observer.dry
+          ? {
+              // A dry run answers the exact count the grouping sets would carry, so the page is not skipped.
+              dry: count ? [{ mask: 2 ** group.length - 1, count: dryExactCount }] : [],
+              facets: group.map(({ facet }) => String(facet.key)),
+              groupingSets: true,
+              carriesCount: count,
+            }
+          : undefined,
+      );
       if (count) {
         rowCount = Number(
           rows.find((row: any) => Number(row.mask) === 2 ** group.length - 1)?.count ?? 0,
@@ -1586,7 +1912,7 @@ export function createQueryResourceUtils<
       }
     }
 
-    const groups: Array<typeof plans> = [];
+    let groups: Array<typeof plans> = [];
     for (const plan of plans) {
       const predicate = plan.predicate;
       const group =
@@ -1603,6 +1929,10 @@ export function createQueryResourceUtils<
             ) &&
             first.joins.length === plan.joins.length &&
             first.joins.every((step) => plan.joins.some((other) => step.path === other.path)) &&
+            // A shared statement inner-joins every member's relation, which would drop the rows
+            // that have no such relation from a facet that does not need it.
+            first.inner.size === plan.inner.size &&
+            [...first.inner].every((path) => plan.inner.has(path)) &&
             candidate.every(({ entry }) => entry.column !== plan.entry.column)
           );
         });
@@ -1613,11 +1943,12 @@ export function createQueryResourceUtils<
     const countPredicate = countPlan
       ? postgresDialect.sqlToQuery(countPlan.where ?? sql`true`)
       : undefined;
-    const countGroup =
+    let countGroup =
       countPredicate &&
       groups.find(
         ([first]) =>
           first?.predicate &&
+          first.inner.size === 0 &&
           first.predicate.sql === countPredicate.sql &&
           first.predicate.params.length === countPredicate.params.length &&
           first.predicate.params.every((value, index) =>
@@ -1626,8 +1957,28 @@ export function createQueryResourceUtils<
           first.joins.length === countPlan!.joins.length &&
           first.joins.every((step) => countPlan!.joins.some((other) => step.path === other.path)),
       );
+    // Statements that share GROUPING SETS run on one CPU. On a big table every facet gets its own
+    // statement instead: it can use parallel workers, and the statements overlap.
+    async function splitsFacets() {
+      const { splitAbove } = resource.queryConfig.facets;
+      if (!isPostgresDatabase(database) || splitAbove === Infinity) return false;
+      if (splitAbove <= 0) return true;
+      const table = await estimatePostgresTableRows(database, rootTable, { observer, request });
+      if (table === undefined || table <= splitAbove) return false;
+      // A request that narrows the table makes the statements read the matching rows only.
+      if (request.filters.length === 0 && request.search.value.length === 0) return true;
+      const { estimate } = (await estimateMatchingRows(request)) ?? {};
+      return (estimate ?? table) > splitAbove;
+    }
+    const sharing = groups.some((group) => group.length > 1) || countGroup !== undefined;
+    const split = sharing && (await splitsFacets());
+    let pageCount: QueryPageCount | undefined;
+    if (split) {
+      groups = plans.map((plan) => [plan]);
+      countGroup = undefined;
+    }
     /** `missing`: one count of the facet's own scope with the field empty, as `isEmpty` reads it. */
-    async function resolveMissing(plan: (typeof plans)[number]) {
+    async function resolveMissing(plan: (typeof plans)[number], db: QueryEngineDb) {
       const { entry } = plan;
       if (
         entry.source === "root" &&
@@ -1649,37 +2000,77 @@ export function createQueryResourceUtils<
           { type: "condition", key: plan.facet.key, operator: "isEmpty", value: null },
         ],
       };
-      const [row] = await applyOuterJoins(
-        (database as any).select({ count: sql<number>`count(*)` }).from(rootTable),
-        empty,
-      ).where(buildWhereClause(empty));
+      const [row] = await observer.run(
+        "facets",
+        request,
+        applyOuterJoins(
+          (db as any).select({ count: sql<number>`count(*)` }).from(rootTable),
+          empty,
+        ).where(buildWhereClause(empty)),
+        observer.dry
+          ? {
+              dry: [{ count: 0 }],
+              facets: [String(plan.facet.key)],
+              note: `rows where ${String(plan.facet.key)} is empty`,
+            }
+          : undefined,
+      );
       return Number(row?.count ?? 0);
     }
 
-    const [, missing] = await Promise.all([
-      Promise.all(
-        groups.map((group) =>
-          group === countGroup
-            ? resolveGroupingSets(group, true)
-            : group.length === 1
-              ? resolveSingle(group[0]!)
-              : resolveGroupingSets(group),
-        ),
-      ),
-      Promise.all(
-        plans.map(async (plan) =>
-          plan.facet.missing ? ([plan.index, await resolveMissing(plan)] as const) : undefined,
-        ),
-      ),
-    ]);
-    for (const entry of missing) {
-      if (entry && results[entry[0]])
-        results[entry[0]] = { ...results[entry[0]]!, missing: entry[1] };
+    // A facet that exceeds `timeouts.facets` degrades alone; the others keep their buckets.
+    const timedOut = new Set<number>();
+    async function timedFacets(
+      members: typeof plans,
+      run: (db: QueryEngineDb) => Promise<void>,
+    ): Promise<void> {
+      const outcome = await withTimeout(resource.queryConfig.timeouts.facets, run);
+      if (outcome.timedOut) for (const member of members) timedOut.add(member.index);
     }
+    const missing = new Map<number, number>();
+    const tasks: Array<() => Promise<void>> = [
+      // Without a grouping statement to carry it, the exact count is a statement of its own.
+      ...(split && includeCount
+        ? [
+            async () => {
+              pageCount = await resolveCount(request);
+            },
+          ]
+        : []),
+      ...groups.map(
+        (group) => () =>
+          timedFacets(group, (db) =>
+            group === countGroup
+              ? resolveGroupingSets(group, db, true)
+              : group.length === 1
+                ? resolveSingle(group[0]!, db)
+                : resolveGroupingSets(group, db),
+          ),
+      ),
+      ...plans
+        .filter((plan) => plan.facet.missing)
+        .map(
+          (plan) => () =>
+            timedFacets([plan], async (db) => {
+              missing.set(plan.index, await resolveMissing(plan, db));
+            }),
+        ),
+    ];
+    if (split) {
+      // A transaction of the caller has one connection: its statements follow each other.
+      await Promise.all(tasks.map((task) => slots.run(task)));
+    } else {
+      await Promise.all(tasks.map((task) => task()));
+    }
+    for (const [index, value] of missing) {
+      if (results[index]) results[index] = { ...results[index]!, missing: value };
+    }
+    for (const index of timedOut) results[index] = timedOutFacet(String(facets[index]!.key));
 
     return {
       facets: results,
       rowCount,
+      ...(pageCount ? { pageCount } : {}),
     };
   }
 
@@ -1705,10 +2096,15 @@ export function createQueryResourceUtils<
     resolveField,
   } satisfies QueryResourceUtils<TRow, TWith>;
 
-  if (database === config.db) {
+  if (shared && database === config.db) {
     utilsCache.set(resource, utils);
   }
   return utils;
+}
+
+/** Whether a filter node came from the resource's scope rather than from the request. */
+export function isScopeFilterNode(node: object) {
+  return scopeFilterNodes.has(node as QueryFilterNode);
 }
 
 export { mergeScopeFilters };

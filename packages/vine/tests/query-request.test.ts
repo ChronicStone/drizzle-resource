@@ -78,7 +78,9 @@ describe("Vine request schema", () => {
     expectTypeOf<{ filters: [{}] }>().not.toMatchTypeOf<QueryRequestVineInput>();
     expectTypeOf<{ pagination: { cursor: string } }>().not.toMatchTypeOf<QueryRequestVineInput>();
     expectTypeOf<{ pagination: { mode: "cursor" } }>().toMatchTypeOf<QueryRequestVineInput>();
-    expectTypeOf<QueryRequestVineOutput["pagination"]["count"]>().toEqualTypeOf<"none" | "exact">();
+    expectTypeOf<QueryRequestVineOutput["pagination"]["count"]>().toEqualTypeOf<
+      "none" | "exact" | "capped" | "estimated"
+    >();
   });
   it("returns a composable raw schema with normalized defaults", async () => {
     const vineSchema = requestSchema(resource);

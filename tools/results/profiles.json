@@ -1,0 +1,5068 @@
+{
+  "provisional": false,
+  "sizes": [200000, 1000000, 10000000],
+  "setup": {
+    "database": "PostgreSQL 18.7 (Debian 18.7-1.pgdg13+5)",
+    "postgresSettings": {
+      "shared_buffers": "1GB",
+      "work_mem": "4MB",
+      "max_wal_size": "1GB",
+      "max_parallel_workers_per_gather": "2",
+      "jit": "on",
+      "effective_cache_size": "4GB"
+    },
+    "databaseHost": {
+      "via": "docker",
+      "cpus": "4",
+      "memory": "4g"
+    },
+    "dataset": "orders (n rows: customerId (n%20000)+1, orgId (n%100)+1, status by n%5, paid n%2=0, createdAt evenly over 7 years to 2026-11-01, reference ORD-00000001) and customers (20,000 rows)",
+    "client": "one engine call at a time; paired requests 10+ rounds, other requests 10 calls (5 when the warm-up took over 1 s, 3 over 20 s); warm cache",
+    "engineCommit": "15da95f55aa40db947b4b758db3f3a24f2fb224e",
+    "harness": {
+      "version": "4",
+      "hash": "4c393ca0e1ec",
+      "runtime": "bun 1.4.4",
+      "iterations": 10,
+      "timeoutMs": 60000
+    },
+    "loadThreshold": 8,
+    "handSql": "none of the published numbers: setup SQL only (schema, the indexes checkIndexes asks for, ANALYZE). Every timing is an engine call.",
+    "runs": [
+      {
+        "rows": 200000,
+        "startedAt": "2026-11-27T11:48:22.286Z",
+        "loadStart": 4.3056640625,
+        "loadEnd": 4.98193359375,
+        "loadMax": 5.390625,
+        "waitedS": 0,
+        "highLoad": false
+      },
+      {
+        "rows": 1000000,
+        "startedAt": "2026-11-27T11:49:25.284Z",
+        "loadStart": 4.98291015625,
+        "loadEnd": 4.79248046875,
+        "loadMax": 7.349609375,
+        "waitedS": 0,
+        "highLoad": false
+      },
+      {
+        "rows": 10000000,
+        "startedAt": "2026-11-27T11:52:33.074Z",
+        "loadStart": 4.94580078125,
+        "loadEnd": 7.861328125,
+        "loadMax": 7.861328125,
+        "waitedS": 65,
+        "highLoad": false
+      }
+    ],
+    "nullPairs": [
+      {
+        "rows": 200000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 1.01,
+        "pairs": 10,
+        "ratioMin": 0.953,
+        "ratioMax": 1.102
+      },
+      {
+        "rows": 1000000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 0.96,
+        "pairs": 10,
+        "ratioMin": 0.832,
+        "ratioMax": 1.452
+      },
+      {
+        "rows": 10000000,
+        "request": "page-plus-count, exact, out of the box against itself",
+        "verdict": "unchanged",
+        "ratio": 0.99,
+        "pairs": 10,
+        "ratioMin": 0.932,
+        "ratioMax": 1.048
+      }
+    ],
+    "tuning": {
+      "changes": [
+        {
+          "id": "status-trigram",
+          "change": "a trigram index on lower(orders.status)",
+          "origin": "checkIndexes: fix.sql",
+          "rule": "search-unindexed",
+          "finding": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+          "sql": [
+            "create index orders_status_trgm_idx on <schema>.orders using gin (lower(status) gin_trgm_ops)"
+          ],
+          "applied": true,
+          "affects": ["the count statements of a search over every column (wide-search-not-here)"],
+          "touchesTimedRequests": true,
+          "note": "Search is open to every column, so the check asks for it from 100,000 rows. No landing request searches status. The count statements of a search over every column can use it; they are measured on the tuned schema only, exact against capped, so no out-of-the-box comparison credits it."
+        },
+        {
+          "id": "copied-name",
+          "change": "orders.customerName copied from the customer, with the index the check then asks for",
+          "origin": "checkIndexes: advice (copy the name onto orders), then fix.sql for the new column",
+          "rule": "relation-sort",
+          "finding": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+          "sql": [
+            "create index orders_customer_name_id_idx on <schema>.orders (\"customerName\", id)",
+            "create extension if not exists pg_trgm",
+            "create index \"orders_customerName_trgm_idx\" on <schema>.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+            "create index orders_status_trgm_idx on <schema>.orders using gin (lower(status) gin_trgm_ops)"
+          ],
+          "applied": true,
+          "affects": ["sort-customer-name-plus-count"],
+          "touchesTimedRequests": true,
+          "note": "The copy itself is a table change the harness makes while building the schema; the check gives no SQL for a relation sort."
+        },
+        {
+          "id": "capped-count",
+          "change": "count: \"capped\" instead of \"exact\" (countCap 10,000)",
+          "origin": "engine option; checkIndexes reports exact-count-large-table from 1,000,000 rows",
+          "rule": "exact-count-large-table",
+          "finding": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+          "sql": [],
+          "applied": true,
+          "affects": ["every landing request with a count"],
+          "touchesTimedRequests": true,
+          "note": "Not an index. This is where most of the tuned gain comes from."
+        },
+        {
+          "id": "facets-split",
+          "change": "facets.splitAbove: 0, one statement per facet",
+          "origin": "engine option, from the facets guide; checkIndexes has no finding for it",
+          "rule": null,
+          "finding": null,
+          "sql": [],
+          "applied": true,
+          "affects": ["two-root-facets", "four-mixed-facets"],
+          "touchesTimedRequests": true,
+          "note": "Out of the box already uses the engine's default, facets.splitAbove 100,000."
+        },
+        {
+          "id": "scope-index",
+          "change": "an index on (orgId, createdAt, id) for the scoped setting",
+          "origin": "applied by hand: checkIndexes describes the problem in words and gives no SQL",
+          "rule": "default-sort-unindexed",
+          "finding": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+          "sql": ["create index on <schema>.orders (\"orgId\", \"createdAt\", id)"],
+          "applied": true,
+          "affects": ["scoped requests"],
+          "touchesTimedRequests": true,
+          "note": "Only the scoped setting has it."
+        }
+      ],
+      "runs": [
+        {
+          "rows": 200000,
+          "schemas": [
+            {
+              "schema": "scale_200k_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_200k_t.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_200k_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_200k_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_200k_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_200k_d.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_200k_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_200k_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_200k_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 200k rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_200k_s.orders using gin (lower(status) gin_trgm_ops);"
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_200k_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_200k_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_200k_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        },
+        {
+          "rows": 1000000,
+          "schemas": [
+            {
+              "schema": "scale_1m_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_1m_t.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_1m_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_1m_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_1m_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_1m_d.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_1m_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_1m_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_1m_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 1M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_1m_s.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_1m_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_1m_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_1m_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 1M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        },
+        {
+          "rows": 10000000,
+          "schemas": [
+            {
+              "schema": "scale_10m_t",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_10m_t.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_10m_t.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_d",
+              "resource": "orders, name copied onto the order",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "sort-unindexed",
+                  "message": "sorting by customerName has no index: each page reads and sorts every matching row. Index it, or add it to sort.disabled",
+                  "fields": ["customerName"],
+                  "fix": "create index orders_customer_name_id_idx on scale_10m_d.orders (\"customerName\", id);"
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching customerName, status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["customerName", "status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index \"orders_customerName_trgm_idx\" on scale_10m_d.orders using gin (lower(\"customerName\") gin_trgm_ops);\ncreate index orders_status_trgm_idx on scale_10m_d.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create index orders_customer_name_id_idx on scale_10m_d.orders (\"customerName\", id)",
+                "create extension if not exists pg_trgm",
+                "create index \"orders_customerName_trgm_idx\" on scale_10m_d.orders using gin (lower(\"customerName\") gin_trgm_ops)",
+                "create index orders_status_trgm_idx on scale_10m_d.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_s",
+              "resource": "orders",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "search-unindexed",
+                  "message": "searching status has no trigram index and orders has about 10M rows: each search reads all of them",
+                  "fields": ["status"],
+                  "fix": "create extension if not exists pg_trgm;\ncreate index orders_status_trgm_idx on scale_10m_s.orders using gin (lower(status) gin_trgm_ops);"
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [
+                "create extension if not exists pg_trgm",
+                "create index orders_status_trgm_idx on scale_10m_s.orders using gin (lower(status) gin_trgm_ops)"
+              ],
+              "byHand": [],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            },
+            {
+              "schema": "scale_10m_s",
+              "resource": "orders scoped to orgId 42",
+              "before": [
+                {
+                  "level": "warn",
+                  "rule": "default-sort-unindexed",
+                  "message": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "fields": ["createdAt", "id"],
+                  "fix": null
+                },
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "applied": [],
+              "byHand": [
+                {
+                  "rule": "default-sort-unindexed",
+                  "advice": "default sort createdAt desc, id desc under scope orgId is served by index orders_createdAt_id_idx, but orgId is not in it: orgId filters row by row, and PostgreSQL may still prefer a full scan when the leading column matches most rows. Add it to the index only if that filter is selective. Confirmed by EXPLAIN: PostgreSQL reads an index in order, with no sort",
+                  "sql": "create index on \"scale_10m_s\".orders (\"orgId\", \"createdAt\", id)"
+                }
+              ],
+              "after": [
+                {
+                  "level": "warn",
+                  "rule": "relation-sort",
+                  "message": "sort customer.name joins every row of orders first: disable it or copy name onto orders",
+                  "fields": ["customer.name"],
+                  "fix": null
+                },
+                {
+                  "level": "info",
+                  "rule": "exact-count-large-table",
+                  "message": "the default count is exact and orders has about 10M rows: every page request counts every matching row. Set defaults.pagination.count to \"none\" if the total is not needed",
+                  "fields": [],
+                  "fix": null
+                }
+              ],
+              "noErrorRemains": true
+            }
+          ]
+        }
+      ]
+    }
+  },
+  "profiles": {
+    "out-of-the-box": {
+      "countless-cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 28.537,
+          "maxMs": 30.479,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 26.422
+          },
+          "statementsMs": 26.422,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 28.449,
+          "maxMs": 29.088,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 26.453
+          },
+          "statementsMs": 26.453,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 29.414,
+          "maxMs": 30.616,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 27.508
+          },
+          "statementsMs": 27.508,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "countless-cross-table-search-ord": {
+        "200000": {
+          "medianMs": 1.07,
+          "maxMs": 1.677,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.325
+          },
+          "statementsMs": 0.325,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 1.255,
+          "maxMs": 1.431,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.373
+          },
+          "statementsMs": 0.373,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 1.197,
+          "maxMs": 1.432,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.385
+          },
+          "statementsMs": 0.385,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "cross-table-search-customer": {
+        "200000": {
+          "medianMs": 156.299,
+          "maxMs": 223.472,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 75.55,
+            "ids": 79.317,
+            "plan": 2.65
+          },
+          "statementsMs": 156.82,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 578.058,
+          "maxMs": 608.38,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 225.614,
+            "ids": 350.778,
+            "plan": 3.345
+          },
+          "statementsMs": 578.958,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 5103.049,
+          "maxMs": 5730.905,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 2083.935,
+            "ids": 3054.818,
+            "plan": 3.455
+          },
+          "statementsMs": 5104.021,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "cross-table-search-customer-19999": {
+        "200000": {
+          "medianMs": 2.88,
+          "maxMs": 3.829,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.781,
+            "ids": 0.798,
+            "plan": 1.563
+          },
+          "statementsMs": 3.185,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10
+        },
+        "1000000": {
+          "medianMs": 2.705,
+          "maxMs": 3.298,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.758,
+            "ids": 0.806,
+            "plan": 1.596
+          },
+          "statementsMs": 3.184,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 50
+        },
+        "10000000": {
+          "medianMs": 4.661,
+          "maxMs": 5.861,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.684,
+            "ids": 1.654,
+            "plan": 1.94
+          },
+          "statementsMs": 5.136,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 500
+        }
+      },
+      "cross-table-search-customer-19999-page-only": {
+        "200000": {
+          "medianMs": 28.182,
+          "maxMs": 29.334,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 26.315
+          },
+          "statementsMs": 26.315,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 28.383,
+          "maxMs": 29.305,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 26.449
+          },
+          "statementsMs": 26.449,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 30.145,
+          "maxMs": 48.127,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 27.668
+          },
+          "statementsMs": 27.668,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "cross-table-search-customer-page-only": {
+        "200000": {
+          "medianMs": 4.981,
+          "maxMs": 6.289,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 3.966
+          },
+          "statementsMs": 3.966,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 4.9,
+          "maxMs": 5.313,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 4.113
+          },
+          "statementsMs": 4.113,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 4.93,
+          "maxMs": 5.666,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 4.038
+          },
+          "statementsMs": 4.038,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "cross-table-search-ord": {
+        "200000": {
+          "medianMs": 150.172,
+          "maxMs": 155.182,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 54.056,
+            "ids": 92.728,
+            "plan": 2.624
+          },
+          "statementsMs": 149.774,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 660.085,
+          "maxMs": 697.365,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 277.189,
+            "ids": 378.646,
+            "plan": 3.233
+          },
+          "statementsMs": 660.978,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 6270.25,
+          "maxMs": 6272.702,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 2678.329,
+            "ids": 3527.067,
+            "plan": 3.338
+          },
+          "statementsMs": 6271.386,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "cross-table-search-ORD-00199999": {
+        "200000": {
+          "medianMs": 5.725,
+          "maxMs": 8.838,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 2.006,
+            "ids": 2.057,
+            "plan": 1.841
+          },
+          "statementsMs": 6.019,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1
+        },
+        "1000000": {
+          "medianMs": 16.329,
+          "maxMs": 17.475,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 7.347,
+            "ids": 7.46,
+            "plan": 1.878
+          },
+          "statementsMs": 16.859,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1
+        },
+        "10000000": {
+          "medianMs": 109.566,
+          "maxMs": 120.132,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 54.108,
+            "ids": 53.913,
+            "plan": 2.158
+          },
+          "statementsMs": 110.045,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1
+        }
+      },
+      "cross-table-search-ORD-00199999-page-only": {
+        "200000": {
+          "medianMs": 29.809,
+          "maxMs": 30.287,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 27.617
+          },
+          "statementsMs": 27.617,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 34.886,
+          "maxMs": 35.759,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 32.838
+          },
+          "statementsMs": 32.838,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 80.78,
+          "maxMs": 82.613,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 78.102
+          },
+          "statementsMs": 78.102,
+          "statements": {
+            "ids": 2
+          },
+          "cancelled": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "cross-table-search-ord-page-only": {
+        "200000": {
+          "medianMs": 1.22,
+          "maxMs": 1.595,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.352
+          },
+          "statementsMs": 0.352,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 1.004,
+          "maxMs": 1.502,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.328
+          },
+          "statementsMs": 0.328,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 1.12,
+          "maxMs": 1.328,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.328
+          },
+          "statementsMs": 0.328,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "deep-cursor-id-asc": {
+        "200000": {
+          "medianMs": 0.595,
+          "maxMs": 1.414,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.437
+          },
+          "statementsMs": 0.437,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 0.383,
+          "maxMs": 0.462,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.342
+          },
+          "statementsMs": 0.342,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 0.361,
+          "maxMs": 2.931,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.315
+          },
+          "statementsMs": 0.315,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "deep-cursor-id-desc": {
+        "200000": {
+          "medianMs": 0.5,
+          "maxMs": 0.554,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.38
+          },
+          "statementsMs": 0.38,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 0.347,
+          "maxMs": 0.684,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.316
+          },
+          "statementsMs": 0.316,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 0.363,
+          "maxMs": 0.568,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.333
+          },
+          "statementsMs": 0.333,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "filtered-exclude-self-facets": {
+        "200000": {
+          "medianMs": 39.49,
+          "maxMs": 44.205,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 65.448,
+            "plan": 0.454
+          },
+          "statementsMs": 65.909,
+          "statements": {
+            "facets": 3,
+            "plan": 1
+          }
+        },
+        "1000000": {
+          "medianMs": 114.202,
+          "maxMs": 166.66,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 389.033,
+            "plan": 0.474
+          },
+          "statementsMs": 389.534,
+          "statements": {
+            "facets": 4,
+            "plan": 1
+          }
+        },
+        "10000000": {
+          "medianMs": 1102.119,
+          "maxMs": 1133.724,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 3554.303,
+            "plan": 0.736
+          },
+          "statementsMs": 3555.29,
+          "statements": {
+            "facets": 4,
+            "plan": 1
+          }
+        }
+      },
+      "id-selection-10": {
+        "200000": {
+          "medianMs": 0.314,
+          "maxMs": 0.408,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.275
+          },
+          "statementsMs": 0.275,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10
+        },
+        "1000000": {
+          "medianMs": 0.311,
+          "maxMs": 0.38,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.277
+          },
+          "statementsMs": 0.277,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10
+        },
+        "10000000": {
+          "medianMs": 0.392,
+          "maxMs": 0.897,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.353
+          },
+          "statementsMs": 0.353,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10
+        }
+      },
+      "id-selection-10-page-only": {
+        "200000": {
+          "medianMs": 0.272,
+          "maxMs": 0.377,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.246
+          },
+          "statementsMs": 0.246,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 0.331,
+          "maxMs": 0.523,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.288
+          },
+          "statementsMs": 0.288,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 0.284,
+          "maxMs": 0.403,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.266
+          },
+          "statementsMs": 0.266,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "id-selection-1000": {
+        "200000": {
+          "medianMs": 10.152,
+          "maxMs": 15.162,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.509,
+            "ids": 7.758
+          },
+          "statementsMs": 9.204,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000
+        },
+        "1000000": {
+          "medianMs": 39.913,
+          "maxMs": 41.49,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.617,
+            "ids": 37.707
+          },
+          "statementsMs": 39.264,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000
+        },
+        "10000000": {
+          "medianMs": 2.88,
+          "maxMs": 4.223,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.101,
+            "ids": 1.395
+          },
+          "statementsMs": 2.627,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000
+        }
+      },
+      "id-selection-1000-page-only": {
+        "200000": {
+          "medianMs": 7.886,
+          "maxMs": 8.249,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 7.597
+          },
+          "statementsMs": 7.597,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 38.359,
+          "maxMs": 43.897,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 37.849
+          },
+          "statementsMs": 37.849,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 1.227,
+          "maxMs": 1.469,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 1.133
+          },
+          "statementsMs": 1.133,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "landing/four-mixed-facets": {
+        "200000": {
+          "medianMs": 32.387,
+          "maxMs": 44.111,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 82.454
+          },
+          "statementsMs": 82.454,
+          "statements": {
+            "facets": 4
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        },
+        "1000000": {
+          "medianMs": 127.392,
+          "maxMs": 158.633,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 385.678
+          },
+          "statementsMs": 385.678,
+          "statements": {
+            "facets": 4
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        },
+        "10000000": {
+          "medianMs": 1354.479,
+          "maxMs": 1485.703,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 4681.267
+          },
+          "statementsMs": 4681.267,
+          "statements": {
+            "facets": 4
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        }
+      },
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 10.943,
+          "maxMs": 11.965,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 10.287,
+            "ids": 0.497
+          },
+          "statementsMs": 10.756,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.497,
+            "countMs": 10.287,
+            "planMs": null
+          }
+        },
+        "1000000": {
+          "medianMs": 16.129,
+          "maxMs": 16.798,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 15.537,
+            "ids": 0.489
+          },
+          "statementsMs": 16.019,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.489,
+            "countMs": 15.537,
+            "planMs": null
+          }
+        },
+        "10000000": {
+          "medianMs": 100.333,
+          "maxMs": 107.336,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 99.623,
+            "ids": 0.548
+          },
+          "statementsMs": 100.199,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.548,
+            "countMs": 99.623,
+            "planMs": null
+          }
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 15.415,
+          "maxMs": 16.544,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 14.546,
+            "ids": 0.613
+          },
+          "statementsMs": 15.235,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 111110,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.613,
+            "countMs": 14.546,
+            "planMs": null
+          }
+        },
+        "1000000": {
+          "medianMs": 27.403,
+          "maxMs": 34.931,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 26.24,
+            "ids": 0.623
+          },
+          "statementsMs": 27.161,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 555550,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.623,
+            "countMs": 26.24,
+            "planMs": null
+          }
+        },
+        "10000000": {
+          "medianMs": 158.317,
+          "maxMs": 175.449,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 157.347,
+            "ids": 0.664
+          },
+          "statementsMs": 158.134,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 5555500,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.664,
+            "countMs": 157.347,
+            "planMs": null
+          }
+        }
+      },
+      "landing/search-customer-plus-count": {
+        "200000": {
+          "medianMs": 145.52,
+          "maxMs": 157.19,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 69.269,
+            "ids": 74.318,
+            "plan": 2.559
+          },
+          "statementsMs": 145.968,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 200000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 74.318,
+            "countMs": 69.269,
+            "planMs": 2.559
+          }
+        },
+        "1000000": {
+          "medianMs": 576.524,
+          "maxMs": 595.098,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 234.928,
+            "ids": 338.258,
+            "plan": 3.585
+          },
+          "statementsMs": 577.629,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 338.258,
+            "countMs": 234.928,
+            "planMs": 3.585
+          }
+        },
+        "10000000": {
+          "medianMs": 5076.983,
+          "maxMs": 7523.122,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1954.683,
+            "ids": 3120.429,
+            "plan": 3.344
+          },
+          "statementsMs": 5077.902,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 3120.429,
+            "countMs": 1954.683,
+            "planMs": 3.344
+          }
+        }
+      },
+      "landing/search-ord-plus-count": {
+        "200000": {
+          "medianMs": 155.613,
+          "maxMs": 184.971,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 57.119,
+            "ids": 95.685,
+            "plan": 2.454
+          },
+          "statementsMs": 156.064,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 200000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 95.685,
+            "countMs": 57.119,
+            "planMs": 2.454
+          }
+        },
+        "1000000": {
+          "medianMs": 657.328,
+          "maxMs": 681.453,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 277.752,
+            "ids": 374.264,
+            "plan": 3.66
+          },
+          "statementsMs": 658.585,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 374.264,
+            "countMs": 277.752,
+            "planMs": 3.66
+          }
+        },
+        "10000000": {
+          "medianMs": 6109.777,
+          "maxMs": 9703.687,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 2575.762,
+            "ids": 3517.112,
+            "plan": 3.44
+          },
+          "statementsMs": 6110.687,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 3517.112,
+            "countMs": 2575.762,
+            "planMs": 3.44
+          }
+        }
+      },
+      "landing/search-rare-customer-plus-count": {
+        "200000": {
+          "medianMs": 2.673,
+          "maxMs": 3.555,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.675,
+            "ids": 0.718,
+            "plan": 1.653
+          },
+          "statementsMs": 3.076,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 10,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.718,
+            "countMs": 0.675,
+            "planMs": 1.653
+          }
+        },
+        "1000000": {
+          "medianMs": 2.898,
+          "maxMs": 3.114,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.735,
+            "ids": 0.747,
+            "plan": 1.843
+          },
+          "statementsMs": 3.455,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 50,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.747,
+            "countMs": 0.735,
+            "planMs": 1.843
+          }
+        },
+        "10000000": {
+          "medianMs": 3.98,
+          "maxMs": 11.374,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.344,
+            "ids": 1.429,
+            "plan": 1.739
+          },
+          "statementsMs": 4.505,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 500,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 1.429,
+            "countMs": 1.344,
+            "planMs": 1.739
+          }
+        }
+      },
+      "landing/search-rare-reference-plus-count": {
+        "200000": {
+          "medianMs": 5.036,
+          "maxMs": 5.39,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.811,
+            "ids": 1.855,
+            "plan": 1.72
+          },
+          "statementsMs": 5.405,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 1.855,
+            "countMs": 1.811,
+            "planMs": 1.72
+          }
+        },
+        "1000000": {
+          "medianMs": 15.833,
+          "maxMs": 16.468,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 7.244,
+            "ids": 7.089,
+            "plan": 1.982
+          },
+          "statementsMs": 16.461,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 7.089,
+            "countMs": 7.244,
+            "planMs": 1.982
+          }
+        },
+        "10000000": {
+          "medianMs": 107.411,
+          "maxMs": 108.075,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 52.289,
+            "ids": 52.292,
+            "plan": 2.317
+          },
+          "statementsMs": 107.938,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "plan": 2
+          },
+          "countUsed": "exact",
+          "rowCount": 1,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 52.292,
+            "countMs": 52.289,
+            "planMs": 2.317
+          }
+        }
+      },
+      "landing/sort-customer-name-plus-count": {
+        "200000": {
+          "medianMs": 24.747,
+          "maxMs": 29.849,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 4.268,
+            "ids": 20.347
+          },
+          "statementsMs": 24.552,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 20.347,
+            "countMs": 4.268,
+            "planMs": null
+          }
+        },
+        "1000000": {
+          "medianMs": 67.378,
+          "maxMs": 72.936,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 10.518,
+            "ids": 56.719
+          },
+          "statementsMs": 67.198,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 56.719,
+            "countMs": 10.518,
+            "planMs": null
+          }
+        },
+        "10000000": {
+          "medianMs": 751.791,
+          "maxMs": 796.38,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 100.7,
+            "ids": 642.997
+          },
+          "statementsMs": 751.573,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 642.997,
+            "countMs": 100.7,
+            "planMs": null
+          }
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 12.992,
+          "maxMs": 14.471,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 24.751
+          },
+          "statementsMs": 24.751,
+          "statements": {
+            "facets": 2
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        },
+        "1000000": {
+          "medianMs": 49.093,
+          "maxMs": 66.24,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 91.221
+          },
+          "statementsMs": 91.221,
+          "statements": {
+            "facets": 2
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        },
+        "10000000": {
+          "medianMs": 468.065,
+          "maxMs": 865.619,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 877.074
+          },
+          "statementsMs": 877.074,
+          "statements": {
+            "facets": 2
+          },
+          "note": "the engine's default: facets.splitAbove 100,000"
+        }
+      },
+      "page-and-shared-count-facets": {
+        "200000": {
+          "medianMs": 13.194,
+          "maxMs": 15.826,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 6.312,
+            "facets": 18.998,
+            "ids": 0.679,
+            "rows": 1.009
+          },
+          "statementsMs": 28.103,
+          "statements": {
+            "count": 1,
+            "facets": 2,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 52.96,
+          "maxMs": 83.088,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 40.752,
+            "facets": 98.655,
+            "ids": 0.513,
+            "rows": 0.789
+          },
+          "statementsMs": 143.293,
+          "statements": {
+            "count": 1,
+            "facets": 2,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 603.645,
+          "maxMs": 647.022,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 391.413,
+            "facets": 1161.874,
+            "ids": 0.599,
+            "rows": 0.939
+          },
+          "statementsMs": 1576.795,
+          "statements": {
+            "count": 1,
+            "facets": 2,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "page-exact-count": {
+        "200000": {
+          "medianMs": 11.052,
+          "maxMs": 34.889,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 10.344,
+            "ids": 0.463
+          },
+          "statementsMs": 10.897,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 16.296,
+          "maxMs": 17.046,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 15.723,
+            "ids": 0.471
+          },
+          "statementsMs": 16.179,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 110.477,
+          "maxMs": 237.496,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 109.85,
+            "ids": 0.583
+          },
+          "statementsMs": 110.376,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "page-without-count": {
+        "200000": {
+          "medianMs": 0.294,
+          "maxMs": 0.417,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.274
+          },
+          "statementsMs": 0.274,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 0.31,
+          "maxMs": 0.381,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.277
+          },
+          "statementsMs": 0.277,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 0.266,
+          "maxMs": 0.312,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.254
+          },
+          "statementsMs": 0.254,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "related-facets-with-summary": {
+        "200000": {
+          "medianMs": 34.91,
+          "maxMs": 42.179,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 67.341,
+            "ids": 0.465,
+            "plan": 0.591,
+            "rows": 0.617,
+            "summary": 11.014
+          },
+          "statementsMs": 79.95,
+          "statements": {
+            "facets": 4,
+            "ids": 1,
+            "plan": 1,
+            "rows": 1,
+            "summary": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 106.875,
+          "maxMs": 176.427,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 311.248,
+            "ids": 0.522,
+            "plan": 0.651,
+            "rows": 0.77,
+            "summary": 18.722
+          },
+          "statementsMs": 331.194,
+          "statements": {
+            "facets": 4,
+            "ids": 1,
+            "plan": 1,
+            "rows": 1,
+            "summary": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 904.033,
+          "maxMs": 940.159,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 2783.545,
+            "ids": 0.669,
+            "plan": 0.919,
+            "rows": 1.032,
+            "summary": 114.752
+          },
+          "statementsMs": 2906.662,
+          "statements": {
+            "facets": 4,
+            "ids": 1,
+            "plan": 1,
+            "rows": 1,
+            "summary": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "relation-search-page": {
+        "200000": {
+          "medianMs": 15.199,
+          "maxMs": 15.876,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 14.388,
+            "ids": 0.611
+          },
+          "statementsMs": 15.021,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 111110
+        },
+        "1000000": {
+          "medianMs": 26.812,
+          "maxMs": 27.6,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 25.658,
+            "ids": 0.658
+          },
+          "statementsMs": 26.501,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 555550
+        },
+        "10000000": {
+          "medianMs": 169.726,
+          "maxMs": 212.689,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 168.681,
+            "ids": 0.78
+          },
+          "statementsMs": 169.519,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 5555500
+        }
+      },
+      "relation-search-page-page-only": {
+        "200000": {
+          "medianMs": 0.396,
+          "maxMs": 0.662,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.38
+          },
+          "statementsMs": 0.38,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 0.48,
+          "maxMs": 0.665,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.43
+          },
+          "statementsMs": 0.43,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 0.512,
+          "maxMs": 0.657,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 0.457
+          },
+          "statementsMs": 0.457,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "relation-sorted-count": {
+        "200000": {
+          "medianMs": 23.221,
+          "maxMs": 24.175,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 3.893,
+            "ids": 18.631
+          },
+          "statementsMs": 23.03,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 71.024,
+          "maxMs": 78.052,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 11.106,
+            "ids": 59.72
+          },
+          "statementsMs": 70.68,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 762.708,
+          "maxMs": 1085.919,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 111.686,
+            "ids": 659.228
+          },
+          "statementsMs": 762.521,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "relation-sorted-count-page-only": {
+        "200000": {
+          "medianMs": 22.132,
+          "maxMs": 24.583,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 21.966
+          },
+          "statementsMs": 21.966,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 64.076,
+          "maxMs": 68.589,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 63.941
+          },
+          "statementsMs": 63.941,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 615.306,
+          "maxMs": 764.865,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 615.117
+          },
+          "statementsMs": 615.117,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "root-facets-with-missing": {
+        "200000": {
+          "medianMs": 13.612,
+          "maxMs": 15.293,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 32.369
+          },
+          "statementsMs": 32.369,
+          "statements": {
+            "facets": 3
+          }
+        },
+        "1000000": {
+          "medianMs": 78.782,
+          "maxMs": 89.324,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 210.438
+          },
+          "statementsMs": 210.438,
+          "statements": {
+            "facets": 3
+          }
+        },
+        "10000000": {
+          "medianMs": 590.294,
+          "maxMs": 614.131,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 1457.835
+          },
+          "statementsMs": 1457.835,
+          "statements": {
+            "facets": 3
+          }
+        }
+      },
+      "wide-search-19999-exact": {
+        "200000": {
+          "medianMs": 311.079,
+          "maxMs": 337.692,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 176.347,
+            "ids": 132.428,
+            "rows": 1.012
+          },
+          "statementsMs": 310.395,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 21
+        },
+        "1000000": {
+          "medianMs": 1192.537,
+          "maxMs": 1199.831,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 660.972,
+            "ids": 514.651,
+            "rows": 1.023
+          },
+          "statementsMs": 1192.263,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 69
+        },
+        "10000000": {
+          "medianMs": 6791.668,
+          "maxMs": 6827.825,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 6284.537,
+            "ids": 507.206,
+            "rows": 1.126
+          },
+          "statementsMs": 6791.325,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 789
+        }
+      },
+      "wide-search-19999-facets": {
+        "200000": {
+          "medianMs": 514.377,
+          "maxMs": 565.645,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 186.41,
+            "facets": 786.807,
+            "ids": 131.456,
+            "rows": 1.084
+          },
+          "statementsMs": 1107.969,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 21
+        },
+        "1000000": {
+          "medianMs": 1954.744,
+          "maxMs": 1968.558,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 748.424,
+            "facets": 3009.198,
+            "ids": 501.357,
+            "rows": 1.264
+          },
+          "statementsMs": 4259.784,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 69
+        },
+        "10000000": {
+          "medianMs": 14579.229,
+          "maxMs": 14986.907,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 7726.304,
+            "facets": 29462.472,
+            "ids": 518.367,
+            "rows": 1.079
+          },
+          "statementsMs": 37708.222,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 789
+        }
+      },
+      "wide-search-19999-none": {
+        "200000": {
+          "medianMs": 134.62,
+          "maxMs": 136.001,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 133.056,
+            "rows": 0.999
+          },
+          "statementsMs": 134.227,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 516.011,
+          "maxMs": 543.621,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 514.636,
+            "rows": 1.157
+          },
+          "statementsMs": 515.748,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 554.301,
+          "maxMs": 567.139,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 552.789,
+            "rows": 1.196
+          },
+          "statementsMs": 553.984,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "wide-search-customer-exact": {
+        "200000": {
+          "medianMs": 183.635,
+          "maxMs": 188.422,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 175.283,
+            "ids": 6.512,
+            "rows": 1.151
+          },
+          "statementsMs": 183.027,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 678.119,
+          "maxMs": 701.128,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 670.584,
+            "ids": 6.437,
+            "rows": 0.957
+          },
+          "statementsMs": 677.738,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 6498.879,
+          "maxMs": 6522.822,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 6490.447,
+            "ids": 6.874,
+            "rows": 0.976
+          },
+          "statementsMs": 6498.422,
+          "statements": {
+            "count": 1,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "wide-search-customer-facets": {
+        "200000": {
+          "medianMs": 644.966,
+          "maxMs": 664.665,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 190.584,
+            "facets": 1140.06,
+            "ids": 6.637,
+            "rows": 1.047
+          },
+          "statementsMs": 1334.377,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 200000
+        },
+        "1000000": {
+          "medianMs": 2678.61,
+          "maxMs": 2709.84,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 760.656,
+            "facets": 4559.824,
+            "ids": 6.569,
+            "rows": 0.975
+          },
+          "statementsMs": 5318.769,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 1000000
+        },
+        "10000000": {
+          "medianMs": 26126.441,
+          "maxMs": 26867.629,
+          "method": "engine",
+          "n": 3,
+          "stages": {
+            "count": 7566.164,
+            "facets": 45849.901,
+            "ids": 7.036,
+            "plan": 0,
+            "rows": 1.169
+          },
+          "statementsMs": 53426.564,
+          "statements": {
+            "count": 1,
+            "facets": 4,
+            "ids": 1,
+            "plan": 1,
+            "rows": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000000
+        }
+      },
+      "wide-search-customer-none": {
+        "200000": {
+          "medianMs": 7.235,
+          "maxMs": 7.472,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 5.984,
+            "rows": 0.814
+          },
+          "statementsMs": 6.933,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 7.023,
+          "maxMs": 7.725,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 5.937,
+            "rows": 0.752
+          },
+          "statementsMs": 6.731,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 6.773,
+          "maxMs": 7.579,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 6.022,
+            "rows": 0.623
+          },
+          "statementsMs": 6.649,
+          "statements": {
+            "ids": 1,
+            "rows": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      },
+      "wide-search-not-here-exact": {
+        "200000": {
+          "medianMs": 169.796,
+          "maxMs": 201.172,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 169.545
+          },
+          "statementsMs": 169.545,
+          "statements": {
+            "count": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        },
+        "1000000": {
+          "medianMs": 640.548,
+          "maxMs": 655.137,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 640.381
+          },
+          "statementsMs": 640.381,
+          "statements": {
+            "count": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        },
+        "10000000": {
+          "medianMs": 6160.257,
+          "maxMs": 6194.27,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 6159.88
+          },
+          "statementsMs": 6159.88,
+          "statements": {
+            "count": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        }
+      },
+      "wide-search-not-here-facets": {
+        "200000": {
+          "medianMs": 387.565,
+          "maxMs": 434.349,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 192.585,
+            "facets": 810.292
+          },
+          "statementsMs": 1000,
+          "statements": {
+            "count": 1,
+            "facets": 4
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        },
+        "1000000": {
+          "medianMs": 1381.016,
+          "maxMs": 1497.811,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 699.444,
+            "facets": 2883.551
+          },
+          "statementsMs": 3582.995,
+          "statements": {
+            "count": 1,
+            "facets": 4
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        },
+        "10000000": {
+          "medianMs": 13090.387,
+          "maxMs": 13146.722,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "count": 6932.283,
+            "facets": 26949.385
+          },
+          "statementsMs": 33954.491,
+          "statements": {
+            "count": 1,
+            "facets": 4
+          },
+          "countUsed": "exact",
+          "rowCount": 0
+        }
+      },
+      "wide-search-not-here-none": {
+        "200000": {
+          "medianMs": 125.314,
+          "maxMs": 127.983,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 125.041
+          },
+          "statementsMs": 125.041,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "1000000": {
+          "medianMs": 600.73,
+          "maxMs": 623.894,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "ids": 600.587
+          },
+          "statementsMs": 600.587,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        },
+        "10000000": {
+          "medianMs": 6357.368,
+          "maxMs": 6437.499,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "ids": 6356.892
+          },
+          "statementsMs": 6356.892,
+          "statements": {
+            "ids": 1
+          },
+          "countUsed": "none",
+          "rowCount": null
+        }
+      }
+    },
+    "tuned": {
+      "cross-table-search-customer-19999:count-capped": {
+        "200000": {
+          "medianMs": 26.296,
+          "maxMs": 30.661,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 26.573,
+          "maxMs": 43.427,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 50,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 28.096,
+          "maxMs": 35.888,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 500,
+          "countUsed": "capped"
+        }
+      },
+      "cross-table-search-customer-19999:count-exact": {
+        "200000": {
+          "medianMs": 0.623,
+          "maxMs": 3.051,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 0.679,
+          "maxMs": 3.024,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 50,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 1.48,
+          "maxMs": 5.985,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 500,
+          "countUsed": "exact"
+        }
+      },
+      "cross-table-search-customer:count-capped": {
+        "200000": {
+          "medianMs": 9.133,
+          "maxMs": 17.966,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 9.383,
+          "maxMs": 15.995,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 9.261,
+          "maxMs": 16.914,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        }
+      },
+      "cross-table-search-customer:count-exact": {
+        "200000": {
+          "medianMs": 69.488,
+          "maxMs": 151.94,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 200000,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 239.981,
+          "maxMs": 668.395,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000000,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 1947.036,
+          "maxMs": 5740.83,
+          "method": "engine (onQuery count stage)",
+          "n": 5,
+          "rowCount": 10000000,
+          "countUsed": "exact"
+        }
+      },
+      "cross-table-search-ORD-00199999:count-capped": {
+        "200000": {
+          "medianMs": 27.485,
+          "maxMs": 33.988,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 32.669,
+          "maxMs": 45.198,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 77.81,
+          "maxMs": 135.279,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "capped"
+        }
+      },
+      "cross-table-search-ORD-00199999:count-exact": {
+        "200000": {
+          "medianMs": 1.86,
+          "maxMs": 5.821,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 7.363,
+          "maxMs": 18.216,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 53.211,
+          "maxMs": 144.715,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1,
+          "countUsed": "exact"
+        }
+      },
+      "cross-table-search-ord:count-capped": {
+        "200000": {
+          "medianMs": 1.847,
+          "maxMs": 4.052,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 1.87,
+          "maxMs": 4.325,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 2.027,
+          "maxMs": 5.483,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        }
+      },
+      "cross-table-search-ord:count-exact": {
+        "200000": {
+          "medianMs": 61.176,
+          "maxMs": 184.601,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 200000,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 280.527,
+          "maxMs": 679.845,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000000,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 2555.645,
+          "maxMs": 7085.065,
+          "method": "engine (onQuery count stage)",
+          "n": 5,
+          "rowCount": 10000000,
+          "countUsed": "exact"
+        }
+      },
+      "four-mixed-facets/grouping-sets/concurrent": {
+        "200000": {
+          "medianMs": 74.776,
+          "maxMs": 96.688,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 97.446
+          },
+          "statementsMs": 97.446,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 167.626,
+          "maxMs": 208.777,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 273.394
+          },
+          "statementsMs": 273.394,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 1420.491,
+          "maxMs": 1482.462,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 2531.613
+          },
+          "statementsMs": 2531.613,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        }
+      },
+      "four-mixed-facets/grouping-sets/sequential": {
+        "200000": {
+          "medianMs": 96.441,
+          "maxMs": 110.474,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 118.063
+          },
+          "statementsMs": 118.063,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 270.089,
+          "maxMs": 273.329,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 371.686
+          },
+          "statementsMs": 371.686,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 2429.147,
+          "maxMs": 2457.802,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 3476.544
+          },
+          "statementsMs": 3476.544,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        }
+      },
+      "four-mixed-facets/separate/concurrent": {
+        "200000": {
+          "medianMs": 32.23,
+          "maxMs": 40.391,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 83.121
+          },
+          "statementsMs": 83.121,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 118.1,
+          "maxMs": 163.895,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 364.768
+          },
+          "statementsMs": 364.768,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 1297.424,
+          "maxMs": 1374.117,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 4227.904
+          },
+          "statementsMs": 4227.904,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        }
+      },
+      "four-mixed-facets/separate/sequential": {
+        "200000": {
+          "medianMs": 72.566,
+          "maxMs": 80.713,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 71.308
+          },
+          "statementsMs": 71.308,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 131.932,
+          "maxMs": 135.936,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 130.363
+          },
+          "statementsMs": 130.363,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 1198.312,
+          "maxMs": 1241.42,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 1196.409
+          },
+          "statementsMs": 1196.409,
+          "statements": {
+            "facets": 4
+          },
+          "informational": true
+        }
+      },
+      "id-selection-1000:count-capped": {
+        "200000": {
+          "medianMs": 1.083,
+          "maxMs": 10.534,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 1.439,
+          "maxMs": 43.936,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 0.923,
+          "maxMs": 2.919,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "capped"
+        }
+      },
+      "id-selection-1000:count-exact": {
+        "200000": {
+          "medianMs": 1.095,
+          "maxMs": 9.2,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 1.537,
+          "maxMs": 43.088,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 1.148,
+          "maxMs": 5.32,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000,
+          "countUsed": "exact"
+        }
+      },
+      "landing/four-mixed-facets": {
+        "200000": {
+          "medianMs": 33.143,
+          "maxMs": 40.059,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 82.284
+          },
+          "statementsMs": 82.284,
+          "statements": {
+            "facets": 4
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 0.98,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 5
+        },
+        "1000000": {
+          "medianMs": 125.04,
+          "maxMs": 168.307,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 427.166
+          },
+          "statementsMs": 427.166,
+          "statements": {
+            "facets": 4
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 1.07,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 6
+        },
+        "10000000": {
+          "medianMs": 1404.735,
+          "maxMs": 1555.379,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 4709.228
+          },
+          "statementsMs": 4709.228,
+          "statements": {
+            "facets": 4
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 0.99,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 3
+        }
+      },
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 0.89,
+          "maxMs": 1.047,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.518,
+            "ids": 0.298
+          },
+          "statementsMs": 0.823,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.298,
+            "countMs": 0.518,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 12.43,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 1.043,
+          "maxMs": 1.311,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.596,
+            "ids": 0.322
+          },
+          "statementsMs": 0.952,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.322,
+            "countMs": 0.596,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 15.05,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 1.037,
+          "maxMs": 1.738,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.606,
+            "ids": 0.315
+          },
+          "statementsMs": 0.922,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.315,
+            "countMs": 0.606,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 94.67,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 1.81,
+          "maxMs": 2.331,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.322,
+            "ids": 0.418
+          },
+          "statementsMs": 1.718,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.418,
+            "countMs": 1.322,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 8.55,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 1.407,
+          "maxMs": 1.694,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.907,
+            "ids": 0.406
+          },
+          "statementsMs": 1.309,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.406,
+            "countMs": 0.907,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 19.03,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 1.229,
+          "maxMs": 1.474,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.733,
+            "ids": 0.435
+          },
+          "statementsMs": 1.156,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.435,
+            "countMs": 0.733,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 128.33,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/search-customer-plus-count": {
+        "200000": {
+          "medianMs": 15.367,
+          "maxMs": 15.983,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 9.263,
+            "ids": 3.985
+          },
+          "statementsMs": 13.244,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 3.985,
+            "countMs": 9.263,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 9.56,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 15.962,
+          "maxMs": 24.256,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 9.715,
+            "ids": 4.087
+          },
+          "statementsMs": 13.696,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 4.087,
+            "countMs": 9.715,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 35.64,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 17.094,
+          "maxMs": 17.917,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 10.63,
+            "ids": 4.131
+          },
+          "statementsMs": 14.865,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 4.131,
+            "countMs": 10.63,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 297.08,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/search-ord-plus-count": {
+        "200000": {
+          "medianMs": 4.135,
+          "maxMs": 4.603,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.932,
+            "ids": 0.358
+          },
+          "statementsMs": 2.296,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.358,
+            "countMs": 1.932,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 39.57,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 3.954,
+          "maxMs": 4.385,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 1.848,
+            "ids": 0.364
+          },
+          "statementsMs": 2.224,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.364,
+            "countMs": 1.848,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 165.46,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 5.42,
+          "maxMs": 7.117,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 2.624,
+            "ids": 0.564
+          },
+          "statementsMs": 3.234,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.564,
+            "countMs": 2.624,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 1120.7,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/search-rare-customer-plus-count": {
+        "200000": {
+          "medianMs": 29.823,
+          "maxMs": 32.346,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 26.345,
+            "ids": 0.733
+          },
+          "statementsMs": 27.078,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.733,
+            "countMs": 26.345,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.09,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        },
+        "1000000": {
+          "medianMs": 30.016,
+          "maxMs": 30.693,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 26.398,
+            "ids": 0.811
+          },
+          "statementsMs": 27.257,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 50,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.811,
+            "countMs": 26.398,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.1,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        },
+        "10000000": {
+          "medianMs": 31.943,
+          "maxMs": 33.179,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 27.38,
+            "ids": 1.515
+          },
+          "statementsMs": 28.91,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 500,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.515,
+            "countMs": 27.38,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.12,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        }
+      },
+      "landing/search-rare-reference-plus-count": {
+        "200000": {
+          "medianMs": 32.538,
+          "maxMs": 34.807,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 27.547,
+            "ids": 1.947
+          },
+          "statementsMs": 29.501,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 1,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 1.947,
+            "countMs": 27.547,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.15,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        },
+        "1000000": {
+          "medianMs": 42.953,
+          "maxMs": 44.838,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 32.891,
+            "ids": 7.186
+          },
+          "statementsMs": 40.091,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 1,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 7.186,
+            "countMs": 32.891,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.37,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        },
+        "10000000": {
+          "medianMs": 134.459,
+          "maxMs": 138.046,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 78.823,
+            "ids": 52.162
+          },
+          "statementsMs": 131.068,
+          "statements": {
+            "count": 2,
+            "ids": 1
+          },
+          "cancelled": {
+            "count": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 1,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 52.162,
+            "countMs": 78.823,
+            "planMs": null
+          },
+          "verdict": "worse",
+          "ratio": 0.79,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 0
+        }
+      },
+      "landing/sort-customer-name-denormalized-plus-count": {
+        "200000": {
+          "medianMs": 1.026,
+          "maxMs": 2.145,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.627,
+            "ids": 0.316
+          },
+          "statementsMs": 0.926,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.316,
+            "countMs": 0.627,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 25.94,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 0.915,
+          "maxMs": 1.252,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.596,
+            "ids": 0.298
+          },
+          "statementsMs": 0.877,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.298,
+            "countMs": 0.596,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 74.22,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 1.023,
+          "maxMs": 2.621,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 0.633,
+            "ids": 0.326
+          },
+          "statementsMs": 0.933,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.326,
+            "countMs": 0.633,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 732.95,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 12.733,
+          "maxMs": 13.753,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 24.408
+          },
+          "statementsMs": 24.408,
+          "statements": {
+            "facets": 2
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 1.02,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 7
+        },
+        "1000000": {
+          "medianMs": 59.21,
+          "maxMs": 66.216,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 116.758
+          },
+          "statementsMs": 116.758,
+          "statements": {
+            "facets": 2
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 1.01,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 6
+        },
+        "10000000": {
+          "medianMs": 541.89,
+          "maxMs": 638.112,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 1032.943
+          },
+          "statementsMs": 1032.943,
+          "statements": {
+            "facets": 2
+          },
+          "setting": "facets.splitAbove: 0",
+          "uses": "separate/concurrent",
+          "verdict": "unchanged",
+          "ratio": 0.88,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 1
+        }
+      },
+      "page-exact-count:count-capped": {
+        "200000": {
+          "medianMs": 0.505,
+          "maxMs": 2.472,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 0.597,
+          "maxMs": 1.321,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 0.64,
+          "maxMs": 2.253,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        }
+      },
+      "page-exact-count:count-exact": {
+        "200000": {
+          "medianMs": 3.608,
+          "maxMs": 4.459,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 200000,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 15.793,
+          "maxMs": 24.725,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000000,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 151.658,
+          "maxMs": 246.049,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000000,
+          "countUsed": "exact"
+        }
+      },
+      "relation-search-page:count-capped": {
+        "200000": {
+          "medianMs": 1.266,
+          "maxMs": 1.861,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 0.891,
+          "maxMs": 1.709,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 0.734,
+          "maxMs": 2.726,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        }
+      },
+      "relation-search-page:count-exact": {
+        "200000": {
+          "medianMs": 15.662,
+          "maxMs": 47.34,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 111110,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 26.711,
+          "maxMs": 28.938,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 555550,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 161.9,
+          "maxMs": 217.638,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 5555500,
+          "countUsed": "exact"
+        }
+      },
+      "sort-customer-name-denormalized:count-capped": {
+        "200000": {
+          "medianMs": 0.617,
+          "maxMs": 1.349,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 0.59,
+          "maxMs": 1.402,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 0.561,
+          "maxMs": 1.614,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000,
+          "countUsed": "capped"
+        }
+      },
+      "sort-customer-name-denormalized:count-exact": {
+        "200000": {
+          "medianMs": 4.055,
+          "maxMs": 4.96,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 200000,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 10.077,
+          "maxMs": 12.662,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 1000000,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 103.224,
+          "maxMs": 112.252,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 10000000,
+          "countUsed": "exact"
+        }
+      },
+      "two-root-facets/grouping-sets/concurrent": {
+        "200000": {
+          "medianMs": 21.525,
+          "maxMs": 23.271,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 21.271
+          },
+          "statementsMs": 21.271,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 100.347,
+          "maxMs": 104.372,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 99.938
+          },
+          "statementsMs": 99.938,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 1040.63,
+          "maxMs": 1048.571,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 1040.185
+          },
+          "statementsMs": 1040.185,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        }
+      },
+      "two-root-facets/grouping-sets/sequential": {
+        "200000": {
+          "medianMs": 22.594,
+          "maxMs": 26.018,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 21.572
+          },
+          "statementsMs": 21.572,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 101.309,
+          "maxMs": 116.481,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 100.343
+          },
+          "statementsMs": 100.343,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 1067.567,
+          "maxMs": 1212.231,
+          "method": "engine",
+          "n": 5,
+          "stages": {
+            "facets": 1066.344
+          },
+          "statementsMs": 1066.344,
+          "statements": {
+            "facets": 1
+          },
+          "informational": true
+        }
+      },
+      "two-root-facets/separate/concurrent": {
+        "200000": {
+          "medianMs": 12.66,
+          "maxMs": 14.112,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 24.215
+          },
+          "statementsMs": 24.215,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 44.215,
+          "maxMs": 59.006,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 77.271
+          },
+          "statementsMs": 77.271,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 416.877,
+          "maxMs": 451.453,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 778.834
+          },
+          "statementsMs": 778.834,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        }
+      },
+      "two-root-facets/separate/sequential": {
+        "200000": {
+          "medianMs": 24.156,
+          "maxMs": 24.552,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 23.138
+          },
+          "statementsMs": 23.138,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "1000000": {
+          "medianMs": 60.137,
+          "maxMs": 84.153,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 59.165
+          },
+          "statementsMs": 59.165,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        },
+        "10000000": {
+          "medianMs": 468.883,
+          "maxMs": 484.873,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 467.421
+          },
+          "statementsMs": 467.421,
+          "statements": {
+            "facets": 2
+          },
+          "informational": true
+        }
+      },
+      "wide-search-not-here-exact:count-capped": {
+        "200000": {
+          "medianMs": 133.285,
+          "maxMs": 140.422,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 0,
+          "countUsed": "capped"
+        },
+        "1000000": {
+          "medianMs": 625.031,
+          "maxMs": 673.895,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 0,
+          "countUsed": "capped"
+        },
+        "10000000": {
+          "medianMs": 6246.828,
+          "maxMs": 6301.919,
+          "method": "engine (onQuery count stage)",
+          "n": 5,
+          "rowCount": 0,
+          "countUsed": "capped"
+        }
+      },
+      "wide-search-not-here-exact:count-exact": {
+        "200000": {
+          "medianMs": 166.929,
+          "maxMs": 173.138,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 0,
+          "countUsed": "exact"
+        },
+        "1000000": {
+          "medianMs": 632.261,
+          "maxMs": 652.337,
+          "method": "engine (onQuery count stage)",
+          "n": 10,
+          "rowCount": 0,
+          "countUsed": "exact"
+        },
+        "10000000": {
+          "medianMs": 5910.958,
+          "maxMs": 6308.313,
+          "method": "engine (onQuery count stage)",
+          "n": 5,
+          "rowCount": 0,
+          "countUsed": "exact"
+        }
+      }
+    },
+    "scoped": {
+      "landing/page-plus-count": {
+        "200000": {
+          "medianMs": 0.709,
+          "maxMs": 0.969,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 0.338,
+            "ids": 0.289
+          },
+          "statementsMs": 0.621,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 2000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.289,
+            "countMs": 0.338,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 5.03,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        },
+        "1000000": {
+          "medianMs": 0.935,
+          "maxMs": 1.045,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 0.611,
+            "ids": 0.27
+          },
+          "statementsMs": 0.893,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.27,
+            "countMs": 0.611,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 12.04,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        },
+        "10000000": {
+          "medianMs": 1.061,
+          "maxMs": 1.553,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 0.696,
+            "ids": 0.306
+          },
+          "statementsMs": 0.999,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.306,
+            "countMs": 0.696,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 94.79,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        }
+      },
+      "landing/page-plus-count-exact": {
+        "200000": {
+          "medianMs": 0.707,
+          "maxMs": 0.956,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 0.338,
+            "ids": 0.302
+          },
+          "statementsMs": 0.626,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 2000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.302,
+            "countMs": 0.338,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 5.33,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        },
+        "1000000": {
+          "medianMs": 0.896,
+          "maxMs": 1.109,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 0.57,
+            "ids": 0.274
+          },
+          "statementsMs": 0.848,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 10000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.274,
+            "countMs": 0.57,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 11.93,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        },
+        "10000000": {
+          "medianMs": 4.236,
+          "maxMs": 5.088,
+          "method": "engine",
+          "n": 12,
+          "stages": {
+            "count": 3.742,
+            "ids": 0.423
+          },
+          "statementsMs": 4.11,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "exact",
+          "rowCount": 100000,
+          "countMode": "exact",
+          "parts": {
+            "pageMs": 0.423,
+            "countMs": 3.742,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 24.47,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 12,
+          "pairsFaster": 12
+        }
+      },
+      "landing/relation-search-plus-count": {
+        "200000": {
+          "medianMs": 5.164,
+          "maxMs": 6.141,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 4.496,
+            "ids": 0.429
+          },
+          "statementsMs": 4.938,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 1110,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.429,
+            "countMs": 4.496,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 1.88,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 9.165,
+          "maxMs": 10.464,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 8.344,
+            "ids": 0.56
+          },
+          "statementsMs": 8.948,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 5550,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.56,
+            "countMs": 8.344,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 2.32,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 43.103,
+          "maxMs": 49.478,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "count": 42.055,
+            "ids": 0.783
+          },
+          "statementsMs": 42.902,
+          "statements": {
+            "count": 1,
+            "ids": 1
+          },
+          "countUsed": "capped",
+          "rowCount": 10000,
+          "countMode": "capped",
+          "parts": {
+            "pageMs": 0.783,
+            "countMs": 42.055,
+            "planMs": null
+          },
+          "verdict": "improved",
+          "ratio": 4.08,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      },
+      "landing/two-root-facets": {
+        "200000": {
+          "medianMs": 1.162,
+          "maxMs": 2.1,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 2.153
+          },
+          "statementsMs": 2.153,
+          "statements": {
+            "facets": 2
+          },
+          "verdict": "improved",
+          "ratio": 12.11,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "1000000": {
+          "medianMs": 6.686,
+          "maxMs": 8.675,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 13.039
+          },
+          "statementsMs": 13.039,
+          "statements": {
+            "facets": 2
+          },
+          "verdict": "improved",
+          "ratio": 7.75,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        },
+        "10000000": {
+          "medianMs": 188.04,
+          "maxMs": 197.468,
+          "method": "engine",
+          "n": 10,
+          "stages": {
+            "facets": 375.61
+          },
+          "statementsMs": 375.61,
+          "statements": {
+            "facets": 2
+          },
+          "verdict": "improved",
+          "ratio": 3.28,
+          "ratioMeaning": "median over the paired calls of out-of-the-box time / this time; above 1 is faster",
+          "pairs": 10,
+          "pairsFaster": 10
+        }
+      }
+    }
+  },
+  "notes": [
+    "Final: every run was taken at or below load 8, nothing failed, the null pair read unchanged, and checkIndexes reports no error for any tuned schema.",
+    "Every number is one engine call end to end: pages and counts through resource.queryIds, capped counts with count: \"capped\", facets through resource.queryFacets. `parts` and `stages` are the engine's own per-statement times from onQuery; `statementsMs` is their sum (statements can overlap, so it can exceed the call time). `maxMs` is the slowest sample; with ten samples a p95 would be the same number.",
+    "Landing requests are measured in pairs: out of the box and the setup it is compared with are called one after the other, at least 10 rounds, in a carryover-balanced (Williams) order, so a verdict compares calls made seconds apart. Only the out-of-the-box schema and the one being compared are resident at a time. verdict: improved when the ratio (out of the box / this) stays above 1 in at least 80% of the pairs and its median is at least 1.15; worse when it stays below 1 in at least 80% and the median is at most 1/1.15; otherwise unchanged. `ratio` is the median; `pairsFaster` counts the pairs above 1. Each ratio is against the out-of-the-box calls of its own pair.",
+    "setup.nullPairs: the same request against itself, timed as two arms, with the range of its ratios. It must read unchanged with at least 10 pairs and a median within 5% of 1; a verdict whose ratio is inside that range is reported as unchanged (withinNoise).",
+    "Tuned is what setup.tuning.changes lists: what engine.checkIndexes({ live: true }) asked for, the engine options that go with its findings, and nothing else. The check's only index for the unchanged schema (a trigram index on status) is used by no landing request, only by the count statements of a search over every column; the gains come from the capped count and the copied name. facets.splitAbove 0 runs the same statements as the default, 100,000, on every size measured here. `<scenario>:count-exact` and `:count-capped` are the count statement alone, from onQuery's count stage on the tuned schema. Facet cells named `<facets>/<variant>` (GROUPING SETS or one statement per facet, in a transaction or on the pool) are informational and carry no verdict.",
+    "Out of the box facets use the engine's default, facets.splitAbove 100,000, which already splits the facets of a table of this size; a tuned facets request can therefore come out unchanged.",
+    "Data: createdAt grows with id, so a cursor with createdAt desc, id asc is cheap without a tuned index. orgId, status and paid are functions of n: inside tenant 42 every order has status 'paid' and paid = false.",
+    "Worse than out of the box: tuned search-rare-reference-plus-count at 200,000 rows (0.15x); tuned search-rare-customer-plus-count at 200,000 rows (0.09x); tuned search-rare-reference-plus-count at 1,000,000 rows (0.37x); tuned search-rare-customer-plus-count at 1,000,000 rows (0.1x); tuned search-rare-reference-plus-count at 10,000,000 rows (0.79x); tuned search-rare-customer-plus-count at 10,000,000 rows (0.12x). Do not present these as improvements."
+  ]
+}

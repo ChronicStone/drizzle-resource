@@ -27,44 +27,26 @@ type ResourceProfileRow<TResource, TProfile extends PropertyKey> = TResource ext
 
 interface QuerySchemaResponse<TRow> {
   rows: TRow[];
-  pageInfo:
-    | {
-        mode: "offset";
-        pageIndex: number;
-        pageSize: number;
-        hasNextPage: boolean;
-        count: "none";
-        rowCount: null;
-      }
-    | {
-        mode: "offset";
-        pageIndex: number;
-        pageSize: number;
-        hasNextPage: boolean;
-        count: "exact";
-        rowCount: number;
-      }
-    | {
-        mode: "cursor";
-        pageSize: number;
-        nextCursor: string | null;
-        count: "none";
-        rowCount: null;
-      }
-    | {
-        mode: "cursor";
-        pageSize: number;
-        nextCursor: string | null;
-        count: "exact";
-        rowCount: number;
-      };
+  pageInfo: (
+    | { mode: "offset"; pageIndex: number; pageSize: number; hasNextPage: boolean }
+    | { mode: "cursor"; pageSize: number; nextCursor: string | null }
+  ) &
+    (
+      | { count: "none"; rowCount: null; reason?: "timeout" }
+      | { count: "exact"; rowCount: number }
+      | { count: "capped"; rowCount: number; exact: boolean }
+      | { count: "estimated"; rowCount: number }
+    );
   facets?: Array<{
     key: string;
     options: Array<{ value: unknown; count: number }>;
     nextCursor?: string | null;
     total?: number;
     missing?: number;
+    status?: "ok" | "skipped" | "timeout";
+    reason?: "above-cap";
   }>;
+  summaryStatus?: "ok" | "timeout";
 }
 
 type RelationKey<TRow extends Record<string, unknown>> = {
@@ -137,7 +119,7 @@ interface QueryRequestSchemaOverride {
       mode?: "offset" | "cursor";
       pageIndex?: number;
       pageSize?: number;
-      count?: "none" | "exact";
+      count?: "none" | "exact" | "capped" | "estimated";
     };
     sorting?: readonly any[];
   };
@@ -154,6 +136,7 @@ interface QueryRequestSchemaOverride {
 const defaultLimits = () => ({
   maxPageSize: 100,
   maxCursorLength: 2048,
+  maxPageIndex: Infinity,
   maxFilterDepth: 5,
   maxFilterNodes: 50,
   maxFacetCount: 10,
@@ -410,15 +393,22 @@ export function requestSchema(
   const pageSize = z.number().int().positive().max(contract.limits.maxPageSize);
   const offsetPagination = z.strictObject({
     mode: z.literal("offset").default("offset"),
-    pageIndex: z.number().int().positive().default(defaultPageIndex),
+    pageIndex: (Number.isFinite(contract.limits.maxPageIndex)
+      ? z.number().int().positive().max(contract.limits.maxPageIndex)
+      : z.number().int().positive()
+    ).default(defaultPageIndex),
     pageSize: pageSize.default(defaultPageSize),
-    count: z.enum(["none", "exact"]).default(defaultMode === "offset" ? defaultCount : "exact"),
+    count: z
+      .enum(["none", "exact", "capped", "estimated"])
+      .default(defaultMode === "offset" ? defaultCount : "exact"),
   });
   const cursorPagination = z.strictObject({
     mode: z.literal("cursor"),
     cursor: z.string().max(contract.limits.maxCursorLength).nullable().default(null),
     pageSize: pageSize.default(defaultPageSize),
-    count: z.enum(["none", "exact"]).default(defaultMode === "cursor" ? defaultCount : "none"),
+    count: z
+      .enum(["none", "exact", "capped", "estimated"])
+      .default(defaultMode === "cursor" ? defaultCount : "none"),
   });
   const paginationDefault =
     defaultMode === "cursor"
@@ -653,38 +643,40 @@ export function responseSchema(
         }
       : {}),
     rows: z.array(row),
-    pageInfo: z.union([
-      z.strictObject({
-        mode: z.literal("offset"),
-        pageIndex: z.number().int().positive(),
-        pageSize: z.number().int().positive(),
-        hasNextPage: z.boolean(),
-        count: z.literal("none"),
-        rowCount: z.null(),
-      }),
-      z.strictObject({
-        mode: z.literal("offset"),
-        pageIndex: z.number().int().positive(),
-        pageSize: z.number().int().positive(),
-        hasNextPage: z.boolean(),
-        count: z.literal("exact"),
-        rowCount: z.number().int().nonnegative(),
-      }),
-      z.strictObject({
-        mode: z.literal("cursor"),
-        pageSize: z.number().int().positive(),
-        nextCursor: z.string().nullable(),
-        count: z.literal("none"),
-        rowCount: z.null(),
-      }),
-      z.strictObject({
-        mode: z.literal("cursor"),
-        pageSize: z.number().int().positive(),
-        nextCursor: z.string().nullable(),
-        count: z.literal("exact"),
-        rowCount: z.number().int().nonnegative(),
-      }),
-    ]),
+    pageInfo: z.union(
+      (
+        [
+          {
+            mode: z.literal("offset"),
+            pageIndex: z.number().int().positive(),
+            pageSize: z.number().int().positive(),
+            hasNextPage: z.boolean(),
+          },
+          {
+            mode: z.literal("cursor"),
+            pageSize: z.number().int().positive(),
+            nextCursor: z.string().nullable(),
+          },
+        ] as const
+      ).flatMap((mode) =>
+        (
+          [
+            {
+              count: z.literal("none"),
+              rowCount: z.null(),
+              reason: z.literal("timeout").optional(),
+            },
+            { count: z.literal("exact"), rowCount: z.number().int().nonnegative() },
+            {
+              count: z.literal("capped"),
+              rowCount: z.number().int().nonnegative(),
+              exact: z.boolean(),
+            },
+            { count: z.literal("estimated"), rowCount: z.number().int().nonnegative() },
+          ] as const
+        ).map((count) => z.strictObject({ ...mode, ...count })),
+      ) as any,
+    ),
     facets: z
       .array(
         z.strictObject({
@@ -695,8 +687,11 @@ export function responseSchema(
           nextCursor: z.string().nullable().optional(),
           missing: z.number().int().nonnegative().optional(),
           total: z.number().int().nonnegative().optional(),
+          status: z.enum(["ok", "skipped", "timeout"]).optional(),
+          reason: z.literal("above-cap").optional(),
         }),
       )
       .optional(),
+    summaryStatus: z.enum(["ok", "timeout"]).optional(),
   });
 }

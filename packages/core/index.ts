@@ -9,14 +9,36 @@ export type {
   SummaryResult,
 } from "./src/model-types.js";
 export { createQueryEngine } from "./src/engine.js";
+export { formatExplain } from "./src/explain.js";
+export type {
+  ExplainPlanNode,
+  ExplainReport,
+  ExplainStage,
+  ExplainStageName,
+  ExplainWarning,
+  ExplainWarningCode,
+} from "./src/explain.js";
+export type { QueryEvent, QueryObserver, QueryStage, RequestShape } from "./src/observe.js";
 export { createQueryFilterBuilder } from "./src/filters.js";
-export { defaultQueryValidation, resolveQueryRequestContract } from "./src/contracts.js";
+export { formatIndexFindings } from "./src/index-check.js";
+export type {
+  CheckIndexesOptions,
+  IndexFinding,
+  IndexFindingLevel,
+  IndexFindingRule,
+} from "./src/index-check.js";
+export {
+  defaultCountCap,
+  defaultQueryValidation,
+  resolveQueryRequestContract,
+} from "./src/contracts.js";
 export type {
   DefineResourceOptions,
   DefineQueryResourceOptions,
   GenericObject,
   FieldRegistryEntry,
   FieldRegistryRelationStep,
+  CheckIndexes,
   QueryEngine,
   QueryEngineConfig,
   QueryEngineDb,
@@ -24,6 +46,11 @@ export type {
   QueryEngineRelations,
   QueryEngineSchema,
   QueryCountMode,
+  QueryScanCountMode,
+  QueryPageCount,
+  QueryFacetBase,
+  QueryFacetsStrategyResponse,
+  ResourceQueryTimeoutsConfig,
   QueryCursorPageInfo,
   QueryCursorPagination,
   QueryFieldPath,
@@ -31,6 +58,7 @@ export type {
   QueryFacetOption,
   QueryFacetRequest,
   QueryFacetResult,
+  QueryFacetOutcome,
   QueryFacetsResponse,
   QueryFilterBuilder,
   QueryFilterCondition,
@@ -72,6 +100,7 @@ export type {
   QueryResource,
   QueryResourceUtils,
   QueryResponse,
+  QueryStrategyResponse,
   QueryResultRowShape,
   QueryRowShape,
   QueryRootKey,

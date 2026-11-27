@@ -26,10 +26,25 @@ import type {
   QueryScanBatch,
   QueryCountMode,
 } from "./types.js";
-import { buildFieldRegistry, createQueryResourceUtils, mergeScopeFilters } from "./sql.js";
+import {
+  buildFieldRegistry,
+  createQueryResourceUtils,
+  isScopeFilterNode,
+  mergeScopeFilters,
+} from "./sql.js";
+import { explainCaptured } from "./explain.js";
+import type { CapturedStatement, QueryEvent, QueryObserver } from "./observe.js";
 import { createQueryFilterBuilder } from "./filters.js";
-import { defaultQueryValidation } from "./contracts.js";
-import { isPostgresDatabase, withScanDatabase } from "./postgres.js";
+import {
+  defaultCountCap,
+  defaultFacetSplitRows,
+  defaultQueryValidation,
+  defaultSearchPlanBudget,
+} from "./contracts.js";
+import { isCallerTransaction, isPostgresDatabase, withScanDatabase } from "./postgres.js";
+import { isAboveCap, skippedFacets, withFacetStatus } from "./capped.js";
+import { createIndexCheckRegistry, runIndexChecks } from "./index-check.js";
+import type { CheckIndexesOptions, IndexCheckTarget } from "./index-check.js";
 
 function normalizeRequest(
   request: QueryRequestInput,
@@ -92,6 +107,7 @@ function assertRequestLimits(
   limits: {
     maxPageSize: number;
     maxCursorLength: number;
+    maxPageIndex: number;
     maxFilterDepth: number;
     maxFilterNodes: number;
     maxFacetCount: number;
@@ -100,6 +116,9 @@ function assertRequestLimits(
 ) {
   if (request.pagination.pageSize > limits.maxPageSize) {
     throw new Error(`Page size cannot exceed ${limits.maxPageSize}`);
+  }
+  if (request.pagination.mode === "offset" && request.pagination.pageIndex > limits.maxPageIndex) {
+    throw new Error(`Page index cannot exceed ${limits.maxPageIndex}`);
   }
   if (
     request.pagination.mode === "cursor" &&
@@ -134,9 +153,43 @@ function assertRequestLimits(
   }
 }
 
+function assertGuardOptions(root: unknown, query: any) {
+  const name = String(root);
+  const positive = (value: unknown) =>
+    value === undefined || (typeof value === "number" && Number.isSafeInteger(value) && value > 0);
+  if (!positive(query?.pagination?.countCap)) {
+    throw new Error(`Count cap for resource "${name}" must be a positive safe integer`);
+  }
+  const maxPageIndex = query?.validation?.maxPageIndex;
+  if (maxPageIndex !== undefined && maxPageIndex !== Infinity && !positive(maxPageIndex)) {
+    throw new Error(`Max page index for resource "${name}" must be a positive safe integer`);
+  }
+  for (const stage of ["count", "facets", "summary"] as const) {
+    if (!positive(query?.timeouts?.[stage])) {
+      throw new Error(
+        `The ${stage} timeout for resource "${name}" must be a positive number of milliseconds`,
+      );
+    }
+  }
+  if (!positive(query?.search?.planBudget)) {
+    throw new Error(`The search plan budget for resource "${name}" must be a positive integer`);
+  }
+  const whenCapped = query?.facets?.whenCapped;
+  if (whenCapped !== undefined && whenCapped !== "skip" && whenCapped !== "run") {
+    throw new Error(`Facets whenCapped for resource "${name}" must be "skip" or "run"`);
+  }
+  const splitAbove = query?.facets?.splitAbove;
+  if (splitAbove !== undefined && !(typeof splitAbove === "number" && splitAbove >= 0)) {
+    throw new Error(
+      `Facets splitAbove for resource "${name}" must be a number of rows, 0 or more (Infinity never splits)`,
+    );
+  }
+}
+
 function resolveExecutionLimits(
   resourceLimits: Required<ResourceQueryExecutionOptions> & {
     maxCursorLength: number;
+    maxPageIndex: number;
     maxFilterDepth: number;
     maxFilterNodes: number;
     maxFacetCount: number;
@@ -267,13 +320,15 @@ async function executeFacetsForResource(
   assertKnownFacetFields(resource, facets);
 
   if (options.strategy?.facets) {
-    return options.strategy.facets({
-      request,
-      facets,
-      context,
-      resource,
-      utils,
-    });
+    return withFacetStatus(
+      await options.strategy.facets({
+        request,
+        facets,
+        context,
+        resource,
+        utils,
+      }),
+    );
   }
 
   return utils.resolveFacets({
@@ -313,6 +368,8 @@ export function createQueryEngine<
   db: TDb;
   schema: TSchema;
   relations: TRelations;
+  /** Called for every statement the engine runs. See `QueryEngineConfig.onQuery`. */
+  onQuery?: QueryObserver;
   models?: ModelDefinitions<TSchema, TDb> &
     TModels &
     Record<Exclude<keyof TModels, keyof TSchema>, never>;
@@ -324,6 +381,8 @@ export function createQueryEngine<
       : undefined,
   } as QueryEngineConfig<TDb, TSchema, TRelations>;
   validateModels(config.schema, config.models ?? {}, config.relations);
+  // Shared by every engine that `withContext()` derives, so one call checks every resource.
+  const indexChecks = createIndexCheckRegistry();
   function buildEngine<TEngineContext extends GenericObject>(): QueryEngine<
     TDb,
     TSchema,
@@ -497,6 +556,7 @@ export function createQueryEngine<
       const paginationModes = new Set<"offset" | "cursor">(
         options.query?.pagination?.modes ?? ["offset"],
       );
+      assertGuardOptions(root, options.query);
       const defaultPaginationMode = options.query?.defaults?.pagination?.mode ?? "offset";
       if (paginationModes.size === 0) {
         throw new Error(`Resource "${String(root)}" must allow at least one pagination mode`);
@@ -511,6 +571,47 @@ export function createQueryEngine<
       }
 
       const filterBuilder = createQueryFilterBuilder<any>();
+
+      const indexCheckTarget: IndexCheckTarget = {
+        key: String(root),
+        table: config.schema[root] as IndexCheckTarget["table"],
+        schema: config.schema as Record<string, unknown>,
+        db: config.db,
+        fields: fieldRegistry,
+        trustedFields: trustedFieldRegistry,
+        scope: options.query?.scope,
+        sortDefaults: options.query?.sort?.defaults ?? [],
+        search: {
+          explicit: options.query?.search?.allowed !== undefined,
+          allowed: Array.from(allowedSearchFields),
+          defaults: defaultFields as string[],
+        },
+        facets: {
+          explicit: options.query?.facets?.allowed !== undefined,
+          allowed: Array.from(allowedFacetFields),
+        },
+        caseSensitive: caseSensitiveFilterFields,
+        defaultPagination: options.query?.defaults?.pagination,
+        customQuery: Boolean(options.strategy?.query || options.strategy?.ids),
+        customFacets: Boolean(options.strategy?.facets),
+        queryPage: (db, context) => {
+          const defaults = options.query?.defaults?.pagination;
+          const pageSize = defaults?.pageSize ?? 25;
+          return (resource as any).queryIds({
+            request: {
+              pagination:
+                defaults?.mode === "cursor"
+                  ? { mode: "cursor", cursor: null, pageSize, count: "none" }
+                  : { mode: "offset", pageIndex: 1, pageSize, count: "none" },
+              filters: [],
+              search: { value: "", fields: [] },
+              sorting: [],
+            },
+            context,
+            db,
+          });
+        },
+      };
 
       let trustedResource: QueryResource<any, any, any, any, any, any, any, any>;
       let summaryShape: ReturnType<typeof resolveSummaryShape> | undefined;
@@ -535,10 +636,13 @@ export function createQueryEngine<
           ));
         },
         fields: fieldRegistry,
+        checkIndexes: (checkOptions?: CheckIndexesOptions) =>
+          runIndexChecks([indexCheckTarget], checkOptions),
         queryConfig: {
           search: {
             allowed: allowedSearchFields,
             defaults: defaultFields as any[],
+            planBudget: options.query?.search?.planBudget ?? defaultSearchPlanBudget,
           },
           sort: {
             disabled: disabledSortFields,
@@ -550,10 +654,14 @@ export function createQueryEngine<
           },
           facets: {
             allowed: allowedFacetFields,
+            whenCapped: options.query?.facets?.whenCapped ?? "run",
+            splitAbove: options.query?.facets?.splitAbove ?? defaultFacetSplitRows,
           },
           pagination: {
             modes: paginationModes,
+            countCap: options.query?.pagination?.countCap ?? defaultCountCap,
           },
+          timeouts: { ...options.query?.timeouts },
           defaults: {
             pagination: options.query?.defaults?.pagination,
             sorting: options.query?.sort?.defaults,
@@ -563,6 +671,8 @@ export function createQueryEngine<
               options.query?.validation?.maxPageSize ?? defaultQueryValidation.maxPageSize,
             maxCursorLength:
               options.query?.validation?.maxCursorLength ?? defaultQueryValidation.maxCursorLength,
+            maxPageIndex:
+              options.query?.validation?.maxPageIndex ?? defaultQueryValidation.maxPageIndex,
             maxFilterDepth:
               options.query?.validation?.maxFilterDepth ?? defaultQueryValidation.maxFilterDepth,
             maxFilterNodes:
@@ -611,6 +721,94 @@ export function createQueryEngine<
           execution?: ResourceQueryExecutionOptions;
           load?: string | Record<string, unknown>;
         }): Promise<any> => executeQuery({ request, context, db, execution, load, view, summary }),
+        explain: async ({
+          request,
+          context,
+          db,
+          execution,
+          analyze = false,
+          summary,
+        }: {
+          request: QueryRequestInput;
+          context?: any;
+          db?: QueryEngineDb;
+          execution?: ResourceQueryExecutionOptions;
+          analyze?: boolean;
+          summary?: boolean;
+        }) => {
+          const database = db ?? config.db;
+          if (!isPostgresDatabase(database)) {
+            throw new Error(
+              "explain() needs a PostgreSQL database: it runs EXPLAIN on the statements the engine builds",
+            );
+          }
+          if (options.strategy?.query || options.strategy?.ids) {
+            throw new Error(
+              `explain() cannot explain resource "${String(root)}": its ${options.strategy.query ? "strategy.query" : "strategy.ids"} runs your own statements`,
+            );
+          }
+          const prepared = prepareRequest(request, context, { execution });
+          const captured: CapturedStatement[] = [];
+          const planning: QueryEvent[] = [];
+          const notes: string[] = [];
+          if (options.strategy?.facets && (prepared.facets?.length ?? 0) > 0) {
+            notes.push("facets come from strategy.facets, which explain() does not run");
+          }
+          if (
+            resource.queryConfig.facets.whenCapped === "skip" &&
+            (prepared.facets?.length ?? 0) > 0 &&
+            (prepared.pagination.count === "capped" || prepared.pagination.count === "estimated")
+          ) {
+            notes.push(
+              `facets.whenCapped is "skip": the facets above are skipped when the count passes ${resource.queryConfig.pagination.countCap.toLocaleString("en-US")}`,
+            );
+          }
+          await executeQuery({
+            request,
+            context,
+            db,
+            execution,
+            summary: summary && Boolean(options.summary),
+            prepared,
+            dry: {
+              capture: captured,
+              tap: (event) => {
+                planning.push(event);
+              },
+            },
+          });
+          if (
+            isCallerTransaction(database) &&
+            prepared.search.value.length > 0 &&
+            prepared.pagination.count !== "exact" &&
+            planning.filter((event) => event.sql.startsWith("explain")).length >= 2
+          ) {
+            notes.push(
+              "search: inside a transaction you pass, the engine chooses between the ordinary and the indexed plan by the planner's cost and applies no budget",
+            );
+          }
+          return explainCaptured({
+            resource: String(root),
+            database,
+            request: prepared,
+            captured,
+            skipsFacetsAboveCap:
+              (prepared.facets?.length ?? 0) > 0 &&
+              resource.queryConfig.facets.whenCapped === "skip" &&
+              (prepared.pagination.count === "capped" || prepared.pagination.count === "estimated"),
+            planning,
+            analyze,
+            countCap: resource.queryConfig.pagination.countCap,
+            timeouts: resource.queryConfig.timeouts,
+            facetSplitAbove: resource.queryConfig.facets.splitAbove,
+            allowsCursor: paginationModes.has("cursor"),
+            relationSorts: prepared.sorting
+              .filter(({ key }) => (resource.fields.get(key)?.relationPath.length ?? 0) > 0)
+              .map(({ key }) => key),
+            ignoreFilter: isScopeFilterNode,
+            notes,
+          });
+        },
         scan: executeScan,
         findById: async ({
           id,
@@ -728,6 +926,8 @@ export function createQueryEngine<
         },
       } as unknown as QueryResource<any, any, any, any, any, any, any, any>;
 
+      indexChecks.add(resource, indexCheckTarget);
+
       trustedResource = {
         ...resource,
         fields: trustedFieldRegistry,
@@ -754,6 +954,9 @@ export function createQueryEngine<
         }
         args.signal?.throwIfAborted();
         const count = args.count ?? "none";
+        if (count !== "none" && count !== "exact") {
+          throw new Error(`A scan reports an exact total or none, not "${count}"`);
+        }
         const request = prepareRequest(
           {
             filters: args.request?.filters ?? [],
@@ -895,10 +1098,16 @@ export function createQueryEngine<
         summary,
         operation = "query",
         trustedInput = false,
+        prepared,
+        dry,
       }: {
         view?: string;
         summary?: boolean;
         request: QueryRequestInput;
+        /** An already normalized request, so a caller that needed it does not prepare twice. */
+        prepared?: QueryRequest;
+        /** Capture the statements instead of running them, as `explain` does. */
+        dry?: { capture: CapturedStatement[]; tap: QueryObserver };
         context?: any;
         db?: QueryEngineDb;
         execution?: ResourceQueryExecutionOptions;
@@ -908,12 +1117,14 @@ export function createQueryEngine<
       }) {
         if (view !== undefined && load !== undefined)
           throw new Error("Use either view or load, not both");
-        const normalizedRequest = prepareRequest(request, context, { execution, trustedInput });
+        const normalizedRequest =
+          prepared ?? prepareRequest(request, context, { execution, trustedInput });
         const limits = resolveExecutionLimits(resource.queryConfig.validation, execution);
         const hydrationRelations = resolveHydrationRelations(operation, load);
         const utils = createQueryResourceUtils(config, {
           resource: trustedResource,
           db,
+          ...(dry ? { capture: dry.capture, tap: dry.tap } : {}),
         });
         const projection = resolveProjection(hydrationRelations, view);
         if (summary && !options.summary)
@@ -929,13 +1140,16 @@ export function createQueryEngine<
         let response: QueryResponse<any>;
 
         if (customQueryStrategy) {
-          response = await customQueryStrategy({
+          const custom = await customQueryStrategy({
             request: normalizedRequest,
             context,
             resource,
             utils,
             relations: hydrationRelations,
           });
+          response = custom.facets
+            ? { ...custom, facets: withFacetStatus({ facets: custom.facets }).facets }
+            : (custom as QueryResponse<any>);
           if (projection) response.rows = response.rows.map((row) => projection.project(row));
         } else if (!options.strategy?.ids && !options.strategy?.rows && !options.strategy?.facets) {
           response = await utils.executeHydratedPage({
@@ -969,14 +1183,25 @@ export function createQueryEngine<
           };
         }
 
-        if (aggregate) Object.assign(response, { summary: aggregate.summary });
+        if (aggregate) {
+          Object.assign(response, { summary: aggregate.summary, summaryStatus: aggregate.status });
+        }
 
         if (
           !normalizedRequest.facets ||
           normalizedRequest.facets.length === 0 ||
-          response.facets !== undefined
+          response.facets !== undefined ||
+          // a dry run never calls a strategy: its statements are the user's own
+          (dry && options.strategy?.facets)
         ) {
           return response;
+        }
+
+        if (
+          resource.queryConfig.facets.whenCapped === "skip" &&
+          isAboveCap(response.pageInfo, resource.queryConfig.pagination.countCap)
+        ) {
+          return { ...response, facets: skippedFacets(normalizedRequest.facets) };
         }
 
         const facetsResponse = await executeFacetsForResource(
@@ -1097,6 +1322,8 @@ export function createQueryEngine<
       withContext<TContext extends GenericObject>() {
         return buildEngine<TContext>();
       },
+      checkIndexes: (checkOptions?: CheckIndexesOptions) =>
+        runIndexChecks(indexChecks.targets(), checkOptions),
       defineScope,
       defineResource,
       defineQueryResource,

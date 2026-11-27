@@ -1,0 +1,52 @@
+{
+  "$comment": "Numbers for the landing's benchmark chart. Regenerate with `bun tools/landing-bench-data.ts` from tools/results/profiles.json; do not edit by hand. Times are medians in milliseconds, one per table size; ratio is out of the box ÷ tuned at 10M rows.",
+  "provisional": false,
+  "measuredOn": "2026-11-27",
+  "engine": "15da95f",
+  "postgres": "18.7",
+  "cpus": 4,
+  "clients": 1,
+  "runs": 10,
+  "sizes": [200000, 1000000, 10000000],
+  "requests": {
+    "page": {
+      "outOfTheBox": [0.294, 0.31, 0.266],
+      "tuned": [0.294, 0.31, 0.266],
+      "verdict": "unchanged",
+      "ratio": null
+    },
+    "cursor": {
+      "outOfTheBox": [0.5, 0.347, 0.363],
+      "tuned": [0.5, 0.347, 0.363],
+      "verdict": "unchanged",
+      "ratio": null
+    },
+    "count": {
+      "outOfTheBox": [10.943, 16.129, 100.333],
+      "tuned": [0.89, 1.043, 1.037],
+      "verdict": "improved",
+      "ratio": 94.67
+    },
+    "relationSort": {
+      "outOfTheBox": [24.747, 67.378, 751.791],
+      "tuned": [1.026, 0.915, 1.023],
+      "verdict": "improved",
+      "ratio": 732.95
+    },
+    "facets": {
+      "outOfTheBox": [32.387, 127.392, 1354.479],
+      "tuned": [33.143, 125.04, 1404.735],
+      "verdict": "unchanged",
+      "ratio": 0.99
+    },
+    "search": {
+      "outOfTheBox": [155.613, 657.328, 6109.777],
+      "tuned": [4.135, 3.954, 5.42],
+      "verdict": "improved",
+      "ratio": 1120.7
+    }
+  },
+  "tunedSettings": {
+    "countCap": 10000
+  }
+}

@@ -9,7 +9,8 @@
     "typecheck": "nuxt prepare",
     "generate:playground-db": "node scripts/generate-playground-db.mjs",
     "twoslash:verify": "nuxt prepare && nuxt-content-twoslash verify",
-    "check": "bun run build && bun run twoslash:verify"
+    "bench:check": "bun ../tools/scale-bench-data.ts --check && bun ../tools/landing-bench-data.ts --check",
+    "check": "bun run bench:check && bun run build && bun run twoslash:verify"
   },
   "dependencies": {
     "@codemirror/lang-json": "^6.0.2",
