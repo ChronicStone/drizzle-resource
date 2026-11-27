@@ -77,14 +77,13 @@ const SCENARIOS: Scenario[] = [
     steps: [
       { text: "allowed, but it can only narrow", lang: "ts", tone: "ok" },
       { text: `where c."org_id" = 'acme' and ( … or … )`, lang: "sql" },
-      { text: "count 0", lang: "sql" },
-      { text: 'select "id" … limit 26', lang: "sql" },
-      { text: "0 rows from globex", lang: "ts" },
-      { text: "buckets for acme only", lang: "ts" },
+      { text: "count 0, so no page or rows statement", lang: "sql" },
+      null,
+      null,
+      null,
     ],
     response: `{ rows: [],
-  pageInfo: { nextCursor: null },
-  facets: { status: [] } }   // still acme`,
+  pageInfo: { rowCount: 0 } }   // nothing from globex`,
     meta: "200 · scope held",
   },
 ];
@@ -197,7 +196,7 @@ onBeforeUnmount(clear);
       </div>
 
       <div ref="layersEl" class="px-win px-layers">
-        <div class="px-win-h"><i />Engine<small>6 steps, always in this order</small></div>
+        <div class="px-win-h"><i />Engine<small>6 steps</small></div>
         <div class="px-layers-body">
           <div
             class="px-drop"
