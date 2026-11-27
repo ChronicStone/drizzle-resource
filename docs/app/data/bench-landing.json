@@ -1,8 +1,8 @@
 {
   "$comment": "Numbers for the landing's benchmark chart. Regenerate with `bun tools/landing-bench-data.ts` from tools/results/profiles.json; do not edit by hand. Times are medians in milliseconds, one per table size; ratio is out of the box ÷ tuned at 10M rows.",
-  "provisional": true,
-  "measuredOn": "2026-11-26",
-  "engine": "d0f9953",
+  "provisional": false,
+  "measuredOn": "2026-11-27",
+  "engine": "15da95f",
   "postgres": "18.7",
   "cpus": 4,
   "clients": 1,
@@ -10,46 +10,40 @@
   "sizes": [200000, 1000000, 10000000],
   "requests": {
     "page": {
-      "outOfTheBox": [0.266, 0.378, 0.304],
-      "tuned": [0.266, 0.378, 0.304],
+      "outOfTheBox": [0.294, 0.31, 0.266],
+      "tuned": [0.294, 0.31, 0.266],
       "verdict": "unchanged",
-      "ratio": null,
-      "engineChange": false
+      "ratio": null
     },
     "cursor": {
-      "outOfTheBox": [0.569, 0.662, 1.006],
-      "tuned": [0.569, 0.662, 1.006],
+      "outOfTheBox": [0.5, 0.347, 0.363],
+      "tuned": [0.5, 0.347, 0.363],
       "verdict": "unchanged",
-      "ratio": null,
-      "engineChange": false
+      "ratio": null
     },
     "count": {
-      "outOfTheBox": [14.239, 17.673, 112.045],
-      "tuned": [0.542, 0.878, 1.025],
+      "outOfTheBox": [10.943, 16.129, 100.333],
+      "tuned": [0.89, 1.043, 1.037],
       "verdict": "improved",
-      "ratio": 109.31,
-      "engineChange": false
+      "ratio": 94.67
     },
     "relationSort": {
-      "outOfTheBox": [23.095, 78.428, 764.264],
-      "tuned": [0.769, 0.866, 0.938],
+      "outOfTheBox": [24.747, 67.378, 751.791],
+      "tuned": [1.026, 0.915, 1.023],
       "verdict": "improved",
-      "ratio": 814.78,
-      "engineChange": false
+      "ratio": 732.95
     },
     "facets": {
-      "outOfTheBox": [81.25, 187.65, 1505.091],
-      "tuned": [43.457, 161.518, 1104.96],
-      "verdict": "improved",
-      "ratio": 1.36,
-      "engineChange": true
+      "outOfTheBox": [32.387, 127.392, 1354.479],
+      "tuned": [33.143, 125.04, 1404.735],
+      "verdict": "unchanged",
+      "ratio": 0.99
     },
     "search": {
-      "outOfTheBox": [193.79, 878.272, 6862.738],
-      "tuned": [4.182, 4.269, 4.858],
+      "outOfTheBox": [155.613, 657.328, 6109.777],
+      "tuned": [4.135, 3.954, 5.42],
       "verdict": "improved",
-      "ratio": 1412.67,
-      "engineChange": false
+      "ratio": 1120.7
     }
   },
   "tunedSettings": {
