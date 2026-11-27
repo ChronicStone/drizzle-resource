@@ -356,6 +356,50 @@ defineProps<{ id: string; playing: boolean }>();
       </g>
     </g>
 
+    <!-- BULK SCANS: one cursor reads the matching rows in batches -->
+    <g v-else-if="id === 'scan'">
+      <rect
+        v-for="n in 9"
+        :key="n"
+        class="row"
+        x="22"
+        :y="12 + (n - 1) * 10"
+        :width="52 + ((n * 17) % 34)"
+        height="6"
+        rx="3"
+      />
+      <rect class="batch" x="16" y="8" width="118" height="34" rx="5" />
+      <path class="flow" pathLength="1" d="M136 52 C 150 52, 150 52, 164 52" />
+      <g v-for="n in 3" :key="`b${n}`" :class="`out o${n}`">
+        <rect class="card" x="168" :y="12 + (n - 1) * 30" width="90" height="24" rx="6" />
+        <text class="t-strong" x="178" :y="28 + (n - 1) * 30">batch {{ n }}</text>
+        <text class="t-dim" x="250" :y="28 + (n - 1) * 30" text-anchor="end">1000</text>
+      </g>
+      <text class="t-dim" x="22" y="106">one cursor, one snapshot</text>
+    </g>
+
+    <!-- VIRTUAL FIELDS: a column computed by the database -->
+    <g v-else-if="id === 'virtual'">
+      <rect class="card" x="22" y="10" width="236" height="76" rx="7" />
+      <text class="t-dim" x="34" y="26">name</text>
+      <text class="t-dim" x="106" y="26">total</text>
+      <text class="t-hit" x="178" y="26">latestOrder</text>
+      <rect class="vcol" x="170" y="14" width="82" height="68" rx="4" />
+      <g
+        v-for="(r, i) in [
+          ['Ada', '120.00', 'ORD-2041'],
+          ['Lin', '64.50', 'ORD-2038'],
+          ['Sam', '9.00', 'ORD-1977'],
+        ]"
+        :key="r[0]"
+      >
+        <text class="t-strong" x="34" :y="46 + i * 15">{{ r[0] }}</text>
+        <text class="t" x="106" :y="46 + i * 15">{{ r[1] }}</text>
+        <text class="t-hit vval" x="178" :y="46 + i * 15" :style="{ '--i': i }">{{ r[2] }}</text>
+      </g>
+      <text class="t-dim" x="258" y="104" text-anchor="end">virtual.scalar(select … limit 1)</text>
+    </g>
+
     <!-- VALIDATION: requests pass a gate, one is turned back -->
     <g v-else>
       <line class="lane" x1="22" y1="60" x2="258" y2="60" />
@@ -1012,6 +1056,69 @@ text {
 .a-validation .warn-box {
   fill: color-mix(in srgb, var(--px-warn) 10%, transparent);
   stroke: color-mix(in srgb, var(--px-warn) 55%, transparent);
+}
+
+/* bulk scans */
+.a-scan .batch {
+  fill: color-mix(in srgb, var(--hit) 14%, transparent);
+  stroke: var(--hit);
+  stroke-width: 1.2;
+  animation: scanband 6s steps(1, end) infinite;
+}
+@keyframes scanband {
+  0% {
+    transform: translateY(0);
+  }
+  33% {
+    transform: translateY(30px);
+  }
+  66% {
+    transform: translateY(60px);
+  }
+}
+.a-scan .flow {
+  stroke: color-mix(in srgb, var(--hit) 70%, var(--ink3));
+  stroke-dashoffset: 0;
+}
+.a-scan .out {
+  opacity: 0.35;
+  animation: scanout 6s steps(1, end) infinite;
+}
+.a-scan .o2 {
+  animation-delay: 2s;
+}
+.a-scan .o3 {
+  animation-delay: 4s;
+}
+@keyframes scanout {
+  0% {
+    opacity: 1;
+  }
+  33% {
+    opacity: 0.35;
+  }
+}
+
+/* virtual fields */
+.a-virtual .vcol {
+  fill: color-mix(in srgb, var(--hit) 10%, transparent);
+  stroke: var(--hit);
+  stroke-width: 1;
+  stroke-dasharray: 3 3;
+}
+.a-virtual .vval {
+  animation: vpop 6s var(--ease) infinite backwards;
+  animation-delay: calc(0.4s + var(--i) * 0.25s);
+}
+@keyframes vpop {
+  0%,
+  6% {
+    opacity: 0;
+  }
+  14%,
+  100% {
+    opacity: 1;
+  }
 }
 
 @media (prefers-reduced-motion: reduce) {

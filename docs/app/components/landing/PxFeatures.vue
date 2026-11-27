@@ -44,6 +44,12 @@ const TILES = [
     to: "/query/summaries",
   },
   {
+    id: "scan",
+    title: "Bulk scans",
+    text: "Read every matching row in batches for exports and jobs, from one cursor.",
+    to: "/query/bulk-scans",
+  },
+  {
     id: "scope",
     title: "Tenant scope",
     text: "A condition from the server context on every statement. Clients can't lift it.",
@@ -62,6 +68,12 @@ const TILES = [
     to: "/resource/views",
   },
   {
+    id: "virtual",
+    title: "Virtual fields",
+    text: "A SQL expression or a correlated subquery, filtered and sorted like a column.",
+    to: "/resource/models",
+  },
+  {
     id: "relations",
     title: "Relations",
     text: "Filter, sort and search through relations with a dotted path.",
@@ -76,7 +88,7 @@ const TILES = [
   {
     id: "validation",
     title: "Validation",
-    text: "A Zod schema for the request body, generated from the resource.",
+    text: "Request schemas for Zod, Valibot and Vine, generated from the resource.",
     to: "/validation/schemas",
   },
 ] as const;
