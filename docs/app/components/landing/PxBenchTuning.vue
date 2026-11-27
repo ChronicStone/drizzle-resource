@@ -30,7 +30,6 @@ interface Data {
       verdict: Verdict;
       /** out of the box ÷ tuned at 10M rows, as measured; null when the request is not tuned */
       ratio: number | null;
-      engineChange: boolean;
     }
   >;
   tunedSettings: { countCap: number };
@@ -141,7 +140,10 @@ const EXPLAIN: Partial<Record<Key, string[]>> = {
     "count   reads every matching row to return one number",
     'fix:    count "capped" stops after 10,001 rows',
   ],
-  facets: ["facets  group every matching row, one CPU", 'fix:    facets: { whenCapped: "skip" }'],
+  facets: [
+    "facets  read every matching row, once per facet",
+    'fix:    facets: { whenCapped: "skip" }',
+  ],
   relationSort: [
     "ids     joins every order to sort by customer.name",
     "fix:    see checkIndexes()",
@@ -224,14 +226,14 @@ const consoleFor = computed(() => {
           const capped = credited.filter((r) => r.drop === 4 && r.improved && r.key !== "facets");
           const facets = rows.find((r) => r.key === "facets")!;
           const not = credited.filter((r) => !r.improved);
-          // the tuned facets are measured as separate statements; whenCapped: "skip" goes further
+          // both sides run one statement per facet at these sizes; whenCapped: "skip" goes further
           return (
             `A capped count brings ${capped
               .map((r) => `${r.label} to ${fmt(r.tuned[LAST]!)} ms`)
               .join(" and ")} at 10M.` +
             (facets.improved
-              ? ` Facets run as separate statements: ${atLast(facets, "outOfTheBox")} → ${fmt(facets.tuned[LAST]!)} ms, and whenCapped: "skip" drops them once the count passes the cap.`
-              : "") +
+              ? ` Facets: ${atLast(facets, "outOfTheBox")} → ${fmt(facets.tuned[LAST]!)} ms, and whenCapped: "skip" drops them once the count passes the cap.`
+              : ` whenCapped: "skip" drops the facets once the count passes the cap.`) +
             (not.length
               ? ` ${not.map((r) => r.label).join(" and ")} did not get faster on this run.`
               : "")
@@ -788,8 +790,8 @@ onBeforeUnmount(() => {
         <div class="tbl">
           <table>
             <caption>
-              Median milliseconds, one client. Page + count is an exact count out of the box and a
-              count capped at
+              Median milliseconds, one client. A request with a count asks for an exact count out of
+              the box and a count capped at
               {{ data.tunedSettings.countCap.toLocaleString("en-US") }}
               tuned.
             </caption>
@@ -815,7 +817,7 @@ onBeforeUnmount(() => {
                   <td v-for="(v, s) in r.tuned" :key="`t${s}`">{{ fmt(v) }} ms</td>
                 </template>
                 <td>
-                  {{ speedText(r) }}{{ r.engineChange ? ", facets as separate statements" : "" }}
+                  {{ speedText(r) }}
                 </td>
               </tr>
             </tbody>
